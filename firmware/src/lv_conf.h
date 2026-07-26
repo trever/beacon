@@ -27,7 +27,13 @@
 #define LV_COLOR_DEPTH 16
 
 /*Swap the 2 bytes of RGB565 color. Useful if the display has an 8-bit interface (e.g. SPI)*/
-#define LV_COLOR_16_SWAP 0   /*paired with GFX draw16bitRGBBitmap (non-swapping), per Waveshare's proven LVGL config*/
+/*0 pairs with GFX draw16bitRGBBitmap (which byte-swaps every pixel in software on its way to the
+ *bus). 1 makes LVGL render big-endian RGB565 directly so the port can use draw16bitBeRGBBitmap, which
+ *hands the buffer pointer straight to SPI with no per-pixel pass -- see ui/lvgl_port.cpp flush_cb.
+ *Overridable from build_flags so env:perf can A/B it without touching the shipping build.*/
+#ifndef LV_COLOR_16_SWAP
+#define LV_COLOR_16_SWAP 0
+#endif
 
 /*Enable features to draw on transparent background.
  *It's required if opa, and transform_* style properties are used.
