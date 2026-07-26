@@ -5,4 +5,6 @@ class Arduino_GFX;
 bool display_begin();
 void display_brightness(uint8_t level);                 // raw DCS 0x51 (no GFX API in 1.6.4)
 void display_draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* px);
+// Zero-copy blit for LV_COLOR_16_SWAP=1 builds (no per-pixel software swap). See display.cpp.
+void display_draw_bitmap_be(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* px);
 Arduino_GFX* display_gfx();                              // for the cyan-border test (Task 1)

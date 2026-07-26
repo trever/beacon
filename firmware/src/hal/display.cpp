@@ -30,4 +30,13 @@ void display_draw_bitmap(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* p
   s_gfx->draw16bitRGBBitmap(x, y, px, w, h);
 }
 
+// Big-endian variant for LV_COLOR_16_SWAP=1 builds. draw16bitRGBBitmap runs a software byte-swap over
+// EVERY pixel into a 2KB staging buffer before each blocking QSPI chunk; with the source buffer in
+// PSRAM that pass measured ~60% of total blit time (7.4 MB/s against a 20 MB/s bus). The Be variant
+// passes the buffer pointer straight through to writeBytes -> spi tx_buffer, so the pixels go to the
+// bus untouched. Requires LVGL to have rendered big-endian pixels, hence the paired lv_conf flag.
+void display_draw_bitmap_be(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t* px) {
+  s_gfx->draw16bitBeRGBBitmap(x, y, px, w, h);
+}
+
 Arduino_GFX* display_gfx() { return s_gfx; }

@@ -8,6 +8,15 @@
 #include "ui/idle_glue.h"
 #include "ui/capture.h"
 
+// Which blit path the flush takes, decided by the lv_conf color byte order (they MUST agree, or every
+// pixel lands with its bytes reversed). LV_COLOR_16_SWAP=1 => LVGL already produced big-endian pixels,
+// so the Be path can hand the buffer straight to the bus instead of byte-swapping each pixel.
+#if LV_COLOR_16_SWAP
+  #define DISPLAY_BLIT display_draw_bitmap_be
+#else
+  #define DISPLAY_BLIT display_draw_bitmap
+#endif
+
 static const uint32_t BUF_LINES  = 47;                       // ~1/10 of 466 (tech.md §6)
 static const size_t   BUF_PX     = (size_t)SCREEN_W * BUF_LINES;
 static const size_t   BUF_BYTES  = BUF_PX * sizeof(lv_color_t);
@@ -19,13 +28,65 @@ static lv_color_t* s_buf1 = nullptr;
 // lv_disp_flush_ready inline), so LVGL never renders into a second buffer while the first flushes --
 // buffer B was dead weight. One buffer frees a full BUF_BYTES (~43.8KB) with zero behavior change.
 
+#if BEACON_PERF
+// Render profiler (BEACON_PERF only; env:beacon is byte-for-byte unaffected). The swipe-stutter
+// question is "where does the frame budget go", and the answer is dominated by the blit: LVGL renders
+// a strip into the PSRAM draw buffer, then Arduino_GFX's writePixels byte-swaps every pixel out of
+// PSRAM into a 2KB internal DMA buffer and pushes it with a BLOCKING polling QSPI transfer -- no
+// overlap between the swap loop and the bus. So we time the blit alone and report it against
+// wall-clock, which tells us directly what fraction of each second the UI core spends in the bus.
+#include <esp_timer.h>
+static uint64_t s_blit_us  = 0;    // cumulative time inside display_draw_bitmap
+static uint32_t s_blit_n   = 0;    // strip flushes
+static uint32_t s_blit_px  = 0;    // pixels pushed
+static uint32_t s_tick_n   = 0;    // lvgl_port_tick() calls (loop iterations)
+static uint32_t s_perf_at  = 0;
+static uint64_t s_hdlr_us  = 0;    // cumulative time inside lv_timer_handler() (render + blit + timers)
+
+static void perf_report(void) {
+  uint32_t now = millis();
+  uint32_t dt  = now - s_perf_at;
+  if (dt < 1000) return;
+  s_perf_at = now;
+  // Full-screen equivalents: a 466x466 repaint is the swipe case (two pages partly visible => the
+  // whole screen is dirty every frame). Reporting in frames makes the FPS ceiling obvious.
+  uint32_t px      = s_blit_px;
+  uint32_t frames  = px / ((uint32_t)SCREEN_W * SCREEN_H);
+  uint32_t blit_ms = (uint32_t)(s_blit_us / 1000ULL);
+  uint32_t us_per_frame = frames ? (uint32_t)(s_blit_us / frames) : 0;
+  // KB/s over the bus, and what share of the second the core was stuck in the blit.
+  uint32_t kbps    = (uint32_t)(((uint64_t)px * 2ULL * 1000ULL) / (dt * 1024ULL));
+  // Split the frame budget: everything inside lv_timer_handler() minus the blit is LVGL RENDER
+  // (rasterising into the draw buffer) plus timer callbacks. That split says whether the next win is
+  // on the bus or in the rasteriser.
+  uint32_t hdlr_ms = (uint32_t)(s_hdlr_us / 1000ULL);
+  uint32_t rend_us = (uint32_t)((s_hdlr_us > s_blit_us ? s_hdlr_us - s_blit_us : 0) /
+                                (frames ? frames : 1));
+  LOGI("perf: hdlr %ums blit %ums/%ums (%u%%) strips=%u ~%ufullframes blit/frame=%uus "
+       "rend/frame=%uus %uKB/s loop=%u/s",
+       (unsigned)hdlr_ms, (unsigned)blit_ms, (unsigned)dt,
+       (unsigned)(blit_ms * 100 / (dt ? dt : 1)),
+       (unsigned)s_blit_n, (unsigned)frames, (unsigned)us_per_frame, (unsigned)rend_us,
+       (unsigned)kbps, (unsigned)s_tick_n);
+  s_blit_us = 0; s_blit_n = 0; s_blit_px = 0; s_tick_n = 0; s_hdlr_us = 0;
+}
+#endif
+
 static void flush_cb(lv_disp_drv_t* drv, const lv_area_t* a, lv_color_t* px) {
   int32_t w = a->x2 - a->x1 + 1;
   int32_t h = a->y2 - a->y1 + 1;
 #if BEACON_CAPTURE
   capture_blit(a, px);   // mirror the strip into the screenshot frame (no-op unless a sweep is armed)
 #endif
-  display_draw_bitmap(a->x1, a->y1, w, h, (uint16_t*)px);
+#if BEACON_PERF
+  int64_t t0 = esp_timer_get_time();
+  DISPLAY_BLIT(a->x1, a->y1, w, h, (uint16_t*)px);
+  s_blit_us += (uint64_t)(esp_timer_get_time() - t0);
+  s_blit_n++;
+  s_blit_px += (uint32_t)(w * h);
+#else
+  DISPLAY_BLIT(a->x1, a->y1, w, h, (uint16_t*)px);
+#endif
   lv_disp_flush_ready(drv);
 }
 
@@ -100,4 +161,15 @@ bool lvgl_port_begin() {
   return true;
 }
 
-void lvgl_port_tick() { lv_timer_handler(); }
+uint32_t lvgl_port_tick() {
+#if BEACON_PERF
+  int64_t h0 = esp_timer_get_time();
+  uint32_t next = lv_timer_handler();
+  s_hdlr_us += (uint64_t)(esp_timer_get_time() - h0);
+  s_tick_n++;
+  perf_report();
+#else
+  uint32_t next = lv_timer_handler();
+#endif
+  return next;
+}

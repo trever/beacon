@@ -4,8 +4,11 @@
 > that exists. `docs/tech.md` §8 owns the NFR *targets*; this documents the *implementation* and how to
 > check it. Numbers below are from this tree unless marked as a spike measurement.
 >
-> Build measured at `4850e04` (2026-07-26), `env:beacon`, Arduino core 3.3.5 / LVGL 8.4.0:
-> **static RAM 77,188 B of 327,680 (23.6%)** · **flash 1,922,599 B of a 3,145,728 B OTA slot (61.1%)**.
+> Build measured 2026-07-26, `env:beacon`, Arduino core 3.3.5 / LVGL 8.4.0:
+> **static RAM 77,188 B of 327,680 (23.6%)** · **flash 1,923,151 B of a 3,145,728 B OTA slot (61.1%)**.
+> On-device: free internal heap steady **114,484 B**, since-boot minimum **49,832 B**, PSRAM free
+> **8.29 MB**. Swipe render: **~9.6 full-screen frames/s**, blit **29.5 ms/frame**, render
+> **~49 ms/frame** (§2.1).
 
 ---
 
@@ -30,9 +33,11 @@ single TLS socket — internal SRAM, not CPU, is the constraint (§3).
 
 ```
 loop()  -> lvgl_port_tick() -> lv_timer_handler()
-          -> LVGL invalidation -> partial render into ONE draw buffer
+          -> LVGL invalidation -> partial render into ONE draw buffer (PSRAM, big-endian RGB565)
           -> rounder_cb  (snap flush window to even coords -- CO5300 requirement)
-          -> flush_cb    -> display_draw_bitmap() [blocking QSPI] -> lv_disp_flush_ready()
+          -> flush_cb    -> DISPLAY_BLIT -> draw16bitBeRGBBitmap -> writeBytes
+                            -> spi tx_buffer = the PSRAM buffer itself [blocking QSPI @80 MHz]
+                         -> lv_disp_flush_ready()
 ```
 
 Key facts, all in `src/ui/lvgl_port.cpp` and `src/lv_conf.h`:
@@ -49,6 +54,42 @@ Key facts, all in `src/ui/lvgl_port.cpp` and `src/lv_conf.h`:
   real governor — the target is >=30 FPS (`tech.md` §8), so this is deliberately just above it.
 - **Partial render only. There is no full-screen framebuffer.** A full-screen repaint is ~10 flush
   strips; anything that dirties the whole screen every tick costs 10 QSPI blits.
+
+### 2.1 The blit path (measured — do not "simplify" this)
+
+`flush_cb` selects its blit via `DISPLAY_BLIT` in `ui/lvgl_port.cpp`, and that selector is
+**hard-paired with `LV_COLOR_16_SWAP`**:
+
+| `LV_COLOR_16_SWAP` | LVGL renders | flush calls | cost |
+|---|---|---|---|
+| `0` (library default) | native-endian RGB565 | `draw16bitRGBBitmap` | byte-swaps **every pixel** out of PSRAM into a 2 KB staging buffer before each blocking QSPI chunk |
+| **`1` (this build)** | big-endian RGB565 | `draw16bitBeRGBBitmap` | `writeBytes` sets `spi tx_buffer` to the PSRAM buffer directly — **no per-pixel pass, no copy** |
+
+Changing one without the other reverses every pixel's colour bytes. Both are set in
+`platformio.ini` `[env:beacon]`, with `ESP32QSPI_FREQUENCY=80000000` (the GFX library defaults to
+40 MHz; 80 is verified on glass).
+
+Measured on the `env:perf` auto-swipe benchmark (§5), full-screen repaints:
+
+| Build | blit/frame | throughput | frames/s |
+|---|---|---|---|
+| Library default (40 MHz, swapping blit) | 59 ms | 7.4 MB/s | 7.5 |
+| + zero-copy BE blit | 40 ms | 10.9 MB/s | ~9 |
+| + QSPI 80 MHz (**current**) | **29.5 ms** | **14.7 MB/s** | **~9.6** |
+
+Two findings worth keeping:
+- **The bus was never the original bottleneck** — 7.4 MB/s against a ~20 MB/s ceiling. The software
+  byte-swap was ~60% of blit time. Raising the clock first would have looked disappointing.
+- **S3 SPI DMA can source from PSRAM.** The zero-copy path proves it; no bounce buffer needed.
+- Also verified heap-neutral and TLS-safe: 120 s soak with WiFi up, handshakes to Open-Meteo and
+  Yahoo succeeding, zero warnings, heap unchanged from the pre-change figures.
+
+**Render, not blit, is now the ceiling.** Splitting `lv_timer_handler()` gives ~49 ms render vs
+~29 ms blit per frame. LVGL rasterising into a *PSRAM* draw buffer dominates, so even a free blit
+caps out near 20 FPS — the 30 FPS NFR (`tech.md` §8) is not reachable for a full-screen slide by
+shaving the bus further. The open options are a smaller **internal-SRAM** draw buffer (hazardous —
+§3) or a cheaper page transition (crossfade/instant instead of a slide), which is a `DESIGN.md`
+motion decision rather than a code one.
 
 ### What actually repaints
 `carousel.cpp`'s `tick_cb` runs every **500 ms** and calls `update()` on the **visible screen only**,
@@ -139,9 +180,32 @@ outputs, so per-change frames are already gated (`ProviderMux.publish*` compares
 cd firmware && ~/.beacon-pio/bin/pio device monitor    # 115200, ctrl-] to exit
 ```
 
-**FPS: not currently instrumented.** `LV_USE_PERF_MONITOR 0` in `src/lv_conf.h`. To measure, flip it
-to `1` (it draws an FPS/CPU overlay at `LV_ALIGN_BOTTOM_RIGHT`) and rebuild. Remember it is a debug
-build only — the overlay is real drawn pixels and will appear in `env:capture` screenshots.
+**Frame cost: `env:perf`.** The measurement build — `env:beacon` plus a flush profiler
+(`ui/lvgl_port.cpp`) and a continuous auto-swipe (`ui/carousel.cpp` `autoswipe_cb`). It logs once a
+second:
+
+```
+perf: hdlr 787ms blit 319ms/1014ms (31%) strips=121 ~11fullframes \
+      blit/frame=29072us rend/frame=42512us 4601KB/s loop=52/s
+```
+
+`hdlr` = total time inside `lv_timer_handler()`; `blit/frame` and `rend/frame` split that per
+full-screen-equivalent repaint, which is what tells you whether the next win is on the bus or in the
+rasteriser.
+
+```bash
+cd firmware && ~/.beacon-pio/bin/pio run -e perf -t upload && ~/.beacon-pio/bin/pio device monitor
+```
+
+The auto-swipe exists because **hand-swiping cannot produce comparable numbers** — capture windows
+kept coming back fully idle, and swipe speed varies per attempt. Driving `lv_obj_scroll_by` on a timer
+exercises the identical path (scroll animation → `SCROLL_END` → `show()` → `recenter()`) reproducibly.
+The device cycles screens by itself under `env:perf`; that is the benchmark, not a fault. Flash
+`env:beacon` to get normal behaviour back. To A/B a flag, `build_unflags` it in `[env:perf]` first.
+
+**LVGL's own FPS overlay** is a separate option: `LV_USE_PERF_MONITOR` in `src/lv_conf.h` (default
+`0`). It draws real pixels, so it also lands in `env:capture` screenshots — prefer the serial
+profiler, which costs nothing visually and gives the render/blit split the overlay can't.
 
 **`LV_USE_MEM_MONITOR` cannot be enabled as configured** — it requires `LV_MEM_CUSTOM = 0`, and this
 build sets `LV_MEM_CUSTOM 1` to put the LVGL heap in PSRAM. Use `heap_caps_get_free_size(MALLOC_CAP_SPIRAM)`
