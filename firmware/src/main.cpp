@@ -153,7 +153,7 @@ void loop() {
   provision_loop();    // no-op unless the setup portal is active
   pair_overlay_service();  // show/hide the BLE passkey card while a hub is bonding (Core-1)
   timekeep_service();  // perform any staged RTC write here (Core-1, serialized with touch on I2C)
-  lvgl_port_tick();
+  uint32_t next = lvgl_port_tick();
 #if BEACON_CAPTURE
   capture_service();   // 'C' over serial => sweep every theme x screen to the host
 #endif
@@ -162,5 +162,12 @@ void loop() {
   uint8_t g = imu_poll();
   if (g & IMU_RAISE) lv_disp_trig_activity(NULL);   // wake from dim/sleep
   if (g & IMU_SHAKE) ui_dismiss_top_overlay();
-  delay(5);
+  // Sleep by LVGL's own hint instead of a fixed 5 ms. Mid-swipe LVGL asks to be called back
+  // immediately (next==0) and the old flat delay(5) burned ~5 ms of every ~23 ms frame -- ~20% of
+  // throughput at the exact moment it was scarcest. Floor of 1 tick keeps yielding to the scheduler
+  // (idle task / WDT / Core-1 housekeeping still run); ceiling of 5 ms preserves the old idle
+  // behaviour so a quiet screen costs no more CPU than before.
+  if (next < 1) next = 1;
+  if (next > 5) next = 5;
+  delay(next);
 }

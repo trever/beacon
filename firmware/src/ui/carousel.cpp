@@ -81,6 +81,18 @@ static void tick_cb(lv_timer_t*) {
   set_dots(s_current);
 }
 
+#if BEACON_PERF
+// Deterministic swipe benchmark (BEACON_PERF only). Animating a one-page scroll on a timer drives the
+// EXACT render path a finger does -- scroll animation, SCROLL_END, show(), recenter() -- so the
+// `perf:` numbers are reproducible and comparable across builds instead of depending on how fast
+// somebody happened to swipe during a capture window. Also keeps the panel awake so the idle pause
+// (#60) can't silently halve the sample.
+static void autoswipe_cb(lv_timer_t*) {
+  lv_disp_trig_activity(NULL);
+  lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);
+}
+#endif
+
 void carousel_init(void) {
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
@@ -140,6 +152,9 @@ void carousel_init(void) {
   recenter();                                                      // pin start to the center slot
   show(start);
   s_tick = lv_timer_create(tick_cb, 500, NULL);
+#if BEACON_PERF
+  lv_timer_create(autoswipe_cb, 700, NULL);   // continuous scroll load; see autoswipe_cb
+#endif
 }
 
 // #60: pause the per-tick repaint while the panel is dim/asleep so the display can actually sleep
