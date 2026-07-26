@@ -54,6 +54,22 @@ public enum UsagePollDecision {
         return max(floor, jittered)
     }
 
+    // Classify a NON-200 oauth/usage response. (401 is handled in the provider: it carries a re-read +
+    // retry-once dance against a CLI-rotated Keychain item.)
+    //
+    // 403 is terminal, not transient. The endpoint requires a scope that a Claude Desktop token does not
+    // carry, so a token that 403s once will 403 for its whole life -- retrying cannot turn into a 200. As
+    // transient it was re-issued on every backoff tick until the edge answered 429 with Retry-After: 3600,
+    // i.e. the retry loop manufactured its own rate limit. Terminal stops the call; the provider's gate
+    // (noteUsageOutcome) keeps a network-reached terminal from re-firing every tick, and a credential
+    // change or a .live poll re-opens it.
+    public static func classifyClaudeUsageFailure(status: Int, retryAfter: TimeInterval?) -> ProviderOutcome {
+        if status == 403 {
+            return .terminal(reason: "Claude usage not authorized for this token (HTTP 403)", kind: .other)
+        }
+        return .transient(retryAfter: retryAfter, reason: "Claude usage unavailable (HTTP \(status))")
+    }
+
     // A retained window is dropped (=> "--") once it is older than maxStale OR its own quota window has
     // reset (the percentage would be semantically wrong post-rollover, not merely old). Per-window:
     // h5/d7 reset independently. nil lastGoodAt => expired. now/reset are epoch-comparable.

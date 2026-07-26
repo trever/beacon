@@ -260,7 +260,13 @@ final class ClaudeCodeProvider: AgentProvider {
                 base: 45, cap: claudeBackoffCap, retryAfterSanityCap: retryAfterSanityCap,
                 jitterFraction: Double.random(in: -0.2...0.2))
             claudeBackoffUntil = Date().addingTimeInterval(delay)
-        case .terminal, .inactive:
+        case .terminal:
+            // Terminal used to set no gate, so a terminal that is reached THROUGH the network (401 revoked,
+            // 403 missing scope) re-issued the request every 45s tick forever. The pre-network terminals
+            // (-1 missing / -2 unusable credential) cost nothing, which is why this went unnoticed. Gate at
+            // the cap: a re-login is picked up on the next window, or immediately via the statusline path.
+            claudeBackoffUntil = Date().addingTimeInterval(claudeBackoffCap)
+        case .inactive:
             break
         }
     }
