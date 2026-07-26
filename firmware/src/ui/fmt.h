@@ -45,8 +45,18 @@ static inline void fmt_temp(char* buf, size_t n, double celsius) {
 
 // Signed change: glyph (^ up / v down / - flat) + abs percent, e.g. "^ 0.12%".
 // Returns: +1 up, -1 down, 0 flat (caller picks up/down/dim color).
+// Prefer fmt_change_num + a lucide icon label for new UI; this ASCII form remains for dense rows
+// where a second label per row is not worth it.
 static inline int fmt_change(char* buf, size_t n, double pct) {
   const char* g = pct > 0 ? "^" : (pct < 0 ? "v" : "-");
   snprintf(buf, n, "%s %.2f%%", g, fabs(pct));
+  return pct > 0 ? 1 : (pct < 0 ? -1 : 0);
+}
+
+// Abs percent with NO direction glyph, e.g. "0.12%", for pairing with a lucide trend icon in its own
+// label. The split exists because the icon lives in a PUA font and the number does not, so they
+// cannot share a label (ui/fonts/icons.h). Returns +1/-1/0 like fmt_change.
+static inline int fmt_change_num(char* buf, size_t n, double pct) {
+  snprintf(buf, n, "%.2f%%", fabs(pct));
   return pct > 0 ? 1 : (pct < 0 ? -1 : 0);
 }

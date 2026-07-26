@@ -9,3 +9,7 @@
 // were deleted with their themes -- regenerate via gen_fonts.sh if a theme is re-added.
 extern const lv_font_t font_sg_hero, font_sg_disp, font_sg_body;   // Space Grotesk
 extern const lv_font_t font_jbm_mono;                              // JetBrains Mono
+
+// Lucide icon subset (icons.h holds the ICON_* codepoint literals). Two sizes because LVGL cannot
+// scale a bitmap font: 14 pairs with mono/body text, 22 with the display face.
+extern const lv_font_t lucide_14, lucide_22;

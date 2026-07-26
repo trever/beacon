@@ -26,18 +26,26 @@ Variable fonts instanced to static weights via `fonttools varLib.instancer`.
 | display | 30 | printable ASCII `0x20-0x7E` + `0xB0` | one per display family (7) |
 | body | 18 | printable ASCII + `0xB0` | sg, raj, cp, inter, jbm (5) |
 | mono | 15 | printable ASCII + `0xB0` | jbm (1, shared by all themes) |
+| **icon** | 14, 22 | 12 lucide PUA glyphs (see `icons.h`) | `font_lucide_14/22` (2) |
+
+## Icons (lucide)
+
+From the official lucide webfont, `npm lucide-static` (`font/lucide.ttf` + `font/info.json` for the
+codepoint map). Two sizes because LVGL cannot scale a bitmap font: **14** pairs with mono/body text,
+**22** with the display face. ~23 KB of generated C for both.
+
+These are Private Use Area codepoints, so an `ICON_*` string renders as a missing glyph in any text
+font -- icons always need their own label styled with `t->f_icon` / `t->f_icon_lg`. That constraint is
+why `fmt_change_num` exists alongside `fmt_change`: the number and its trend glyph cannot share a
+label. Regeneration commands + the glyph list live in `icons.h`.
 
 ## Per-theme mapping (theme.cpp `THEME_FONTS[]`)
 
-| Theme | hero / display | body | mono |
-|---|---|---|---|
-| editorial | Space Grotesk | Space Grotesk | JetBrains Mono |
-| hud | Rajdhani | Rajdhani | JetBrains Mono |
-| calm | Doto | Inter | JetBrains Mono |
-| blueprint | Chakra Petch | Chakra Petch | JetBrains Mono |
-| led | Pixelify Sans | Inter | JetBrains Mono |
-| oscilloscope | JetBrains Mono | JetBrains Mono | JetBrains Mono |
-| analog | Inter | Inter | JetBrains Mono |
+Single-theme catalog since 2026-07-26; the other six families were deleted with their themes.
+
+| Theme | hero / display | body | mono | icon |
+|---|---|---|---|---|
+| editorial | Space Grotesk | Space Grotesk | JetBrains Mono | lucide |
 
 ## Regenerate
 
