@@ -219,13 +219,23 @@ final class ClaudeUsageProvider: UsageProvider {
     // Diagnostic: the oauth endpoint is unofficial and its failure mode decides whether Claude usage is
     // obtainable at all on a given host (Claude Code Desktop runs no statusline, so this is the ONLY
     // source there). Logs the HTTP status and outcome -- never the token, never the body.
+    // Set by readCredential; never contains token material, only presence/usability.
+    nonisolated(unsafe) private static var lastSourceNote = "cli=? beacon=?"
+
+    private static func describe(_ c: ClaudeCredential?, _ now: Date) -> String {
+        guard let c else { return "absent" }
+        if !c.isExpired(at: now) { return "live" }
+        return c.refreshTokenAlive(at: now) ? "expired+refreshable" : "expired+dead"
+    }
+
     private static func logOutcome(_ code: Int, _ outcome: ProviderOutcome) {
         // A menubar agent has no console: stderr is discarded when launched via LaunchServices, and an
         // ad-hoc-signed app's NSLog does not reach the unified log. So the status goes to a single
         // OVERWRITTEN line (never appended -- it must not grow unbounded) that a human or a support
         // script can read: `cat ~/.beacon-hub/usage-status`.
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".beacon-hub")
-        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code) -> \(outcome)\n"
+        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code)"
+            + " [\(lastSourceNote)] -> \(outcome)\n"
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? line.data(using: .utf8)?.write(to: dir.appendingPathComponent("usage-status"))
     }
@@ -242,7 +252,11 @@ final class ClaudeUsageProvider: UsageProvider {
         // Desktop-only host.
         let cli = ClaudeKeychain.readCLIBlob().flatMap(ProviderCredentials.parseClaude)
         let beacon = ClaudeKeychain.readBeaconCacheBlob().flatMap(ProviderCredentials.parseClaude)
-        return ProviderCredentials.preferred(cli: cli, beacon: beacon, now: Date())
+        let now = Date()
+        // Record what each source looked like. Which credential won, and why, is otherwise invisible --
+        // and it is the single most useful fact when usage is dark.
+        lastSourceNote = "cli=\(describe(cli, now)) beacon=\(describe(beacon, now))"
+        return ProviderCredentials.preferred(cli: cli, beacon: beacon, now: now)
     }
 }
 
@@ -315,13 +329,23 @@ final class CodexUsageProvider: UsageProvider {
     // Diagnostic: the oauth endpoint is unofficial and its failure mode decides whether Claude usage is
     // obtainable at all on a given host (Claude Code Desktop runs no statusline, so this is the ONLY
     // source there). Logs the HTTP status and outcome -- never the token, never the body.
+    // Set by readCredential; never contains token material, only presence/usability.
+    nonisolated(unsafe) private static var lastSourceNote = "cli=? beacon=?"
+
+    private static func describe(_ c: ClaudeCredential?, _ now: Date) -> String {
+        guard let c else { return "absent" }
+        if !c.isExpired(at: now) { return "live" }
+        return c.refreshTokenAlive(at: now) ? "expired+refreshable" : "expired+dead"
+    }
+
     private static func logOutcome(_ code: Int, _ outcome: ProviderOutcome) {
         // A menubar agent has no console: stderr is discarded when launched via LaunchServices, and an
         // ad-hoc-signed app's NSLog does not reach the unified log. So the status goes to a single
         // OVERWRITTEN line (never appended -- it must not grow unbounded) that a human or a support
         // script can read: `cat ~/.beacon-hub/usage-status`.
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".beacon-hub")
-        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code) -> \(outcome)\n"
+        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code)"
+            + " [\(lastSourceNote)] -> \(outcome)\n"
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? line.data(using: .utf8)?.write(to: dir.appendingPathComponent("usage-status"))
     }
