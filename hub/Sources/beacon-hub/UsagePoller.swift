@@ -125,9 +125,10 @@ final class ClaudeUsageProvider: UsageProvider {
     func fetch(completion: @escaping (ProviderResult) -> Void) {
         let now = Date()
         guard let cred = credential() else {
-            completion(ProviderResult(usage: .unavailable,
-                                      outcome: .terminal(reason: "Claude token missing - run claude login",
-                                                         kind: .missingCredential)))
+            let o = ProviderOutcome.terminal(reason: "Claude token missing - run claude login",
+                                             kind: .missingCredential)
+            Self.logOutcome(-1, o)   // -1 = never reached the network
+            completion(ProviderResult(usage: .unavailable, outcome: o))
             return
         }
         // Expired on disk is NOT a logged-out state. If the refresh token is still alive, delegate to
@@ -135,9 +136,10 @@ final class ClaudeUsageProvider: UsageProvider {
         // refresh token means only `claude login` can recover this session.
         if cred.isExpired(at: now) {
             guard cred.refreshTokenAlive(at: now) else {
-                completion(ProviderResult(usage: .unavailable,
-                                          outcome: .terminal(reason: "Claude session expired - run claude login",
-                                                             kind: .staleToken)))
+                let o = ProviderOutcome.terminal(reason: "Claude session expired - run claude login",
+                                                 kind: .staleToken)
+                Self.logOutcome(-2, o)   // -2 = credential on disk but unusable
+                completion(ProviderResult(usage: .unavailable, outcome: o))
                 return
             }
             refresher.refresh(current: cred, now: now) { fresh in
@@ -188,17 +190,21 @@ final class ClaudeUsageProvider: UsageProvider {
                     self.fetch(token: fresh.accessToken, retryOn401: false, completion: completion)
                     return
                 }
-                completion(ProviderResult(usage: .unavailable,
-                                          outcome: .terminal(reason: "Claude token expired - re-login", kind: .other)))
+                let o = ProviderOutcome.terminal(reason: "Claude token expired - re-login", kind: .other)
+                Self.logOutcome(code, o)
+                completion(ProviderResult(usage: .unavailable, outcome: o))
                 return
             }
             guard code == 200, let data = data else {
                 // 429 / 5xx / other: transient. Honor a server Retry-After (#108).
                 let retryAfter = RetryAfter.parse(http?.value(forHTTPHeaderField: "Retry-After"), now: Date())
-                completion(ProviderResult(usage: .unavailable, outcome: .transient(retryAfter: retryAfter,
-                    reason: "Claude usage unavailable (HTTP \(code))")))
+                let o = ProviderOutcome.transient(retryAfter: retryAfter,
+                    reason: "Claude usage unavailable (HTTP \(code))")
+                Self.logOutcome(code, o)
+                completion(ProviderResult(usage: .unavailable, outcome: o))
                 return
             }
+            Self.logOutcome(code, .live)
             guard let usage = UsageNormalizer.claude(data) else {
                 // HTTP 200 but the body did not normalize => the unofficial endpoint's shape likely
                 // drifted. Surface it distinctly so a schema change is visible, not a silent "--".
@@ -208,6 +214,20 @@ final class ClaudeUsageProvider: UsageProvider {
             }
             completion(ProviderResult(usage: usage, outcome: .live))
         }.resume()
+    }
+
+    // Diagnostic: the oauth endpoint is unofficial and its failure mode decides whether Claude usage is
+    // obtainable at all on a given host (Claude Code Desktop runs no statusline, so this is the ONLY
+    // source there). Logs the HTTP status and outcome -- never the token, never the body.
+    private static func logOutcome(_ code: Int, _ outcome: ProviderOutcome) {
+        // A menubar agent has no console: stderr is discarded when launched via LaunchServices, and an
+        // ad-hoc-signed app's NSLog does not reach the unified log. So the status goes to a single
+        // OVERWRITTEN line (never appended -- it must not grow unbounded) that a human or a support
+        // script can read: `cat ~/.beacon-hub/usage-status`.
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".beacon-hub")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code) -> \(outcome)\n"
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? line.data(using: .utf8)?.write(to: dir.appendingPathComponent("usage-status"))
     }
 
     // Keychain generic-password "Claude Code-credentials", with a fallback to Beacon's own cache item
@@ -288,6 +308,20 @@ final class CodexUsageProvider: UsageProvider {
             }
             completion(ProviderResult(usage: usage, outcome: .live))
         }.resume()
+    }
+
+    // Diagnostic: the oauth endpoint is unofficial and its failure mode decides whether Claude usage is
+    // obtainable at all on a given host (Claude Code Desktop runs no statusline, so this is the ONLY
+    // source there). Logs the HTTP status and outcome -- never the token, never the body.
+    private static func logOutcome(_ code: Int, _ outcome: ProviderOutcome) {
+        // A menubar agent has no console: stderr is discarded when launched via LaunchServices, and an
+        // ad-hoc-signed app's NSLog does not reach the unified log. So the status goes to a single
+        // OVERWRITTEN line (never appended -- it must not grow unbounded) that a human or a support
+        // script can read: `cat ~/.beacon-hub/usage-status`.
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".beacon-hub")
+        let line = "\(ISO8601DateFormatter().string(from: Date())) claude oauth/usage HTTP \(code) -> \(outcome)\n"
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? line.data(using: .utf8)?.write(to: dir.appendingPathComponent("usage-status"))
     }
 
     // ~/.codex/auth.json; the JSON shape is parsed by ProviderCredentials.
