@@ -196,10 +196,11 @@ final class ClaudeUsageProvider: UsageProvider {
                 return
             }
             guard code == 200, let data = data else {
-                // 429 / 5xx / other: transient. Honor a server Retry-After (#108).
+                // 403 => terminal, everything else (429 / 5xx / other) => transient, honoring a server
+                // Retry-After (#108). The split lives in UsagePollDecision so it is testable without a
+                // network stub -- see classifyClaudeUsageFailure for why 403 must not be retried.
                 let retryAfter = RetryAfter.parse(http?.value(forHTTPHeaderField: "Retry-After"), now: Date())
-                let o = ProviderOutcome.transient(retryAfter: retryAfter,
-                    reason: "Claude usage unavailable (HTTP \(code))")
+                let o = UsagePollDecision.classifyClaudeUsageFailure(status: code, retryAfter: retryAfter)
                 Self.logOutcome(code, o)
                 completion(ProviderResult(usage: .unavailable, outcome: o))
                 return
