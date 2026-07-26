@@ -30,7 +30,15 @@ void capture_blit(const lv_area_t* a, const lv_color_t* px) {
   for (int32_t y = y1; y <= y2; y++) {
     const uint16_t* srow = src + (size_t)(y - a->y1) * stride + (x1 - a->x1);
     uint16_t* drow = s_frame + (size_t)y * SCREEN_W + x1;
+#if LV_COLOR_16_SWAP
+    // LVGL rasterises big-endian pixels in this build (paired with the zero-copy BE blit,
+    // ui/lvgl_port.cpp). Normalize back to host order HERE so s_frame always holds plain RGB565 and
+    // the wire protocol + tools/capture/grab.py stay exactly as documented -- otherwise every
+    // screenshot comes out with its colour bytes reversed.
+    for (int32_t x = x1; x <= x2; x++) *drow++ = __builtin_bswap16(*srow++);
+#else
     for (int32_t x = x1; x <= x2; x++) *drow++ = *srow++;
+#endif
   }
 }
 
