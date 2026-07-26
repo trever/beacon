@@ -6,6 +6,8 @@
 #include "fetch/finance.h"
 #include "fetch/geoip.h"
 #include "fetch/ice.h"
+#include "fetch/series.h"
+#include "config/chart.h"
 #include "config/ice.h"
 #include "config/ticker_table.h"
 #include "util/log.h"
@@ -20,7 +22,8 @@
 // slot<->ticker conversion below; they are centralized here for that reason.
 #define SRC_WEATHER 0
 #define SRC_ICE     1
-#define TICKER_BASE 2
+#define SRC_SERIES  2
+#define TICKER_BASE 3
 static uint32_t s_next_due[TICKER_BASE + MAX_TICKERS];
 
 // One shared scratch for every fetch body (#65 M6); 8KB fits the largest (Yahoo chart ~unfiltered).
@@ -31,6 +34,7 @@ size_t fetch_scratch_cap(void) { return sizeof(s_scratch); }
 static uint32_t cadence_of(int slot) {
   if (slot == SRC_WEATHER) return WEATHER_CADENCE_S;
   if (slot == SRC_ICE)     return ICE_CADENCE_S;
+  if (slot == SRC_SERIES)  return CHART_CADENCE_S;
   ticker_runtime_t t;
   return ticker_table_get(slot - TICKER_BASE, &t) ? t.cadence_s : WEATHER_CADENCE_S;
 }
@@ -41,6 +45,7 @@ static uint32_t cadence_of(int slot) {
 static const char* slot_host(int slot) {
   if (slot == SRC_WEATHER) return "api.open-meteo.com";
   if (slot == SRC_ICE)     return ICE_HOST;
+  if (slot == SRC_SERIES)  return CHART_HOST;
   ticker_runtime_t t;
   if (!ticker_table_get(slot - TICKER_BASE, &t)) return "";
   switch (t.source) {
@@ -53,6 +58,7 @@ static const char* slot_host(int slot) {
 static data_err_t run_slot(int slot) {
   if (slot == SRC_WEATHER) return fetch_weather();
   if (slot == SRC_ICE)     return fetch_ice();
+  if (slot == SRC_SERIES)  return fetch_series();
   return fetch_finance((uint8_t)(slot - TICKER_BASE));
 }
 
@@ -60,6 +66,7 @@ static data_err_t run_slot(int slot) {
 static void mark_offline(void) {
   ds_set_state_weather(ST_OFFLINE, ERR_NO_ROUTE);
   ds_set_state_ice(ST_OFFLINE, ERR_NO_ROUTE);
+  ds_set_state_series(ST_OFFLINE, ERR_NO_ROUTE);
   for (uint8_t i = 0; i < ds_get_finance_count(); i++) ds_set_state_finance(i, ST_OFFLINE, ERR_NO_ROUTE);
 }
 

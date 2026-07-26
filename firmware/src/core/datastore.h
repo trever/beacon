@@ -17,6 +17,7 @@ void ds_set_finance(uint8_t idx, const finance_rec_t* r);  // preserves the slot
 // id, an in-flight fetch that completes against the old id is DROPPED, not shown live. Else like ds_set_finance.
 void ds_set_finance_if(uint8_t idx, const char* expect_id, const finance_rec_t* r);
 void ds_set_ice(const ice_rec_t* r);   // ICE D4 RIN contract table (device-plane)
+void ds_set_series(const series_rec_t* r);   // intraday series for the graph screen
 void ds_set_usage(const usage_rec_t* r);
 void ds_set_buddy(const buddy_rec_t* r);
 
@@ -33,12 +34,14 @@ void ds_apply_sessions(const buddy_session_t* s, uint8_t count, uint32_t now);
 // Explicit failure/transport transitions (do NOT touch the value payload).
 void ds_set_state_weather(screen_state_t s, data_err_t e);
 void ds_set_state_ice(screen_state_t s, data_err_t e);
+void ds_set_state_series(screen_state_t s, data_err_t e);
 void ds_set_state_finance(uint8_t idx, screen_state_t s, data_err_t e);
 void ds_set_hub_offline(void);   // flips usage + buddy to ST_HUB_OFFLINE
 
 // Getters (Core-1). By-value snapshot under the lock.
 weather_rec_t    ds_get_weather(void);
 ice_rec_t        ds_get_ice(void);
+series_rec_t     ds_get_series(void);
 finance_rec_t    ds_get_finance(uint8_t idx);
 uint8_t          ds_get_finance_count(void);
 usage_rec_t      ds_get_usage(void);
