@@ -16,16 +16,19 @@ Beacon is a 2.16" AMOLED touch desk device (Waveshare ESP32-S3-Touch-AMOLED-2.16
 ### Firmware (`cd firmware`)
 
 ```bash
-~/.beacon-pio/bin/pio run                     # compile for ESP32-S3
-~/.beacon-pio/bin/pio run -t upload           # flash device
+~/.beacon-pio/bin/pio run -e beacon           # compile for ESP32-S3
+~/.beacon-pio/bin/pio run -e beacon -t upload # flash device
 ~/.beacon-pio/bin/pio device monitor          # serial @115200 (Ctrl-] to exit)
 ~/.beacon-pio/bin/pio test -e native          # all host unit tests
 ~/.beacon-pio/bin/pio test -e native -f "*test_theme*"   # single test folder
 ```
 
+**Always pass `-e beacon`.** A bare `pio run` builds every env including `[env:native]`, which has no
+`main()` (it exists only for `pio test`) and so reports `FAILED` — a red build that means nothing.
+
 Tests run in the `native` env (Unity framework, pure C++ — no Arduino/LVGL; device-only code is guarded with `#if !BEACON_NATIVE`). Each `test/test_<unit>/` folder is one suite.
 
-PlatformIO must run from the dedicated Python 3.13 venv at `~/.beacon-pio` (pioarduino `55.03.35` requires Python 3.10–3.13; Homebrew's `platformio` runs on 3.14 and is rejected). The venv carries `platformio` + `pyyaml`. Setup in `firmware/README.md`.
+PlatformIO must run from the dedicated venv at `~/.beacon-pio`, built on any Python 3.10–3.13 (pioarduino `55.03.35` requires that range; Homebrew's `platformio` runs on 3.14 and is rejected). The venv carries `platformio` + `pyyaml`. Setup in `firmware/README.md`.
 
 ### Hub (`cd hub`)
 
@@ -97,8 +100,17 @@ This applies to skills and subagents too: if a workflow (e.g., superpowers writi
 
 ## Authoritative Docs
 
+Reference (the *what* and *why* — these win conflicts):
+
 - `DESIGN.md` — visual system: theme tokens, 7-theme catalog, screen states, safe-area. Read before any UI work.
 - `docs/tech.md` — technical constitution: NFRs, hardware budgets, bring-up sequence, frozen contracts.
 - `hub/CONTRACT.md` — frozen BLE protocol schema and hub-side policies.
 - `docs/prd.md` — functional roadmap and phased acceptance.
+
+Orientation (the *where* and *how* — start here on an unfamiliar task):
+
+- `docs/codemap.md` — concern => file index for both components, end-to-end traces of the four data paths, hard caps, and a table of known doc/code drift.
+- `docs/recipes.md` — multi-file checklists: add a screen, add a theme, extend the BLE frame, add a device->hub command, add a fetch source, add a hub provider. Read the relevant recipe before editing.
+- `docs/perf.md` — render/task pipeline as built, measured memory + flash budgets, what instrumentation exists.
+- `firmware/src/ui/screens/views/CONVENTIONS.md` — the per-theme view contract and LVGL 8.4 do/don't. Authority for anything under `views/`.
 - `CONTRIBUTING.md` — contribution conventions: Conventional Commits (`type(scope): subject`, lowercase imperative subject; scopes `firmware`/`hub`/`docs`/`ci`), PR titles follow the same rules (they become the squash-merge commit; link issues in the body, not the title), branch naming `<type>/<issue#>-<kebab-summary>`, issue labeling, and per-component semver tags (`firmware-vX.Y.Z` / `hub-vX.Y.Z`).
