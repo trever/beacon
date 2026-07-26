@@ -7,15 +7,21 @@ directions.html. Match your theme's lane closely; extend that visual language to
 
 ## File contract
 File: `src/ui/screens/views/<screen>_<theme>.cpp`, where screen in
-{home,finance,usage,buddy,settings}, theme in
+{home,finance,ice,usage,buddy,settings}, theme in
 {editorial,hud,calm,blueprint,led,oscilloscope,analog}.
+(Theme index 2's catalog id is `dotmatrix` but its view suffix is `calm` — both are load-bearing;
+see `docs/recipes.md` §3.)
 
 Each file is self-contained with file-static widget pointers and MUST end with exactly:
 ```cpp
-const screen_view_t <screen>_<theme>_view = { build, update };
+extern const screen_view_t <screen>_<theme>_view = { build, update };
 ```
 where `static void build(lv_obj_t* page)` lays out the design and `static void update(void)` refreshes
 from the DataStore. `screen_view_t` is in `ui/screen.h`.
+
+**The `extern` is required, not decoration.** In C++ a namespace-scope `const` has INTERNAL linkage, so
+omitting it compiles cleanly and then fails at link with `undefined reference to
+<screen>_<theme>_view` from the `SCREEN_MODULE_SIMPLE` dispatch table. Every existing view carries it.
 
 Skeleton:
 ```cpp
@@ -31,7 +37,7 @@ Skeleton:
 static lv_obj_t *s_slot, *s_x; /* widget refs */
 static void build(lv_obj_t* page) { /* create objects, store in statics */ }
 static void update(void) { /* mutate text/values/visibility only; never create here */ }
-const screen_view_t home_hud_view = { build, update };
+extern const screen_view_t home_hud_view = { build, update };
 ```
 
 ## Rules
@@ -99,6 +105,12 @@ lv_obj_get_coords. For gauges you may instead reuse `gauge_render(parent, t, pct
   buddy.prompt.present: true => prompt layout (prompt.tool, prompt.hint in a box, DENY|APPROVE);
   false => idle (entries[0..entry_count-1], or "idle"). Approve/Deny tap is a LOCAL STUB: read rec,
   set prompt.present=false, ds_set_buddy(&rec), LOGI. Disable actions when hdr.state is HUB_OFFLINE.
+- ice (D4 RIN): ICE D4 RIN futures, device-plane. ice_rec_t: r.count + r.c[i]{ char strip[8]; double
+  last, change_pct; uint32_t volume; char last_time[24] }. `ice_front(&r)` is the headline (front-month)
+  contract or NULL when nothing is listed. Format via `views/ice_common.h`: ice_fmt_price (4dp -- RIN
+  trades in 0.0001), ice_fmt_strip ("Dec26" => "DEC '26"/"dec '26"), ice_fmt_volume, ice_fmt_last_time.
+  change_pct is ALREADY a percent from the wire -- feed it straight to fmt_change, do not re-derive.
+  count 0 with ST_LIVE is legal ("nothing listed"), so render placeholders, not an error.
 - settings (SETTINGS): rows Wi-Fi(status text "not set"), Brightness, Theme, Sleep("5 min"),
   About(">"). INTERACTIVE: Theme row tap cycles theme, Brightness row tap
   cycles 40/60/80/100%. NEVER call theme_set directly in the event (it deletes this very object mid-event)

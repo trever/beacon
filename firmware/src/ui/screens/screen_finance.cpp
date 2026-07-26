@@ -1,14 +1,10 @@
 #include "ui/screens/screen_finance.h"
-#include "ui/theme.h"
 #include "ui/chrome.h"
 #include "config/ticker_table.h"
 
-extern const screen_view_t finance_editorial_view, finance_hud_view, finance_calm_view,
-  finance_blueprint_view, finance_led_view, finance_oscilloscope_view, finance_analog_view;
-static const screen_view_t* V[] = {
-  &finance_editorial_view, &finance_hud_view, &finance_calm_view, &finance_blueprint_view,
-  &finance_led_view, &finance_oscilloscope_view, &finance_analog_view,
-};
+// Finance keeps its own module body (not SCREEN_MODULE_SIMPLE) because it must REBUILD on a ticker
+// config change, not just update -- see below.
+extern const screen_view_t finance_editorial_view;
 
 // Track the ticker-table gen the current view was built against. A hub config swap bumps the gen
 // (Core-0); the next Core-1 update tick rebuilds the view so its row count + names match the new set.
@@ -18,7 +14,7 @@ static uint32_t  s_built_gen = 0;
 static lv_obj_t* build(lv_obj_t* page) {
   s_page = page;
   s_built_gen = ticker_table_gen();
-  V[theme_index()]->build(page);
+  finance_editorial_view.build(page);
   return page;
 }
 
@@ -30,8 +26,8 @@ static void update(void) {
     lv_obj_clean(s_page);
     chrome_attach(s_page);
     s_built_gen = gen;
-    V[theme_index()]->build(s_page);
+    finance_editorial_view.build(s_page);
   }
-  V[theme_index()]->update();
+  finance_editorial_view.update();
 }
 const screen_module_t finance_module = {"MARKETS", build, update};

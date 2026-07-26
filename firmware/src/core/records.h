@@ -62,6 +62,46 @@ typedef struct {
   double  change_pct;          // signed percent
 } finance_rec_t;
 
+// --- Intraday price series (device-plane) — the graph screen ---
+// Yahoo chart endpoint at range=1d&interval=15m: 27 points today.
+//
+// 15m, NOT 5m, because the body has to fit fetch_scratch() (8192 B shared by every fetcher): the 5m
+// response measured 7789 B, a 5% margin that a busier session would blow, while 15m is 3449 B. 27
+// points across a 466 px screen is ~17 px per point, which reads fine.
+#define SERIES_MAX 48    // 27 today + headroom for a denser interval if the scratch ever grows
+typedef struct {
+  record_hdr_t hdr;
+  char     id[FIN_ID_LEN];   // ticker this series belongs to (matches ticker_cfg_t.id)
+  uint16_t count;            // populated points in v[]
+  float    v[SERIES_MAX];    // closes, oldest-first; float (not double) -- 4 B x 48 and a chart pixel
+                             // cannot resolve better than float anyway
+  float    lo, hi;           // min/max over v[], precomputed so the view need not rescan every tick
+  double   last;             // latest price (meta.regularMarketPrice), authoritative over v[count-1]
+  double   prev_close;       // basis for the day change
+} series_rec_t;
+
+// --- ICE D4 RIN futures (device-plane) ---
+// One row per listed contract month from ICE's public product-guide endpoint (no auth, no key; the
+// chain roots at DigiCert Global Root G2, already in ROOT_CA_BUNDLE). Contracts arrive front-month
+// first and the screen treats index 0 as the headline.
+#define ICE_STRIP_LEN     8    // "Dec26" + headroom + NUL
+#define ICE_TIME_LEN     24    // "07/24/2026 07:30 PM GMT" = 23 + NUL
+#define ICE_CONTRACTS_MAX 4    // 2 listed today; headroom for a new year rolling on
+typedef struct {
+  char     strip[ICE_STRIP_LEN];      // contract month, wire "marketStrip" (e.g. "Dec26")
+  double   last;                      // wire "lastPrice", USD/RIN (4dp is meaningful here)
+  double   change_pct;                // wire "change", ALREADY a percent -- do not re-derive
+  uint32_t volume;                    // wire "volume", contracts traded
+  // Wire "lastTime": when the contract last TRADED, which is not when we last fetched. RIN months go
+  // days without a trade, so hdr age alone would imply a liveness the market doesn't have.
+  char     last_time[ICE_TIME_LEN];
+} ice_contract_t;
+typedef struct {
+  record_hdr_t   hdr;
+  uint8_t        count;               // populated rows in c[] (0..ICE_CONTRACTS_MAX)
+  ice_contract_t c[ICE_CONTRACTS_MAX];
+} ice_rec_t;
+
 // --- AI usage (FR-USAGE, hub-plane) — mirrors tech.md §7.1/§7.2 BLE JSON ---
 typedef struct {
   int16_t  pct;                // 0..100; -1 = null/unavailable (JSON null)

@@ -14,17 +14,17 @@
 
 | Thing | Count | Source of truth |
 |---|---|---|
-| Carousel screens | 5 (home, finance, usage, buddy, settings) | `firmware/src/ui/carousel.cpp` `MODULES[]` |
-| Themes | 7 | `firmware/src/ui/theme_catalog.h` `THEME_COUNT` |
-| Per-theme views | 35 (5 screens x 7 themes) | `firmware/src/ui/screens/views/` |
-| Firmware host tests | 29 suites / 185 cases | `firmware/test/test_*/` |
-| Hub tests | 204 cases | `hub/Tests/` |
+| Carousel screens | 7 (home, finance, chart, ice, usage, buddy, settings) | `firmware/src/ui/carousel.cpp` `MODULES[]` |
+| Themes | **1** (editorial; six removed 2026-07-26 to reclaim flash) | `firmware/src/ui/theme_catalog.h` `THEME_COUNT` |
+| Per-theme views | 7 (7 screens x 1 theme) | `firmware/src/ui/screens/views/` |
+| Firmware host tests | 33 suites / 204 cases | `firmware/test/test_*/` |
+| Hub tests | 216 cases | `hub/Tests/` |
 | Device->hub commands | 4 (`permission`, `open`, `config_ack`, `report`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
 | Hub->device blocks | 5 (`usage`, `buddy`, `loc` share the status frame; `sessions` and `config` are standalone frames) | `hub/CONTRACT.md` §A/§B2 |
 | Hub providers | 3 (claude, codex, omp) | `hub/Sources/beacon-hub/AppDelegate.swift` `startProviders()` |
 
 Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8]` in `carousel.cpp`),
-**16 tickers** (`MAX_TICKERS`), **4 usage providers** (`USAGE_PROVIDERS_MAX`), **5 sessions**
+**16 tickers** (`MAX_TICKERS`), **48 series points** (`SERIES_MAX`), **4 usage providers** (`USAGE_PROVIDERS_MAX`), **5 sessions**
 (`BUDDY_SESSIONS_MAX`), **3 buddy entries** (`BUDDY_ENTRIES`), **1024 B** per BLE frame
 (`HUB_FRAME_MAX`).
 
@@ -77,6 +77,9 @@ Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8
 | Shared prebuilt styles (`S.eyebrow`, `S.hero`, ...) | `styles.{h,cpp}` |
 | Per-theme background chrome (grid/blueprint/dots/graticule) | `chrome.cpp` |
 | Token-switched gauge component (7 visual styles) | `gauge.cpp`, `gauge_style.h` |
+| **Full-width line graph component** (wraps `lv_chart`, theme-tokened) | `graph.{h,cpp}` |
+| Value-change flash (green up / red down), per-value state | `tick_flash.h` |
+| Lucide icon codepoints + regeneration recipe | `fonts/icons.h` |
 | State-chip / dim / placeholder / age / countdown helpers | `state_view.h` |
 | Screen + view function-pointer contracts | `screen.h` |
 | The 7-view dispatch macro | `screens/screen_module.h` |
@@ -90,7 +93,8 @@ Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8
 
 ### Fetch (`src/fetch/`)
 `weather.cpp`/`parse_weather.cpp` (Open-Meteo) · `finance.cpp`/`parse_finance.cpp` (Yahoo + Binance
-mirror) · `geoip.cpp`/`parse_geoip.cpp`. **The `parse_*.cpp` half is pure and host-tested; the
+mirror) · `geoip.cpp`/`parse_geoip.cpp` · `ice.cpp`/`parse_ice.cpp` (ICE D4 RIN futures; endpoint +
+cadence in `config/ice.h`). **The `parse_*.cpp` half is pure and host-tested; the
 non-parse half does the HTTP.** Keep that split when adding a source.
 
 ---

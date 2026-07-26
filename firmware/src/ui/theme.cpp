@@ -4,15 +4,9 @@
 #include "core/nvs.h"
 
 // Per-theme font selection (MANIFEST.md). mono is shared (JetBrains Mono) across all themes.
-typedef struct { const lv_font_t *hero, *disp, *body, *mono; } theme_fonts_t;
+typedef struct { const lv_font_t *hero, *disp, *body, *mono, *icon, *icon_lg; } theme_fonts_t;
 static const theme_fonts_t THEME_FONTS[THEME_COUNT] = {
-  {&font_sg_hero,    &font_sg_disp,    &font_sg_body,    &font_jbm_mono},  // editorial
-  {&font_raj_hero,   &font_raj_disp,   &font_raj_body,   &font_jbm_mono},  // hud
-  {&font_doto_hero,  &font_doto_disp,  &font_inter_body, &font_jbm_mono},  // calm
-  {&font_cp_hero,    &font_cp_disp,    &font_cp_body,    &font_jbm_mono},  // blueprint
-  {&font_pix_hero,   &font_pix_disp,   &font_inter_body, &font_jbm_mono},  // led
-  {&font_jbm_hero,   &font_jbm_disp,   &font_jbm_body,   &font_jbm_mono},  // oscilloscope
-  {&font_inter_hero, &font_inter_disp, &font_inter_body, &font_jbm_mono},  // analog
+  {&font_sg_hero, &font_sg_disp, &font_sg_body, &font_jbm_mono, &lucide_14, &lucide_22},  // editorial
 };
 
 static beacon_theme_t s_theme;
@@ -43,6 +37,8 @@ void theme_set(uint8_t idx) {
   s_theme.f_display = f->disp;
   s_theme.f_body    = f->body;
   s_theme.f_mono    = f->mono;
+  s_theme.f_icon    = f->icon;
+  s_theme.f_icon_lg = f->icon_lg;
   s_theme.gauge       = t->gauge;
   s_theme.glow        = t->glow;
   s_theme.radius      = t->radius;

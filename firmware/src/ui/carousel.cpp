@@ -5,16 +5,22 @@
 #include "ui/theme.h"
 #include "ui/theme_catalog.h"
 #include "ui/chrome.h"
+#include "ui/durations.h"
+#include "ui/idle_glue.h"
 #include "core/nvs.h"
+#include "util/log.h"
 #include "config/layout.h"
 #include "ui/screens/screen_home.h"
 #include "ui/screens/screen_finance.h"
+#include "ui/screens/screen_ice.h"
+#include "ui/screens/screen_chart.h"
 #include "ui/screens/screen_usage.h"
 #include "ui/screens/screen_buddy.h"
 #include "ui/screens/screen_settings.h"
 
 static const screen_module_t* MODULES[] = {
-  &home_module, &finance_module, &usage_module, &buddy_module, &settings_module,
+  &home_module, &finance_module, &chart_module, &ice_module, &usage_module, &buddy_module,
+  &settings_module,
 };
 static const int COUNT = (int)(sizeof(MODULES) / sizeof(MODULES[0]));
 
@@ -22,6 +28,9 @@ static lv_obj_t* s_pager = nullptr;
 static lv_obj_t* s_pages[8];
 static lv_obj_t* s_dots[8];
 static int s_current = 0;
+// Index of the buddy screen in MODULES. Named so a screen inserted before it cannot silently send
+// wake-on-prompt to the wrong page (it has moved twice: 3 -> 4 for ICE, 4 -> 5 for the graph).
+#define BUDDY_INDEX 5
 static bool s_settling = false;   // guards reentrant SCROLL_END from our own recenter()
 static lv_timer_t* s_tick = nullptr;   // the 500ms visible-screen update timer; paused while idle (#60)
 
@@ -79,6 +88,59 @@ static void scrollend_cb(lv_event_t*) {
 static void tick_cb(lv_timer_t*) {
   if (MODULES[s_current]->update) MODULES[s_current]->update();
   set_dots(s_current);
+}
+
+// --- auto-rotate (FR-SET: unattended page cycling) ---
+//
+// Advances one page on a user-configurable interval so the device reads as an ambient display when
+// nobody is touching it. Two guards keep it from fighting the user or the power budget:
+//   1. Recent touch defers it. lv_disp_get_inactive_time() is the same activity clock the dim/sleep
+//      logic uses, so a rotation never lands mid-gesture or yanks the page you just swiped to.
+//   2. Dim/asleep suppresses it, because rotating an unlit panel burns QSPI flushes for nothing --
+//      and #60 pauses the update tick there anyway, so a rotated page would arrive unpopulated.
+static lv_timer_t* s_rotate = nullptr;
+static uint32_t    s_rotate_due = 0;      // lv_tick_get() deadline for the next advance; 0 = unarmed
+#define ROTATE_TOUCH_GRACE_MS 3000u       // a touch this recent restarts the dwell
+
+static void rotate_cb(lv_timer_t*) {
+  uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
+  if (period == 0) { s_rotate_due = 0; return; }   // "Never" => off (timer stays armed but inert)
+  // Stop only when the panel is actually OFF. Dim still shows content, so an ambient rotation should
+  // keep going there -- gating on idle_is_inactive() meant any interval >= the dim timeout (default
+  // 1 min) never fired at all, which is why this looked completely dead.
+  if (idle_is_asleep()) { s_rotate_due = 0; return; }
+
+  uint32_t now = lv_tick_get();
+  // A recent touch restarts the dwell, so the page you just swiped to gets a full interval and a
+  // rotation never lands mid-gesture.
+  if (lv_disp_get_inactive_time(NULL) < ROTATE_TOUCH_GRACE_MS) { s_rotate_due = now + period; return; }
+  if (s_rotate_due == 0) { s_rotate_due = now + period; return; }   // arm on the first eligible tick
+  if ((int32_t)(now - s_rotate_due) < 0) return;                    // signed compare: tick wraps at 2^32
+
+  s_rotate_due = now + period;   // own deadline, NOT the inactivity clock: reusing inactivity meant
+                                 // every poll past the threshold fired, rotating at the poll rate.
+  LOGI("rotate: advancing from screen %d (every %ums)", s_current, (unsigned)period);
+  lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);   // same path a swipe takes (SCROLL_END -> show)
+}
+
+// Advance one page in either direction (+1 next, -1 prev). Same scroll path a swipe takes, so
+// SCROLL_END -> show() -> recenter() all run normally. Also pushes the auto-rotate dwell out, so a
+// deliberate button press is not immediately overridden by a rotation that was already due.
+void carousel_advance(int dir) {
+  if (dir == 0) return;
+  lv_disp_trig_activity(NULL);   // count as user activity: wake, and restart dim/sleep + rotate dwell
+  lv_obj_scroll_by(s_pager, dir > 0 ? -SCREEN_W : SCREEN_W, 0, LV_ANIM_ON);
+}
+
+// Re-arm after a settings change so a new interval takes effect without a reboot. Polls at a fraction
+// of the interval so the touch-grace check is re-evaluated often enough to be responsive, while the
+// actual advance is paced by s_rotate_due.
+void carousel_apply_rotate(void) {
+  uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
+  uint32_t poll = period ? (period / 4 < 1000 ? 1000 : period / 4) : 5000;
+  s_rotate_due = period ? lv_tick_get() + period : 0;   // full dwell from the moment it was set
+  if (!s_rotate) s_rotate = lv_timer_create(rotate_cb, poll, NULL);
+  else           lv_timer_set_period(s_rotate, poll);
 }
 
 #if BEACON_PERF
@@ -152,6 +214,7 @@ void carousel_init(void) {
   recenter();                                                      // pin start to the center slot
   show(start);
   s_tick = lv_timer_create(tick_cb, 500, NULL);
+  carousel_apply_rotate();   // arm auto-rotate from the persisted interval
 #if BEACON_PERF
   lv_timer_create(autoswipe_cb, 700, NULL);   // continuous scroll load; see autoswipe_cb
 #endif
@@ -170,11 +233,11 @@ void carousel_set_tick_paused(bool paused) {
 int carousel_current(void) { return s_current; }
 lv_obj_t* carousel_root(void) { return s_pager; }
 
-// Buddy screen is at index 3 in MODULES (home=0, finance=1, usage=2, buddy=3, settings=4).
+// Buddy screen index in MODULES (home=0, finance=1, ice=2, usage=3, buddy=4, settings=5).
 // Kept as a named function rather than carousel_goto(3) so callers don't embed the magic index.
 void carousel_goto_buddy(void) {
-  if (s_current == 3) return;   // already there; no scroll churn
-  show(3);
+  if (s_current == BUDDY_INDEX) return;   // already there; no scroll churn
+  show(BUDDY_INDEX);
   recenter();
 }
 

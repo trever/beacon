@@ -99,11 +99,11 @@ static inline void value_state(lv_obj_t* lbl, screen_state_t s) {
   if (t) txt_color(lbl, sv_dim(s) ? t->ink_dim : t->ink);
 }
 
-// Standard eyebrow ("BEACON / <id>") + a fixed-width right-aligned status slot (size-stable text).
+// Standard eyebrow (the screen id) + a fixed-width right-aligned status slot (size-stable text).
 static inline lv_obj_t* build_header(lv_obj_t* page, const char* id) {
   lv_obj_t* eb = lv_label_create(page);
   lv_obj_add_style(eb, &S.eyebrow, 0);
-  lv_label_set_text_fmt(eb, "BEACON / %s", id);
+  lv_label_set_text(eb, id);   // screen id only; the "BEACON / " prefix was noise on every page
   lv_obj_align(eb, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET);
   lv_obj_t* slot = lv_label_create(page);
   lv_obj_add_style(slot, &S.slot, 0);

@@ -31,6 +31,9 @@ void idle_init(void) {
 }
 
 bool idle_is_inactive(void) { return s_phase != IDLE_ACTIVE; }
+// Distinguished from idle_is_inactive so auto-rotate can keep cycling while DIMMED (still legible)
+// and stop only when the panel is actually off.
+bool idle_is_asleep(void)   { return s_phase == IDLE_SLEEP; }
 
 void idle_service(void) {
   uint32_t inact = lv_disp_get_inactive_time(NULL);

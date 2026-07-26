@@ -6,7 +6,7 @@
 // color/font setters), so a theme switch restyles every screen by mutating these + reporting.
 typedef struct {
   lv_style_t screen;     // bg
-  lv_style_t eyebrow;    // mono, accent ("BEACON / X")
+  lv_style_t eyebrow;    // mono, accent (screen id)
   lv_style_t slot;       // mono, ink_dim (top-right status slot / hints / dim labels)
   lv_style_t display;    // display font, ink (titles / values)
   lv_style_t hero;       // hero font, ink (clock / big figures)

@@ -10,6 +10,9 @@ typedef struct {
   lv_color_t       bg, ink, ink_dim, line, accent, accent2, up, down, alert;
   const lv_font_t *f_hero;      // oversized figures (clock, big %): digits + :%°.,+-/ subset
   const lv_font_t *f_display, *f_body, *f_mono; // display=titles/section figures (full ASCII); body/mono per role
+  // Lucide icon faces (ui/fonts/icons.h). PUA codepoints only -- an ICON_* string renders as a
+  // missing glyph in any text font, so icons always need their own label styled with these.
+  const lv_font_t *f_icon, *f_icon_lg;
   gauge_style_t    gauge;
   uint8_t          glow;
   uint8_t          radius;

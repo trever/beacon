@@ -24,10 +24,39 @@ static inline void fmt_value(char* buf, size_t n, double v) {
   snprintf(buf, n, "%s", out);
 }
 
+// Dollar figure: "$" + fmt_value's grouping/decimal rules (RIN quotes, index levels, ETF prices).
+// Used where the number IS money; leave fmt_value bare for unitless things like humidity or volume.
+static inline void fmt_usd(char* buf, size_t n, double v) {
+  char raw[40]; fmt_value(raw, sizeof(raw), v);
+  snprintf(buf, n, "$%s", raw);
+}
+
+// Temperature display. The weather record stores CELSIUS -- that is what Open-Meteo returns and what
+// `weather_rec_t.temp_c` claims -- so the unit conversion is a display concern and lives here. Keeping
+// the record canonical means a future metric/imperial toggle changes only this helper, not the fetch
+// path or the stored schema.
+static inline double temp_f(double c) { return c * 9.0 / 5.0 + 32.0; }
+
+// Fahrenheit, whole degrees + degree sign (UTF-8 0xC2 0xB0, present in every display/body/mono
+// subset). Whole degrees because a tenth of a degree F is below what the reading is worth.
+static inline void fmt_temp(char* buf, size_t n, double celsius) {
+  snprintf(buf, n, "%.0f\xC2\xB0", temp_f(celsius));
+}
+
 // Signed change: glyph (^ up / v down / - flat) + abs percent, e.g. "^ 0.12%".
 // Returns: +1 up, -1 down, 0 flat (caller picks up/down/dim color).
+// Prefer fmt_change_num + a lucide icon label for new UI; this ASCII form remains for dense rows
+// where a second label per row is not worth it.
 static inline int fmt_change(char* buf, size_t n, double pct) {
   const char* g = pct > 0 ? "^" : (pct < 0 ? "v" : "-");
   snprintf(buf, n, "%s %.2f%%", g, fabs(pct));
+  return pct > 0 ? 1 : (pct < 0 ? -1 : 0);
+}
+
+// Abs percent with NO direction glyph, e.g. "0.12%", for pairing with a lucide trend icon in its own
+// label. The split exists because the icon lives in a PUA font and the number does not, so they
+// cannot share a label (ui/fonts/icons.h). Returns +1/-1/0 like fmt_change.
+static inline int fmt_change_num(char* buf, size_t n, double pct) {
+  snprintf(buf, n, "%.2f%%", fabs(pct));
   return pct > 0 ? 1 : (pct < 0 ? -1 : 0);
 }
