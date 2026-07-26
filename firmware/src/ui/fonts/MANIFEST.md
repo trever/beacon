@@ -31,7 +31,8 @@ Variable fonts instanced to static weights via `fonttools varLib.instancer`.
 ## Icons (lucide)
 
 From the official lucide webfont, `npm lucide-static` (`font/lucide.ttf` + `font/info.json` for the
-codepoint map). Two sizes because LVGL cannot scale a bitmap font: **14** pairs with mono/body text,
+codepoint map). **Lucide is ISC-licensed** (Copyright (c) Lucide Icons and Contributors); the notice is
+retained in the generated `font_lucide_*.c` headers, as ISC requires in all copies. Two sizes because LVGL cannot scale a bitmap font: **14** pairs with mono/body text,
 **22** with the display face. ~23 KB of generated C for both.
 
 These are Private Use Area codepoints, so an `ICON_*` string renders as a missing glyph in any text
