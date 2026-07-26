@@ -23,8 +23,13 @@ static inline void ice_fmt_strip(char* buf, size_t n, const char* strip, bool up
   else    snprintf(buf, n, "%s", letters);
 }
 
-// Price. RIN quotes sit near 2.something and trade in 0.0001 increments, so 4dp is the meaningful
-// precision -- fmt_value already yields 4dp below 10.0, so this stays consistent with the finance rows.
+// Price, BARE (no "$"). RIN quotes sit near 2.something and trade in 0.0001 increments, so 4dp is the
+// meaningful precision -- fmt_value already yields 4dp below 10.0, matching the finance rows.
+//
+// The "$" is deliberately NOT here: hero fonts are glyph-subset to `0-9 : % . , + - / degree space`
+// (fonts/MANIFEST.md) and have no '$', so a prefixed string renders a missing-glyph box in any hero
+// figure. Callers drawing in a display/body/mono face (full ASCII) use fmt_usd(); callers drawing in
+// the hero face pair this with a separate small "$" label.
 static inline void ice_fmt_price(char* buf, size_t n, double v) { fmt_value(buf, n, v); }
 
 // "07/24/2026 07:30 PM GMT" => "07/24 07:30 PM". The year is noise on a 466px screen and the zone is

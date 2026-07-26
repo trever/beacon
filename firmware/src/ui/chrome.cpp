@@ -6,13 +6,9 @@ typedef enum { CH_NONE, CH_GRID, CH_BLUEPRINT, CH_DOTS, CH_GRATICULE } chrome_ki
 
 // theme index -> chrome kind (catalog order: editorial,hud,calm,blueprint,led,oscilloscope,analog)
 static chrome_kind_t kind_for(uint8_t idx) {
-  switch (idx) {
-    case 1: return CH_GRID;        // Aerospace HUD
-    case 3: return CH_BLUEPRINT;   // Blueprint
-    case 4: return CH_DOTS;        // LED matrix
-    case 5: return CH_GRATICULE;   // Oscilloscope
-    default: return CH_NONE;       // editorial / calm / analog
-  }
+  (void)idx;
+  return CH_NONE;   // editorial is a bare black page; the grid/dots/graticule kinds belonged to the
+                    // removed themes. Kept as a switchable function so a new theme can opt back in.
 }
 
 static void line(lv_draw_ctx_t* ctx, lv_draw_line_dsc_t* d, int x1, int y1, int x2, int y2) {

@@ -7,12 +7,6 @@
 typedef struct { const lv_font_t *hero, *disp, *body, *mono; } theme_fonts_t;
 static const theme_fonts_t THEME_FONTS[THEME_COUNT] = {
   {&font_sg_hero,    &font_sg_disp,    &font_sg_body,    &font_jbm_mono},  // editorial
-  {&font_raj_hero,   &font_raj_disp,   &font_raj_body,   &font_jbm_mono},  // hud
-  {&font_doto_hero,  &font_doto_disp,  &font_inter_body, &font_jbm_mono},  // calm
-  {&font_cp_hero,    &font_cp_disp,    &font_cp_body,    &font_jbm_mono},  // blueprint
-  {&font_pix_hero,   &font_pix_disp,   &font_inter_body, &font_jbm_mono},  // led
-  {&font_jbm_hero,   &font_jbm_disp,   &font_jbm_body,   &font_jbm_mono},  // oscilloscope
-  {&font_inter_hero, &font_inter_disp, &font_inter_body, &font_jbm_mono},  // analog
 };
 
 static beacon_theme_t s_theme;

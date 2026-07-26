@@ -24,6 +24,13 @@ static inline void fmt_value(char* buf, size_t n, double v) {
   snprintf(buf, n, "%s", out);
 }
 
+// Dollar figure: "$" + fmt_value's grouping/decimal rules (RIN quotes, index levels, ETF prices).
+// Used where the number IS money; leave fmt_value bare for unitless things like humidity or volume.
+static inline void fmt_usd(char* buf, size_t n, double v) {
+  char raw[40]; fmt_value(raw, sizeof(raw), v);
+  snprintf(buf, n, "$%s", raw);
+}
+
 // Temperature display. The weather record stores CELSIUS -- that is what Open-Meteo returns and what
 // `weather_rec_t.temp_c` claims -- so the unit conversion is a display concern and lives here. Keeping
 // the record canonical means a future metric/imperial toggle changes only this helper, not the fetch

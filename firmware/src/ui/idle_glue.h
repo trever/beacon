@@ -12,6 +12,7 @@ void idle_init(void);                  // call once after lvgl_port_begin()
 void idle_service(void);               // call every loop() iteration
 void idle_apply_config_from_nvs(void); // re-read timeouts after a settings change
 bool idle_is_inactive(void);           // true while dimmed or asleep (first touch wakes only, no pass-through)
+bool idle_is_asleep(void);             // true ONLY in the panel-off phase (dim still shows content)
 
 // Wake-tap protection: set before LVGL sees the press, consume once in buddy handlers.
 void idle_note_press(bool was_inactive); // call on every touch PRESSED; records if it was a wake press

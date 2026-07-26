@@ -1,7 +1,9 @@
 #include "ui/screen.h"
 #include "ui/screens/screen_common.h"
 #include "ui/theme.h"
-#include "ui/theme_panel.h"
+#include "ui/duration_panel.h"
+#include "ui/durations.h"
+#include "ui/carousel.h"
 #include "ui/about_panel.h"
 #include "hal/display.h"
 #include "hal/power.h"
@@ -10,12 +12,17 @@
 #include "ui/wifi_panel.h"
 #include "ui/settings_power_rows.h"
 
-static lv_obj_t *s_theme_val, *s_bright_val, *s_batt_val, *s_wifi_val;
+static lv_obj_t *s_rotate_val, *s_bright_val, *s_batt_val, *s_wifi_val;
 static lv_obj_t *s_dim_val, *s_sleep_val;
 static const uint8_t BRIGHT[] = {102, 153, 204, 255};   // 40/60/80/100%
 static int s_bright_i = 2;
 
-static void theme_cb(lv_event_t*) { theme_panel_open(); }
+// Auto-rotate takes the row the Theme picker used to occupy: with a single-theme catalog there is
+// nothing to pick, and the settings page was already full at 7 rows.
+static void rotate_picked(uint8_t idx) { nvs_set_byte(NVS_ROTATE_KEY, idx); carousel_apply_rotate(); }
+static void rotate_cb(lv_event_t*) {
+  duration_panel_open("Auto-rotate", nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX), rotate_picked);
+}
 static void about_cb(lv_event_t*) { about_panel_open(); }
 static void wifi_open_cb(lv_event_t*) { wifi_panel_open(); }
 static void dim_cb(lv_event_t*)   { settings_power_open_dim(); }
@@ -53,7 +60,7 @@ static void build(lv_obj_t* page) {
       int d = (int)raw - (int)BRIGHT[i]; if (d < 0) d = -d;
       if (d < bd) { bd = d; s_bright_i = i; } } }
   s_bright_val   = row(page, "Brightness", 84, bright_cb); lv_label_set_text_fmt(s_bright_val, "%d%%", (BRIGHT[s_bright_i]*100+127)/255);
-  s_theme_val    = row(page, "Theme", 126, theme_cb);       lv_obj_add_style(s_theme_val, &S.accent, 0);
+  s_rotate_val   = row(page, "Auto-rotate", 126, rotate_cb); lv_obj_add_style(s_rotate_val, &S.accent, 0);
   s_dim_val      = row(page, "Dim", 168, dim_cb);
   s_sleep_val    = row(page, "Sleep", 210, sleep_cb);
   lv_obj_t* abt  = row(page, "About", 252, about_cb);       lv_label_set_text(abt, ">");
@@ -61,7 +68,9 @@ static void build(lv_obj_t* page) {
 
 static void update(void) {
   char wbuf[48]; net_status_str(wbuf, sizeof(wbuf)); txt_fmt(s_wifi_val, "%s >", wbuf);
-  if (theme_active()) txt_fmt(s_theme_val, "%s >", theme_active()->id);
+  { uint8_t ri = nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX);
+    if (ri >= DURATION_COUNT) ri = ROTATE_DEFAULT_IDX;   // stale/corrupt index => documented default
+    txt_fmt(s_rotate_val, "%s >", DURATIONS[ri].label); }
 
   char db[12], sb[12];
   settings_power_dim_label(db, sizeof(db));   txt_set(s_dim_val, db);

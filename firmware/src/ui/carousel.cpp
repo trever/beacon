@@ -8,6 +8,7 @@
 #include "ui/durations.h"
 #include "ui/idle_glue.h"
 #include "core/nvs.h"
+#include "util/log.h"
 #include "config/layout.h"
 #include "ui/screens/screen_home.h"
 #include "ui/screens/screen_finance.h"
@@ -96,21 +97,37 @@ static void tick_cb(lv_timer_t*) {
 //   2. Dim/asleep suppresses it, because rotating an unlit panel burns QSPI flushes for nothing --
 //      and #60 pauses the update tick there anyway, so a rotated page would arrive unpopulated.
 static lv_timer_t* s_rotate = nullptr;
+static uint32_t    s_rotate_due = 0;      // lv_tick_get() deadline for the next advance; 0 = unarmed
+#define ROTATE_TOUCH_GRACE_MS 3000u       // a touch this recent restarts the dwell
 
 static void rotate_cb(lv_timer_t*) {
   uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
-  if (period == 0) return;                       // "Never" => off (timer stays armed but inert)
-  if (idle_is_inactive()) return;                // dim/asleep: don't spend flushes on an unlit panel
-  if (lv_disp_get_inactive_time(NULL) < period) return;   // user active within the interval => defer
-  lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);    // same path a swipe takes (SCROLL_END -> show)
+  if (period == 0) { s_rotate_due = 0; return; }   // "Never" => off (timer stays armed but inert)
+  // Stop only when the panel is actually OFF. Dim still shows content, so an ambient rotation should
+  // keep going there -- gating on idle_is_inactive() meant any interval >= the dim timeout (default
+  // 1 min) never fired at all, which is why this looked completely dead.
+  if (idle_is_asleep()) { s_rotate_due = 0; return; }
+
+  uint32_t now = lv_tick_get();
+  // A recent touch restarts the dwell, so the page you just swiped to gets a full interval and a
+  // rotation never lands mid-gesture.
+  if (lv_disp_get_inactive_time(NULL) < ROTATE_TOUCH_GRACE_MS) { s_rotate_due = now + period; return; }
+  if (s_rotate_due == 0) { s_rotate_due = now + period; return; }   // arm on the first eligible tick
+  if ((int32_t)(now - s_rotate_due) < 0) return;                    // signed compare: tick wraps at 2^32
+
+  s_rotate_due = now + period;   // own deadline, NOT the inactivity clock: reusing inactivity meant
+                                 // every poll past the threshold fired, rotating at the poll rate.
+  LOGI("rotate: advancing from screen %d (every %ums)", s_current, (unsigned)period);
+  lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);   // same path a swipe takes (SCROLL_END -> show)
 }
 
 // Re-arm after a settings change so a new interval takes effect without a reboot. Polls at a fraction
-// of the interval rather than exactly on it: the inactivity test above needs to be re-checked more
-// often than once per period, or a rotation deferred by a touch would wait a whole extra cycle.
+// of the interval so the touch-grace check is re-evaluated often enough to be responsive, while the
+// actual advance is paced by s_rotate_due.
 void carousel_apply_rotate(void) {
   uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
   uint32_t poll = period ? (period / 4 < 1000 ? 1000 : period / 4) : 5000;
+  s_rotate_due = period ? lv_tick_get() + period : 0;   // full dwell from the moment it was set
   if (!s_rotate) s_rotate = lv_timer_create(rotate_cb, poll, NULL);
   else           lv_timer_set_period(s_rotate, poll);
 }
