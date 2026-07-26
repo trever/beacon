@@ -77,6 +77,29 @@ on any session-state change and on (re)connect; parsed by `hub_parse_sessions` i
 - Migration: `buddy.entries` stays emitted/legal for back-compat; new firmware reads `sessions` and
   ignores `entries`, old firmware ignores the unknown `sessions` frame. No version bump.
 
+Optional `sdetail` block (additive `v:1` extension). A **standalone** frame, joined to `sessions` by
+`id`, carrying what a human needs to recognise a session: the repo, its title, and the newest message.
+
+```json
+{"v":1,"sdetail":[{"id":"s3","project":"beacon","title":"graph screen","msg":"on it, starting with the chart"}]}
+```
+
+- Sent whenever the detail set changes, and on (re)connect after the `sessions` frame. Emitted in the
+  same order as `sessions` (the hub derives it *from* that list, so the two can never disagree).
+- Caps: `sdetail` length ≤ **4** (one per rendered session row); `project` ≤ **20** chars; `title` ≤ **28**;
+  `msg` ≤ **48**. Absent fields are omitted, not null. A row with no content at all is not sent.
+- **Why a separate frame rather than new fields on `sessions`:** the `sessions` caps above are frozen,
+  and title+msg would take its 5-row worst case to ~987 of the 1024 B ceiling *before* JSON escaping.
+  `msg` is free-form human/model prose, where one `"` costs two bytes and an emoji four — a quote-heavy
+  message would push the frame over `HUB_FRAME_MAX` and the device would silently drop the whole thing.
+- Char caps therefore do **not** bound bytes. The hub encodes, measures, and trims the longest `msg`
+  (then `title`) one character at a time until the frame fits, so the ceiling holds for any input;
+  trimming is by Character, never by byte, so a multi-byte scalar is never split into invalid UTF-8.
+- `project` is the repo name, recovered from the transcript's directory name rather than `cwd`: `cwd`
+  follows the agent into subdirectories, so a session rooted at `beacon` reads `hub` after a `cd hub`.
+- Old firmware ignores the unknown frame; new firmware treats absent detail as "no content yet" and
+  falls back to the `sessions` `label`. No version bump.
+
 ## B. Device -> hub commands + hub acks (FROZEN, `tech.md` §7.1)
 
 ```json

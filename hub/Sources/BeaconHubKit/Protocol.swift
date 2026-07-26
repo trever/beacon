@@ -130,6 +130,85 @@ public struct SessionsFrame: Codable {
     }
 }
 
+public enum SessionDetailLimits {
+    /// Matches SESSION_ROWS in the device's session view: detail for a row that does not render would
+    /// only cost frame budget.
+    public static let maxCount = 4
+    public static let projectMaxChars = 20
+    public static let titleMaxChars = 28
+    public static let msgMaxChars = 48
+    /// HUB_FRAME_MAX in firmware/src/core/hub_proto.h. The device DROPS a longer frame outright, so this
+    /// is a hard ceiling, not a guideline.
+    public static let frameMaxBytes = 1024
+}
+
+/// Per-session row content, joined to `Session` by `id`. Kept in its OWN frame rather than added to the
+/// frozen `sessions` entry: those caps are declared frozen in CONTRACT.md, and title+msg would push the
+/// 5-row worst case to ~987/1024 B BEFORE JSON escaping -- one quote-heavy message would silently drop
+/// the whole frame.
+public struct SessionDetail: Codable, Equatable {
+    public var id: String
+    public var project: String?
+    public var title: String?
+    public var msg: String?
+    public init(id: String, project: String? = nil, title: String? = nil, msg: String? = nil) {
+        self.id = id; self.project = project; self.title = title; self.msg = msg
+    }
+}
+
+public struct SessionDetailsFrame: Codable {
+    public var sdetail: [SessionDetail]
+    public let v: Int
+
+    public init(_ details: [SessionDetail]) {
+        self.sdetail = details.prefix(SessionDetailLimits.maxCount).map {
+            SessionDetail(id: String($0.id.prefix(SessionLimits.idMaxChars)),
+                          project: $0.project.map { String($0.prefix(SessionDetailLimits.projectMaxChars)) },
+                          title: $0.title.map { String($0.prefix(SessionDetailLimits.titleMaxChars)) },
+                          msg: $0.msg.map { String($0.prefix(SessionDetailLimits.msgMaxChars)) })
+        }
+        self.v = 1
+    }
+
+    /// Character caps do NOT bound bytes: JSON escaping turns one `"` into two bytes and a `\` into two,
+    /// and an emoji is 4 bytes per character. `msg` is free-form human/model prose, so the only safe
+    /// guarantee is to encode, measure, and shrink until it fits under the device's ceiling.
+    public func encoded() throws -> Data {
+        var rows = sdetail
+        var data = try Self.encode(rows)
+        while data.count >= SessionDetailLimits.frameMaxBytes, Self.shrink(&rows) {
+            data = try Self.encode(rows)
+        }
+        return data
+    }
+
+    private static func encode(_ rows: [SessionDetail]) throws -> Data {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+        var d = try enc.encode(SessionDetailsFrame(rows))
+        d.append(0x0A)
+        return d
+    }
+
+    /// Drop one character from the longest text field across all rows, preferring `msg` (the least
+    /// load-bearing). Operates on Characters so a multi-byte scalar is never split into invalid UTF-8.
+    /// Returns false once nothing is left to trim, which bounds the loop.
+    private static func shrink(_ rows: inout [SessionDetail]) -> Bool {
+        var target = -1, isMsg = true, best = 0
+        for (i, r) in rows.enumerated() {
+            if let m = r.msg, m.count > best { best = m.count; target = i; isMsg = true }
+        }
+        if target < 0 {
+            for (i, r) in rows.enumerated() {
+                if let t = r.title, t.count > best { best = t.count; target = i; isMsg = false }
+            }
+        }
+        guard target >= 0, best > 0 else { return false }
+        if isMsg { rows[target].msg = String(rows[target].msg!.dropLast()) }
+        else { rows[target].title = String(rows[target].title!.dropLast()) }
+        return true
+    }
+}
+
 // One hub->device status frame. usage/buddy/loc are independently optional (send what changed; the
 // device keeps an absent block's last values). encoded() emits the §7.1 wire form with "v":1 + a \n.
 public struct StatusFrame: Codable {

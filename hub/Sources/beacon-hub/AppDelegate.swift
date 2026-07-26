@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var usage = Usage()          // merged provider array (from the mux); resent on heartbeat
     private var buddy = BuddyState()
     private var sessions: [Session] = []
+    private var sessionDetails: [SessionDetail] = []   // resent on (re)connect alongside `sessions`
     private var lastFix: Loc?   // most recent CoreLocation fix (issue #54); rides the (re)connect full frame
     private var heartbeat: Timer?
 
@@ -238,6 +239,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.sessions = sessions
             if let data = try? SessionsFrame(sessions).encoded() { self.central.send(data) }
         }
+        // Own frame, own budget: the sessions frame's caps are frozen and have no room for title/message.
+        mux.onSessionDetails = { [weak self] details in
+            guard let self else { return }
+            self.sessionDetails = details
+            if let data = try? SessionDetailsFrame(details).encoded() { self.central.send(data) }
+        }
         mux.onAttention = { [weak self] in self?.menubar.playAttentionSoundIfEnabled() }
         mux.onPromptArrived = { [weak self] in self?.menubar.playPromptSoundIfEnabled() }
         mux.resolvePromptHandler = { [weak self] pid, nid, approve in
@@ -259,13 +266,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claude.onPromptUndeliverable = undeliverable
         self.claude = claude
 
+        // No .usage, same as Claude: Codex's token is only refreshed by the `codex` CLI, so on a machine
+        // that has not run it the access token is long expired and its usage endpoint cannot answer.
         let codex = HookBuddyProvider(
             descriptor: ProviderDescriptor(id: "codex", label: "CODEX",
-                                           capabilities: [.usage, .sessions, .prompts]),
+                                           capabilities: [.sessions, .prompts]),
             routePath: CodexHooks.routePath,
             capSeconds: 575,
             server: ingest,
-            usageSource: CodexUsageProvider(session: usageSession))
+            usageSource: nil)
         codex.onPromptUndeliverable = undeliverable
         self.codex = codex
 
@@ -347,6 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.reportAssembler.reset()   // discard any partial device report from a prior connection (#105)
                 self?.sendFullFrame(includeLocation: true)
                 if let data = try? SessionsFrame(self?.sessions ?? []).encoded() { self?.central.send(data) }
+                // Without this the device redraws its rows on reconnect with no project/title/message.
+                if let data = try? SessionDetailsFrame(self?.sessionDetails ?? []).encoded() { self?.central.send(data) }
                 self?.pushTickerConfig()
             }
         }

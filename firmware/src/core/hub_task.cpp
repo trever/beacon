@@ -135,8 +135,17 @@ static void on_frame(const char* json, size_t len) {
   }
 
   // A sessions frame arrives independently of the buddy frame; merge ONLY sessions into the buddy record.
-  { buddy_rec_t tmp; bool had = false;
+  // Seeded from the STORED record, not a bare stack struct: the parser re-attaches each id's existing
+  // project/title/msg (which arrive in their own frame), and reads session_count to do it.
+  { buddy_rec_t tmp = ds_get_buddy(); bool had = false;
     if (hub_parse_sessions(json, len, &tmp, &had) && had) {
+      ds_apply_sessions(tmp.sessions, tmp.session_count, (uint32_t)timekeep_now());
+      return;
+    } }
+
+  // An "sdetail" frame fills project/title/last-message onto the sessions already stored.
+  { buddy_rec_t tmp = ds_get_buddy(); bool had = false;
+    if (hub_parse_sdetail(json, len, &tmp, &had) && had) {
       ds_apply_sessions(tmp.sessions, tmp.session_count, (uint32_t)timekeep_now());
       return;
     } }

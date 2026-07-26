@@ -16,6 +16,11 @@ public final class SessionRegistry {
         var updatedAt: Date         // sort key: max(last activity ts, stoppedAt)
         var stopped: Bool           // last lifecycle event was Stop, no newer activity => attention
         var needsInput: Bool = false   // a "needs input" signal fired => session is waiting on the user
+        // Row content for the device's session list (SessionDetail). Set from the transcript scan, which
+        // is the only source that can see a title or a message body; nil until a scan lands.
+        var project: String?
+        var title: String?
+        var msg: String?
     }
     private var entries: [String: Entry] = [:]    // keyed by composite key(providerID, nativeKey)
     private var counter: UInt32 = 0
@@ -67,6 +72,28 @@ public final class SessionRegistry {
         let k = Self.key(providerID: providerID, nativeKey: sessionId)
         guard var e = entries[k] else { return }
         e.branch = (branch?.isEmpty == true) ? nil : branch; entries[k] = e
+    }
+
+    /// Row content from the transcript scan. Each field is independently sticky: a scan that can no
+    /// longer see a title (the tail moved past it) must not blank a title the device is already showing.
+    public func setDetail(providerID: String = "", sessionId: String,
+                          project: String?, title: String?, msg: String?) {
+        let k = Self.key(providerID: providerID, nativeKey: sessionId)
+        guard var e = entries[k] else { return }
+        if let project, !project.isEmpty { e.project = project }
+        if let title, !title.isEmpty { e.title = title }
+        if let msg, !msg.isEmpty { e.msg = msg }
+        entries[k] = e
+    }
+
+    /// Details for an already-computed session list, in the same order. Taking the list as input (rather
+    /// than recomputing) is what guarantees the two frames can never disagree about order or membership.
+    public func details(for sessions: [Session]) -> [SessionDetail] {
+        sessions.compactMap { s in
+            guard let e = entries.values.first(where: { $0.shortId == s.id }) else { return nil }
+            guard e.project != nil || e.title != nil || e.msg != nil else { return nil }
+            return SessionDetail(id: s.id, project: e.project, title: e.title, msg: e.msg)
+        }
     }
 
     public func end(providerID: String = "", sessionId: String) {

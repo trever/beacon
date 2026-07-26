@@ -125,6 +125,21 @@ bool hub_parse_sessions(const char* json, size_t len, buddy_rec_t* buddy, bool* 
   JsonVariantConst arr = doc["sessions"];
   if (!arr.is<JsonArrayConst>()) return false;
   *had_sessions = true;
+
+  // Detail (project/title/msg) arrives in its OWN frame and must survive a sessions update. Rows are
+  // newest-first, so their ORDER changes as sessions become active: carrying detail by index would
+  // silently attach one session's message to another. Snapshot id->detail, then re-attach by id.
+  struct { char id[BUDDY_SID_LEN]; char project[BUDDY_PROJECT_LEN];
+           char title[BUDDY_TITLE_LEN]; char msg[BUDDY_MSG_LEN]; } prev[BUDDY_SESSIONS_MAX];
+  uint8_t prev_n = buddy->session_count;
+  if (prev_n > BUDDY_SESSIONS_MAX) prev_n = BUDDY_SESSIONS_MAX;
+  for (uint8_t i = 0; i < prev_n; i++) {
+    copy_trunc(prev[i].id,      BUDDY_SID_LEN,     buddy->sessions[i].id);
+    copy_trunc(prev[i].project, BUDDY_PROJECT_LEN, buddy->sessions[i].project);
+    copy_trunc(prev[i].title,   BUDDY_TITLE_LEN,   buddy->sessions[i].title);
+    copy_trunc(prev[i].msg,     BUDDY_MSG_LEN,     buddy->sessions[i].msg);
+  }
+
   buddy->session_count = 0;
   for (JsonVariantConst s : arr.as<JsonArrayConst>()) {
     if (buddy->session_count >= BUDDY_SESSIONS_MAX) break;   // hub caps at 5; defend anyway
@@ -134,7 +149,45 @@ bool hub_parse_sessions(const char* json, size_t len, buddy_rec_t* buddy, bool* 
     copy_trunc(d->agent, USAGE_ID_LEN,    s["agent"].as<const char*>());  // optional; absent => empty
     d->state = map_session_state(s["state"].as<const char*>());
     d->ts    = s["ts"] | (uint32_t)0;
+    // Re-attach this id's detail; a genuinely new id starts empty rather than inheriting a neighbour's.
+    d->project[0] = d->title[0] = d->msg[0] = '\0';
+    for (uint8_t i = 0; i < prev_n; i++) {
+      if (strcmp(prev[i].id, d->id) != 0) continue;
+      copy_trunc(d->project, BUDDY_PROJECT_LEN, prev[i].project);
+      copy_trunc(d->title,   BUDDY_TITLE_LEN,   prev[i].title);
+      copy_trunc(d->msg,     BUDDY_MSG_LEN,     prev[i].msg);
+      break;
+    }
     buddy->session_count++;
+  }
+  return true;
+}
+
+// "sdetail" frame (CONTRACT.md A): row content joined to the existing sessions by id. Unknown ids are
+// ignored rather than creating rows -- the sessions frame is the sole authority on which sessions exist.
+bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* had_sdetail) {
+  *had_sdetail = false;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len)) return false;
+  if ((doc["v"] | 0) != 1) return false;
+  JsonVariantConst arr = doc["sdetail"];
+  if (!arr.is<JsonArrayConst>()) return false;
+  *had_sdetail = true;
+  for (JsonVariantConst e : arr.as<JsonArrayConst>()) {
+    const char* id = e["id"].as<const char*>();
+    if (!id || !*id) continue;
+    for (uint8_t i = 0; i < buddy->session_count && i < BUDDY_SESSIONS_MAX; i++) {
+      if (strcmp(buddy->sessions[i].id, id) != 0) continue;
+      // Per-field stickiness: an omitted field leaves what the device already shows, so a partial frame
+      // never blanks a title that is still true.
+      const char* p = e["project"].as<const char*>();
+      const char* t = e["title"].as<const char*>();
+      const char* m = e["msg"].as<const char*>();
+      if (p && *p) copy_trunc(buddy->sessions[i].project, BUDDY_PROJECT_LEN, p);
+      if (t && *t) copy_trunc(buddy->sessions[i].title,   BUDDY_TITLE_LEN,   t);
+      if (m && *m) copy_trunc(buddy->sessions[i].msg,     BUDDY_MSG_LEN,     m);
+      break;
+    }
   }
   return true;
 }
