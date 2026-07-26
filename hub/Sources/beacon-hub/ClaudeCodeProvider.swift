@@ -33,6 +33,18 @@ final class ClaudeCodeProvider: AgentProvider {
     private var lastMetrics: (tokens: Int, ctxPct: Int) = (0, 0)
     private static let sessionTTL: TimeInterval = 600
 
+    // Transcript scanner (see startTranscriptScanner). File IO runs on its own utility queue and hops
+    // results to `queue`, so a slow disk never stalls the ingest server that holds permission prompts.
+    private var scanner: DispatchSourceTimer?
+    private let scanQueue = DispatchQueue(label: "beacon.transcripts", qos: .utility)
+    private static let transcriptRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".claude/projects")
+    private static let scanInterval: TimeInterval = 5     // device sessions feel live at 5 s
+    private static let emitWindow: TimeInterval = 1800    // transcripts quiet longer than this can't be live
+    private static let tailBytes = 64 * 1024              // enough for many records; transcripts reach 100s of KB
+    private let enabledLock = NSLock()                    // `enabled` is read from scanQueue, written on `queue`
+    private var lastScanCount = -1                        // scanQueue-confined; gates the scan log to changes
+
     // Held permission prompts, keyed by a provider-native id we mint. Resolving fulfills the held HTTP
     // response. The device-facing short id + FIFO/qlen live in the mux's PromptBroker.
     private final class Pending {
@@ -88,13 +100,112 @@ final class ClaudeCodeProvider: AgentProvider {
             self?.handleSession(req.body); req.respondJSON(["ok": true])
         }
         queue.async { [weak self] in self?.startReaper() }
+        startTranscriptScanner()
+    }
+
+    // --- transcript scanner (sessions without hooks) ---
+    //
+    // Claude Code Desktop (`entrypoint: claude-desktop`) does not invoke the `statusLine` command and
+    // does not deliver the settings.json http hooks the way the CLI does, so on Desktop the hook path
+    // above never fires and the device shows no sessions at all. Claude writes its transcripts either
+    // way, so we also derive sessions from ~/.claude/projects/**/*.jsonl.
+    //
+    // This runs ALONGSIDE the hooks rather than replacing them: both paths key on the same CC
+    // `session_id`, and SessionRegistry.touchActivity is idempotent per key, so a CLI session observed
+    // by both is touched twice and counted once.
+    private func startTranscriptScanner() {
+        let t = DispatchSource.makeTimerSource(queue: scanQueue)
+        t.schedule(deadline: .now() + 1, repeating: Self.scanInterval, leeway: .seconds(1))
+        t.setEventHandler { [weak self] in self?.scanTranscripts(now: Date()) }
+        scanner = t
+        t.resume()
+    }
+
+    private func scanTranscripts(now: Date) {
+        guard enabledSnapshot().buddy else { return }   // sessions are a buddy-plane concern
+        let fm = FileManager.default
+        guard let dirs = try? fm.contentsOfDirectory(at: Self.transcriptRoot,
+                                                     includingPropertiesForKeys: [.contentModificationDateKey],
+                                                     options: [.skipsHiddenFiles])
+        else { return }   // no ~/.claude/projects (CLI-only user who never ran Claude here) => nothing to do
+
+        var scanned: [ScannedSession] = []
+        for dir in dirs {
+            guard let files = try? fm.contentsOfDirectory(at: dir,
+                                                          includingPropertiesForKeys: [.contentModificationDateKey],
+                                                          options: [.skipsHiddenFiles])
+            else { continue }
+            for f in files where f.pathExtension == "jsonl" {
+                let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                // Bound the work: 45 project dirs accumulate thousands of transcripts, and only the
+                // ones touched inside the emit window can produce a live session row.
+                guard ClaudeSessionScan.isRecent(mtime: mtime, now: now, within: Self.emitWindow) else { continue }
+                guard let s = tail(f, bytes: Self.tailBytes).flatMap(ClaudeSessionScan.parse) else { continue }
+                scanned.append(s)
+            }
+        }
+        guard !scanned.isEmpty else { return }
+        // Counts + a truncated id only -- never cwd contents or transcript text (tech.md 9).
+        if scanned.count != lastScanCount {
+            lastScanCount = scanned.count
+            FileHandle.standardError.write(Data("[beacon-hub] transcripts: \(scanned.count) live session(s)\n".utf8))
+        }
+        queue.async { [weak self] in self?.applyScanned(scanned, now: now) }
+    }
+
+    // Read the last `bytes` of a file. Transcripts grow without bound (hundreds of KB in a long
+    // session) and only the tail carries current state, so never read the whole thing. The parser
+    // tolerates the partial first line this produces.
+    private func tail(_ url: URL, bytes: Int) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard let end = try? h.seekToEnd() else { return nil }
+        let start = end > UInt64(bytes) ? end - UInt64(bytes) : 0
+        guard (try? h.seek(toOffset: start)) != nil, let d = try? h.readToEnd() else { return nil }
+        return String(data: d, encoding: .utf8)
+    }
+
+    private func applyScanned(_ sessions: [ScannedSession], now: Date) {
+        for s in sessions {
+            let state = ClaudeSessionScan.state(for: s, now: now, idleAfter: Self.emitWindow)
+            // Idle transcripts are simply not touched: the registry's own TTL then reaps the row. Emitting
+            // an explicit .end would fight a live hook-driven session of the same id.
+            guard state != .idle else { continue }
+            let cwd = s.cwd
+            switch state {
+            case .attention: emitSession(.stop(nativeKey: s.sessionId, cwd: cwd))
+            default:         emitSession(.activity(nativeKey: s.sessionId, cwd: cwd))
+            }
+            if let b = s.gitBranch, !b.isEmpty {
+                emitSession(.branch(nativeKey: s.sessionId, branch: b))
+            }
+            // Transcript tokens are authoritative for Desktop (no statusline); on the CLI the statusline
+            // path writes the same slot and whichever ran last wins, which is fine -- both describe the
+            // same session's spend.
+            touch(s.sessionId)
+            let prior = sessionStats[s.sessionId] ?? (tokens: 0, ctxPct: 0)
+            sessionStats[s.sessionId] = (tokens: s.tokens, ctxPct: prior.ctxPct)
+        }
+        emitMetrics()
+    }
+
+    // Snapshot of `enabled` readable from any queue (the transcript scanner runs on scanQueue).
+    private func enabledSnapshot() -> EnabledCapabilities {
+        enabledLock.lock(); defer { enabledLock.unlock() }
+        return enabled
     }
 
     func setEnabled(_ caps: EnabledCapabilities) {
+        // Capture the previous value and publish the new one atomically: the toggle-off release below
+        // keys off the transition, so reading `enabled` after the write would always see the new value
+        // and never fire.
+        enabledLock.lock()
+        let wasBuddy = enabled.buddy
+        enabled = caps
+        enabledLock.unlock()
         queue.async { [weak self] in
             guard let self else { return }
-            let wasBuddy = self.enabled.buddy
-            self.enabled = caps
             // Buddy toggled OFF: release every held prompt pass-through (no verdict => the harness falls
             // back to its own interactive prompt), never auto-deny because a toggle is off (spec).
             if wasBuddy && !caps.buddy {
@@ -105,7 +216,10 @@ final class ClaudeCodeProvider: AgentProvider {
         }
     }
 
-    func stop() { queue.async { [weak self] in self?.reaper?.cancel(); self?.reaper = nil } }
+    func stop() {
+        scanner?.cancel(); scanner = nil
+        queue.async { [weak self] in self?.reaper?.cancel(); self?.reaper = nil }
+    }
 
     func resolvePrompt(nativeID: String, approve: Bool) -> ResolveOutcome {
         queue.sync {
