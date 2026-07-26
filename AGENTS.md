@@ -107,10 +107,12 @@ Reference (the *what* and *why* — these win conflicts):
 - `hub/CONTRACT.md` — frozen BLE protocol schema and hub-side policies.
 - `docs/prd.md` — functional roadmap and phased acceptance.
 
+
 Orientation (the *where* and *how* — start here on an unfamiliar task):
 
 - `docs/codemap.md` — concern => file index for both components, end-to-end traces of the four data paths, hard caps, and a table of known doc/code drift.
 - `docs/recipes.md` — multi-file checklists: add a screen, add a theme, extend the BLE frame, add a device->hub command, add a fetch source, add a hub provider. Read the relevant recipe before editing.
 - `docs/perf.md` — render/task pipeline as built, measured memory + flash budgets, what instrumentation exists.
 - `firmware/src/ui/screens/views/CONVENTIONS.md` — the per-theme view contract and LVGL 8.4 do/don't. Authority for anything under `views/`.
-- `CONTRIBUTING.md` — contribution conventions: Conventional Commits (`type(scope): subject`, lowercase imperative subject; scopes `firmware`/`hub`/`docs`/`ci`), PR titles follow the same rules (they become the squash-merge commit; link issues in the body, not the title), branch naming `<type>/<issue#>-<kebab-summary>`, issue labeling, and per-component semver tags (`firmware-vX.Y.Z` / `hub-vX.Y.Z`).
+- `CONTRIBUTING.md` — contribution conventions: Conventional Commits (`type(scope): subject`, lowercase imperative subject; scopes `firmware`/`hub`/`docs`/`ci`), which PR titles follow too (they become the squash-merge commit); branch naming `<type>/<kebab-summary>`; label taxonomy; and per-component semver tags (`firmware-vX.Y.Z` / `hub-vX.Y.Z`). **No linked issue is required in this fork** — upstream `angaziz/beacon` does require one, so follow its CONTRIBUTING if you send a PR there.
+

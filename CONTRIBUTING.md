@@ -55,14 +55,17 @@ swipe` — not `[FIRMWARE] fix swipe (#22)`, not `feat: Add WiFi Network.`
 **Branches.** `<type>/<issue#>-<kebab-summary>`, e.g. `feat/36-usage-rows`, `fix/16-lifecycle`.
 Drop the number when there's no issue.
 
-**Issues & labels.** Title is an imperative phrase in sentence case — no `[Firmware]`/`[Hub]`
-prefixes; the area label carries that. Label every issue with at least one area + one type,
-plus a priority when known:
+**Labels.** Used on PRs, and on issues when you open one. Titles are imperative phrases in sentence
+case — no `[Firmware]`/`[Hub]` prefixes; the area label carries that. An area + a type is the useful
+minimum, plus a priority when known:
 - area: `firmware`, `hub` (docs work uses `documentation`; CI/dependency bumps use the
   dependabot-managed `github_actions`/`dependencies` labels).
 - type: `bug`, `enhancement`, `documentation`, `question`.
 - priority: `P0` (breaks trust / no recovery), `P1` (significant friction), `P2` (polish).
 - `epic` marks a tracking issue that spans several tasks.
+
+Note issues are disabled on this fork by default (GitHub does that to forks); enable them in repo
+Settings > Features if you want them.
 
 **Versioning.** Semantic versioning, tagged per component (firmware and hub ship separately):
 `firmware-vX.Y.Z` and `hub-vX.Y.Z`. `fix` => patch, `feat` => minor, breaking => major.
@@ -71,23 +74,17 @@ Pushing a `firmware-v*` or `hub-v*` tag triggers that component's release workfl
 
 ## Workflow
 
-**Issue first, PR second.** Every PR must be tied to an issue that was opened *before* the work
-started. This is where direction gets agreed — scope, approach, whether the change is wanted at
-all. A large PR that lands without prior discussion may be rejected regardless of code quality;
-nobody enjoys that, so don't skip the issue. (Trivial fixes — typos, obvious one-liners — can
-open the issue and PR together, but still link them.)
+**No issue required.** This fork is developed directly — direction gets agreed in conversation, not
+in an issue thread, so a PR does not need to be tied to one. Open an issue when it genuinely helps
+(tracking something you are not building yet, or a bug you want to remember), not as a gate.
 
-CI flags any PR with no linked issue: it gets a `needs-issue` label and a bot comment warning of
-potential rejection. The flag clears when you link an issue (`Closes #N` in the PR body or the
-"Development" sidebar) — merging past it is a deliberate maintainer decision, not the default.
+*Upstream differs.* `angaziz/beacon` runs an issue-first workflow; if you send a PR there, follow its
+CONTRIBUTING, not this one.
 
-1. Open an issue describing the problem and intended direction. For hardware-facing or
-   architectural work, wait for alignment before building; a small spike as evidence is welcome.
-2. Branch from `main` and keep the PR scoped to that issue — unrelated changes go in their own
-   issue + PR.
-3. For firmware: confirm it compiles and runs on the board; note the board settings used. CI builds the device firmware and runs the host unit tests (`pio test -e native`) and the hub tests (`swift test`) on every PR.
-4. For design: include rendered PNG(s) of the affected screen(s).
-5. Open a PR with a clear description, `Closes #N`, and any before/after evidence.
+1. Branch from `main` and keep the PR to one coherent change — unrelated work goes in its own PR.
+2. For firmware: confirm it compiles and runs on the board; note the board settings used. CI builds the device firmware and runs the host unit tests (`pio test -e native`) and the hub tests (`swift test`) on every PR.
+3. For design: include rendered PNG(s) of the affected screen(s).
+4. Open a PR with a clear description and any before/after evidence.
 
 ## Hardware note
 
