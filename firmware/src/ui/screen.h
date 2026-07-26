@@ -22,7 +22,7 @@ typedef struct {
 
 // A screen in the carousel: dispatches build/update to the active theme's view.
 typedef struct {
-  const char* id;                       // "HOME","MARKETS","LIMITS","CLAUDE","NOW","SETTINGS"
+  const char* id;                       // "HOME","MARKETS","LIMITS","CLAUDE","SETTINGS" (carousel order)
   lv_obj_t*  (*build)(lv_obj_t* page);  // build the active theme's view into the page; returns page
   void       (*update)(void);           // update the active theme's view
 } screen_module_t;

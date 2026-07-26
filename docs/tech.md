@@ -79,7 +79,9 @@ Board build settings: **ESP32S3 Dev Module · PSRAM OPI · Flash 16MB · USB CDC
 
 **Task/core model.** Core 0: networking (WiFi/BLE/HTTP) + IMU. Core 1: LVGL render + UI. No I/O blocks the LVGL loop — data tasks publish into the thread-safe `DataStore`; UI reads snapshots. Watchdog enabled.
 
-**Display/LVGL buffers (canonical — supersedes other docs).** Use LVGL **partial render** with **two draw buffers, each ≈ 1/10 screen** (466×47×2 ≈ 44 KB). Allocate in **internal DMA-capable SRAM** *only if* the ≥60 KB free-internal-heap floor (§8) still holds after WiFi+BLE+TLS; otherwise allocate in **PSRAM** (slower but safe). **No full-screen framebuffer.** Decision is made once in the LVGL port module and asserted at boot (log the chosen region). One theme's styles/fonts are resident at a time.
+**Display/LVGL buffers (canonical — supersedes other docs).** Use LVGL **partial render** with **one draw buffer of ≈ 1/10 screen** (466×47×2 ≈ 44 KB), allocated in **PSRAM** (`-DBEACON_LVGL_PSRAM`, the default build flag). **No full-screen framebuffer.** The region is chosen once in the LVGL port module and logged at boot. One theme's styles/fonts are resident at a time.
+
+*Two revisions to the original design, both settled on hardware — do not "restore" either:* (a) the second draw buffer was removed (#65 M1) because `flush_cb` is synchronous (`display_draw_bitmap` blocks, then `lv_disp_flush_ready` inline), so LVGL never renders into B while A flushes — B was dead weight; (b) the buffer is unconditionally in PSRAM rather than internal-SRAM-if-it-fits, because the internal placement collapsed min free internal heap to ~44 KB and TLS fetches timed out (§2). The LVGL heap itself is also in PSRAM (`LV_MEM_CUSTOM 1` → `ui/lv_mem_psram.cpp`). Implementation + measurement notes: `docs/perf.md`.
 
 **Theme engine.** `DESIGN.md` is the authority for token **values** and the theme catalog; this doc defines the **runtime contract**:
 ```c
@@ -97,7 +99,9 @@ typedef struct {
 ```
 Switching theme rebuilds the active screen (no reboot). Fonts are flash-resident, glyph-subset to used characters. Screens read tokens only — no hardcoded colors/fonts.
 
-**Screen lifecycle.** Each screen module exposes `build()/update(const Snapshot&)/destroy()`. Only the visible screen is built (neighbors may be kept warm). Screens never fetch — they render from `DataStore` snapshots + a per-screen `screen_state_t` (see below). `SAFE_INSET` (default **40 px**, locked on hardware at P0) bounds all layout.
+**Screen lifecycle.** Each screen module exposes `build(page)`/`update()` and dispatches both to the active theme's view (`ui/screens/screen_module.h`). Screens never fetch — they render from `DataStore` snapshots + a per-screen `screen_state_t` (see below). `SAFE_INSET` (default **40 px**, locked on hardware at P0) bounds all layout.
+
+*As built (P0-C onward), **all** carousel pages are built up-front, not just the visible one:* `carousel.cpp`'s theme-apply hook cleans, re-chromes, builds and updates every page, so a page scrolling into view never shows LVGL's default `"Text"` before its first tick. Only `update()` is visible-screen-only (the 500 ms tick, paused while the panel is dim/asleep). The cost is that every screen's widget tree is permanently resident in the LVGL PSRAM pool — budget accordingly (`docs/perf.md` §4).
 
 **DataStore + screen-state (P0 shared contract — every later screen depends on it).**
 ```c
@@ -249,19 +253,26 @@ Setup/flashing/troubleshooting: **`docs/spikes/SETUP.md`**. Firmware must compil
 
 ## 12. Repo structure (product firmware)
 
-Spikes stay under `docs/spikes/`. Product firmware lands under a new top-level `firmware/` at P0:
+Spikes stay under `docs/spikes/`. Product firmware lives under the top-level `firmware/` (the PlatformIO project root is `firmware/` itself — there is no intermediate `firmware/beacon/`). A concern => file index is `docs/codemap.md`.
 ```
 firmware/
-├── beacon/                 # PlatformIO project (or Arduino sketch)
-│   ├── src/
-│   │   ├── main.cpp        # setup()/loop() wiring only
-│   │   ├── config/         # pins.h, tickers.h, weather defaults, build flags
-│   │   ├── hal/            # power(AXP), display(CO5300), touch, imu, rtc
-│   │   ├── core/           # datastore, hublink(iface+ble), net(wifi/tls/http), nvs, timekeep
-│   │   ├── ui/             # lvgl_port, theme engine + tokens, carousel, components
-│   │   └── screens/        # home, finance, usage, buddy, nowplaying, settings
-│   └── partitions.csv
-hub/                        # macOS Swift app (P2) + CONTRACT.md fixtures
+├── platformio.ini          # envs: beacon, capture, audiospike, native
+├── partitions.csv
+├── src/
+│   ├── main.cpp            # setup()/loop() wiring only
+│   ├── lv_conf.h           # LVGL compile config (must exist from the first build)
+│   ├── config/             # pins.h, layout.h, tickers.h, ticker_table/store, root_ca, version
+│   ├── hal/                # power(AXP2101), display(CO5300), touch(CST92xx), imu(QMI8658), audio
+│   ├── core/               # datastore, records, hub_proto, hublink(iface+ble), net, nvs, timekeep, location, idle
+│   ├── fetch/              # weather/finance/geoip, each split into a pure parse_*.cpp + an HTTP half
+│   ├── ui/                 # lvgl_port, theme engine + tokens, carousel, styles, chrome, gauge, overlays, fonts
+│   │   └── screens/        # 5 screen modules + views/ (one file per screen x theme)
+│   └── util/
+├── test/                   # test_<unit>/ folders, one Unity program each (env:native)
+└── tools/capture/          # host-side screenshot puller for env:capture
+hub/                        # macOS Swift app + CONTRACT.md fixtures
+├── Sources/BeaconHubKit/   # pure, host-testable
+└── Sources/beacon-hub/     # menubar agent (CoreBluetooth, hooks bridge, UI)
 ```
 
 ## 13. Risks & limitations
