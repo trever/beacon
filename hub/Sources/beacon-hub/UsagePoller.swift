@@ -236,11 +236,13 @@ final class ClaudeUsageProvider: UsageProvider {
     // that is shape drift, not absence, and must surface as missingCredential rather than silently
     // falling back to a stale cache).
     private static func readCredential() -> ClaudeCredential? {
-        if let cliBlob = ClaudeKeychain.readCLIBlob() {
-            return ProviderCredentials.parseClaude(cliBlob)
-        }
-        guard let cacheBlob = ClaudeKeychain.readBeaconCacheBlob() else { return nil }
-        return ProviderCredentials.parseClaude(cacheBlob)
+        // Read BOTH and let ProviderCredentials.preferred decide: the CLI item wins while usable (its
+        // rotating refresh must not be raced), but a dead CLI item must not shadow a working long-lived
+        // token parked in Beacon's own item -- that shadowing was the whole reason usage stayed dark on a
+        // Desktop-only host.
+        let cli = ClaudeKeychain.readCLIBlob().flatMap(ProviderCredentials.parseClaude)
+        let beacon = ClaudeKeychain.readBeaconCacheBlob().flatMap(ProviderCredentials.parseClaude)
+        return ProviderCredentials.preferred(cli: cli, beacon: beacon, now: Date())
     }
 }
 

@@ -35,9 +35,45 @@ public struct ClaudeCredential: Equatable {
         guard let refreshTokenExpiresAt else { return true }
         return now < refreshTokenExpiresAt
     }
+
+    // Usable = can produce a working access token now, either directly or via a refresh. A credential
+    // that is expired with a dead refresh token is inert: nothing short of re-login revives it.
+    public func isUsable(at now: Date) -> Bool {
+        !isExpired(at: now) || refreshTokenAlive(at: now)
+    }
+
 }
 
 public enum ProviderCredentials {
+    // The blob shape to persist a long-lived token (`claude setup-token`) into Beacon's own Keychain
+    // item. No expiresAt/refreshToken: absent expiry is read as never-expiring, which is precisely what
+    // a long-lived token is, and there is nothing to refresh.
+    public static func longLivedBlob(accessToken: String) -> Data? {
+        try? JSONSerialization.data(withJSONObject: ["claudeAiOauth": ["accessToken": accessToken]])
+    }
+
+
+    // Which of the two Claude credential sources to use.
+    //
+    // The claude CLI's Keychain item wins WHILE IT IS USABLE: its refresh token is single-use and
+    // rotating, so racing the CLI with our own refresh would invalidate its copy. But "usable" is the
+    // qualifier that matters -- a CLI credential that is expired AND whose refresh token is dead has no
+    // value at all, and preferring it unconditionally means the hub can never use a working token even
+    // when one exists. That is exactly the dead end observed on a Claude-Code-Desktop-only host: the CLI
+    // item was a stale leftover nothing would ever refresh.
+    //
+    // So: CLI if usable, else Beacon's own item (which is where a long-lived `claude setup-token` token
+    // is parked -- that command prints a token for CLAUDE_CODE_OAUTH_TOKEN and does NOT write the
+    // Keychain, and a LaunchServices-launched GUI app never inherits shell environment anyway).
+    public static func preferred(cli: ClaudeCredential?, beacon: ClaudeCredential?,
+                                now: Date) -> ClaudeCredential? {
+        if let cli, cli.isUsable(at: now) { return cli }
+        if let beacon, beacon.isUsable(at: now) { return beacon }
+        // Neither is usable: still return the CLI one if present so the caller reports the CLI's own
+        // failure ("run claude login") rather than a confusing message about a token the user may never
+        // have configured.
+        return cli ?? beacon
+    }
 
     // Claude Keychain blob: { claudeAiOauth: { accessToken, expiresAt (epoch ms), refreshToken,
     // refreshTokenExpiresAt (epoch ms), ... } }.
