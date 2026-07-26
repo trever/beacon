@@ -5,6 +5,7 @@
 #include "core/datastore.h"
 #include "core/hub_task.h"
 #include "ui/idle_glue.h"
+#include "ui/fonts/icons.h"
 
 #define SESSION_ROWS    4
 #define SESSION_ROW_H  64
@@ -12,6 +13,8 @@
 // Tick heights: SHORT brackets the folder line; TALL spans down to the branch line.
 #define TICK_SHORT      22
 #define TICK_TALL       42
+// Gutter the agent glyph sits in, before the row's two text lines.
+#define ROW_TEXT_X      26
 
 static lv_obj_t *s_slot, *s_status, *s_kicker, *s_tool, *s_cmdbox, *s_cmd, *s_deny, *s_approve;
 static lv_obj_t *s_row_folder[SESSION_ROWS];
@@ -20,6 +23,7 @@ static lv_obj_t *s_row_tick[SESSION_ROWS];
 static lv_obj_t *s_row_state[SESSION_ROWS];
 static lv_obj_t *s_row_age[SESSION_ROWS];
 static lv_obj_t *s_row_btn[SESSION_ROWS];   // transparent tap target (issue #110 Phase 2)
+static lv_obj_t *s_row_icon[SESSION_ROWS];  // agent glyph (lucide), tinted by session state
 static lv_obj_t *s_q_btn, *s_q_badge;
 static uint8_t   s_q_session_idx;
 
@@ -97,13 +101,20 @@ static void build(lv_obj_t* page) {
     lv_obj_set_style_bg_color(s_row_tick[i], lv_color_hex(0x444444), 0);
     lv_obj_set_style_radius(s_row_tick[i], 0, 0);
 
+    // Agent glyph. Its own label in the icons face: the lucide glyphs live at PUA codepoints that the
+    // text faces do not carry, so a mixed string would render a box (fonts/MANIFEST.md).
+    s_row_icon[i] = lv_label_create(page);
+    lv_label_set_text(s_row_icon[i], "");
+    lv_obj_set_style_text_font(s_row_icon[i], theme_active()->f_icon, 0);
+    lv_obj_align(s_row_icon[i], LV_ALIGN_TOP_LEFT, SAFE_INSET + 10, y + 2);
+
     // Folder: display style (large serif weight), left of meta block.
     s_row_folder[i] = lv_label_create(page);
     lv_label_set_text(s_row_folder[i], "");
     lv_obj_add_style(s_row_folder[i], &S.slot, 0);
-    lv_obj_set_width(s_row_folder[i], SCREEN_W - 2 * SAFE_INSET - 10 - 90);
+    lv_obj_set_width(s_row_folder[i], SCREEN_W - 2 * SAFE_INSET - 10 - 90 - ROW_TEXT_X);
     lv_label_set_long_mode(s_row_folder[i], LV_LABEL_LONG_DOT);
-    lv_obj_align(s_row_folder[i], LV_ALIGN_TOP_LEFT, SAFE_INSET + 10, y);
+    lv_obj_align(s_row_folder[i], LV_ALIGN_TOP_LEFT, SAFE_INSET + 10 + ROW_TEXT_X, y);
     // Top-align the tick to the folder line; small +y nudge brackets the folder cap-height.
     lv_obj_align_to(s_row_tick[i], s_row_folder[i], LV_ALIGN_OUT_LEFT_TOP, -8, 4);
 
@@ -112,9 +123,9 @@ static void build(lv_obj_t* page) {
     lv_label_set_text(s_row_sub[i], "");
     lv_obj_add_style(s_row_sub[i], &S.slot, 0);
     lv_obj_set_style_text_color(s_row_sub[i], lv_color_hex(0x666666), 0);
-    lv_obj_set_width(s_row_sub[i], SCREEN_W - 2 * SAFE_INSET - 10 - 90);
+    lv_obj_set_width(s_row_sub[i], SCREEN_W - 2 * SAFE_INSET - 10 - 90 - ROW_TEXT_X);
     lv_label_set_long_mode(s_row_sub[i], LV_LABEL_LONG_DOT);
-    lv_obj_align(s_row_sub[i], LV_ALIGN_TOP_LEFT, SAFE_INSET + 10, y + 26);
+    lv_obj_align(s_row_sub[i], LV_ALIGN_TOP_LEFT, SAFE_INSET + 10 + ROW_TEXT_X, y + 26);
 
     // State word (right, top) — uppercase for editorial.
     s_row_state[i] = lv_label_create(page);
@@ -292,6 +303,7 @@ static void update(void) {
       for (uint8_t i = 0; i < SESSION_ROWS; i++) {
         lv_obj_add_flag(s_row_btn[i],  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_row_tick[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_row_icon[i], LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_row_folder[i], i == 0 ? "OFFLINE" : "");
         lv_label_set_text(s_row_sub[i],    "");
         lv_label_set_text(s_row_state[i],  "");
@@ -306,6 +318,7 @@ static void update(void) {
     if (n == 0) {
       lv_obj_add_flag(s_row_btn[0],  LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(s_row_tick[0], LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(s_row_icon[0], LV_OBJ_FLAG_HIDDEN);
       lv_label_set_text(s_row_folder[0], "IDLE");
       lv_obj_set_style_text_color(s_row_folder[0], lv_color_hex(0x666666), 0);
       lv_label_set_text(s_row_sub[0], "");
@@ -314,6 +327,7 @@ static void update(void) {
       for (uint8_t i = 1; i < SESSION_ROWS; i++) {
         lv_obj_add_flag(s_row_btn[i],  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_row_tick[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_row_icon[i], LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_row_folder[i], "");
         lv_label_set_text(s_row_sub[i], "");
         lv_label_set_text(s_row_state[i], "");
@@ -332,18 +346,30 @@ static void update(void) {
           buddy_session_age(s->ts, age, sizeof(age));
 
           // Tick color by state.
-          bool has_branch = branch[0] != '\0';
+          // The tick brackets whatever the row actually shows: line 2 is now the message (branch only
+          // when an older hub sends no detail), so keying off the branch alone would stop it short.
+          bool has_branch = (s->msg[0] != '\0') || (branch[0] != '\0');
           lv_color_t tick_col = buddy_session_state_color(t, s->state);
           lv_obj_set_style_bg_color(s_row_tick[i], tick_col, 0);
           lv_obj_set_height(s_row_tick[i], has_branch ? TICK_TALL : TICK_SHORT);
           lv_obj_clear_flag(s_row_tick[i], LV_OBJ_FLAG_HIDDEN);
 
-          // Folder: ink (editorial uses slot style which already sets color).
-          lv_label_set_text(s_row_folder[i], folder[0] ? folder : s->id);
+          // Line 1: "project - title" from the sdetail frame; line 2: the newest message. Both fall back
+          // to the sessions frame's "folder | branch" label, which is all an older hub sends.
+          const char* proj  = s->project[0] ? s->project : (folder[0] ? folder : s->id);
+          char head[BUDDY_PROJECT_LEN + BUDDY_TITLE_LEN + 4];
+          if (s->title[0]) snprintf(head, sizeof(head), "%s - %s", proj, s->title);
+          else             snprintf(head, sizeof(head), "%s", proj);
+          lv_label_set_text(s_row_folder[i], head);
           lv_obj_set_style_text_color(s_row_folder[i], t->ink, 0);
 
-          // Branch.
-          lv_label_set_text(s_row_sub[i], branch);
+          lv_label_set_text(s_row_sub[i], s->msg[0] ? s->msg : branch);
+
+          // Agent glyph, tinted by state so "needs you" reads at a glance without parsing the word.
+          lv_label_set_text(s_row_icon[i],
+                            (s->agent[0] && strcmp(s->agent, "claude") != 0) ? ICON_TERMINAL : ICON_BOT);
+          lv_obj_set_style_text_color(s_row_icon[i], buddy_session_state_color(t, s->state), 0);
+          lv_obj_clear_flag(s_row_icon[i], LV_OBJ_FLAG_HIDDEN);
 
           // State word: open feedback overrides, else UPPERCASE for editorial.
           if (b.open_state != OPEN_NONE &&
@@ -377,6 +403,7 @@ static void update(void) {
         } else {
           lv_obj_add_flag(s_row_btn[i],  LV_OBJ_FLAG_HIDDEN);
           lv_obj_add_flag(s_row_tick[i], LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(s_row_icon[i], LV_OBJ_FLAG_HIDDEN);
           lv_label_set_text(s_row_folder[i], "");
           lv_label_set_text(s_row_sub[i], "");
           lv_label_set_text(s_row_state[i], "");

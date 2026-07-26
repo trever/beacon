@@ -9,8 +9,14 @@ import BeaconHubKit
 // usage + sessions + prompts. All state is confined to the ingest server's `queue`; sink calls hop to
 // the main actor (where the mux lives). Logs only id + decision + timestamp -- NEVER the hint/command.
 final class ClaudeCodeProvider: AgentProvider {
+    // No .usage: the 5h/7d windows are gone. The oauth/usage endpoint 403s for a Claude Desktop token
+    // (missing scope) and the statusline that fed rate_limits only runs under the terminal CLI, so the
+    // feature could not work here -- and retrying it earned an hour-long 429. Sessions and prompts, which
+    // do work, are unaffected. Dropping the capability is the whole switch: UsagePoller iterates
+    // `supportsUsage` providers, so nothing polls, no Keychain item is read, and the Settings usage
+    // toggle renders as unsupported (it is derived from this descriptor).
     let descriptor = ProviderDescriptor(id: "claude", label: "CLAUDE",
-                                        capabilities: [.usage, .sessions, .prompts])
+                                        capabilities: [.sessions, .prompts])
 
     // Claude-specific usage callbacks the app wires to the reliability reducer (#59/#93/#108). The merged
     // usage the mux renders comes from the reducer via sink.didUpdateUsage, not from here directly.
@@ -129,7 +135,9 @@ final class ClaudeCodeProvider: AgentProvider {
                                                      options: [.skipsHiddenFiles])
         else { return }   // no ~/.claude/projects (CLI-only user who never ran Claude here) => nothing to do
 
-        var scanned: [ScannedSession] = []
+        // The directory name rides along: ClaudeSessionScan.projectName needs it to recover the repo
+        // root, since cwd follows the agent into subdirectories.
+        var scanned: [(session: ScannedSession, dirName: String)] = []
         for dir in dirs {
             guard let files = try? fm.contentsOfDirectory(at: dir,
                                                           includingPropertiesForKeys: [.contentModificationDateKey],
@@ -142,7 +150,7 @@ final class ClaudeCodeProvider: AgentProvider {
                 // ones touched inside the emit window can produce a live session row.
                 guard ClaudeSessionScan.isRecent(mtime: mtime, now: now, within: Self.emitWindow) else { continue }
                 guard let s = tail(f, bytes: Self.tailBytes).flatMap(ClaudeSessionScan.parse) else { continue }
-                scanned.append(s)
+                scanned.append((s, dir.lastPathComponent))
             }
         }
         guard !scanned.isEmpty else { return }
@@ -166,8 +174,8 @@ final class ClaudeCodeProvider: AgentProvider {
         return String(data: d, encoding: .utf8)
     }
 
-    private func applyScanned(_ sessions: [ScannedSession], now: Date) {
-        for s in sessions {
+    private func applyScanned(_ sessions: [(session: ScannedSession, dirName: String)], now: Date) {
+        for (s, dirName) in sessions {
             let state = ClaudeSessionScan.state(for: s, now: now, idleAfter: Self.emitWindow)
             // Idle transcripts are simply not touched: the registry's own TTL then reaps the row. Emitting
             // an explicit .end would fight a live hook-driven session of the same id.
@@ -183,6 +191,12 @@ final class ClaudeCodeProvider: AgentProvider {
             // Transcript tokens are authoritative for Desktop (no statusline); on the CLI the statusline
             // path writes the same slot and whichever ran last wins, which is fine -- both describe the
             // same session's spend.
+            // Row content for the device list. Emitted after .activity/.stop so the registry entry exists.
+            let project = ClaudeSessionScan.projectName(cwd: s.cwd, transcriptDirName: dirName)
+            if project != nil || s.displayTitle != nil || s.lastMessage != nil {
+                emitSession(.detail(nativeKey: s.sessionId, project: project,
+                                    title: s.displayTitle, msg: s.lastMessage))
+            }
             touch(s.sessionId)
             let prior = sessionStats[s.sessionId] ?? (tokens: 0, ctxPct: 0)
             sessionStats[s.sessionId] = (tokens: s.tokens, ctxPct: prior.ctxPct)

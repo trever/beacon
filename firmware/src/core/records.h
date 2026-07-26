@@ -14,6 +14,12 @@
 #define BUDDY_SID_LEN      8   // "s" + up to 6 digits + NUL
 #define BUDDY_LABEL_LEN   29   // 28 chars + NUL (design §4 cap)
 #define BUDDY_SESSIONS_MAX 5
+// Session-detail row content (wire "sdetail", CONTRACT.md A). Caps mirror the hub's SessionDetailLimits;
+// only the first SESSION_DETAIL_MAX rows carry detail, which is all the 466x466 panel can show.
+#define BUDDY_PROJECT_LEN  21   // 20 chars + NUL
+#define BUDDY_TITLE_LEN    29   // 28 chars + NUL
+#define BUDDY_MSG_LEN      49   // 48 chars + NUL
+#define SESSION_DETAIL_MAX 4   // == SESSION_ROWS in the session view
 #define USAGE_PROVIDERS_MAX 4
 #define USAGE_ID_LEN        13   // wire id <=12 ascii chars + NUL
 #define USAGE_LABEL_LEN     11   // display label <=10 chars + NUL
@@ -32,6 +38,12 @@ typedef struct {
   char     agent[USAGE_ID_LEN]; // owning provider id (wire "agent"); empty when absent
   uint8_t  state;               // BST_*
   uint32_t ts;                  // epoch seconds of last update (sort key, age source)
+  // From the separate "sdetail" frame, joined by id. Empty until a detail frame lands for this row --
+  // the view falls back to `label`. Sticky across sessions frames: a sessions-only update must not blank
+  // content the device is already showing.
+  char     project[BUDDY_PROJECT_LEN];
+  char     title[BUDDY_TITLE_LEN];
+  char     msg[BUDDY_MSG_LEN];
 } buddy_session_t;
 
 typedef struct {

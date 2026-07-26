@@ -59,6 +59,11 @@ bool hub_parse_loc(const char* json, size_t len, hub_loc_t* out);
 // array is present (even if empty). Returns false on invalid JSON or v != 1.
 bool hub_parse_sessions(const char* json, size_t len, buddy_rec_t* buddy, bool* had_sessions);
 
+// "sdetail" frame: per-session project/title/last-message, joined to existing sessions by id (the
+// sessions frame stays the authority on which sessions exist). Fields are sticky per row: an omitted
+// field leaves the current value. Returns false for non-JSON / wrong v / no sdetail array.
+bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* had_sdetail);
+
 // --- Outbound: device -> hub command builders ---
 // Write a newline-terminated command frame into buf. Returns bytes written (incl. the '\n', excl. the
 // NUL), or 0 on overflow / invalid args. `id` echoes the originating (short) prompt id.

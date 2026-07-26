@@ -219,7 +219,12 @@ static void update(void) {
     bool attn = (s->state == BST_ATTENTION || s->state == BST_QUESTION);
     lv_label_set_text(s_cl_icon, attn ? ICON_ALERT : ICON_TERMINAL);
     lv_obj_set_style_text_color(s_cl_icon, attn ? t->accent : t->ink_dim, 0);
-    txt_set(s_cl_line1, s->label[0] ? s->label : "claude");
+    // Prefer the sdetail frame's "project - title"; fall back to the sessions label for an older hub.
+    char head[BUDDY_PROJECT_LEN + BUDDY_TITLE_LEN + 4];
+    if (s->project[0] && s->title[0])      snprintf(head, sizeof(head), "%s - %s", s->project, s->title);
+    else if (s->project[0])                snprintf(head, sizeof(head), "%s", s->project);
+    else                                   snprintf(head, sizeof(head), "%s", s->label[0] ? s->label : "claude");
+    txt_set(s_cl_line1, head);
     txt_color(s_cl_line1, t->ink);
     char age[8]; age_str(age, sizeof(age), s->ts ? (now_s() - s->ts) : UINT32_MAX);
     char l2[48];

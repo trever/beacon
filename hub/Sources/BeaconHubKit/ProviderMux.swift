@@ -7,6 +7,9 @@ public enum ProviderSessionEvent: Equatable {
     case stop(nativeKey: String, cwd: String?)          // turn finished (session alive) => attention
     case needsInput(nativeKey: String, cwd: String?)    // asking the user a question => question
     case branch(nativeKey: String, branch: String?)     // resolved git branch for the label
+    // Row content from the transcript scan: repo, session title, newest message. Only the scan can see
+    // these -- the hooks carry no title and no message body.
+    case detail(nativeKey: String, project: String?, title: String?, msg: String?)
     case end(nativeKey: String)                          // clean session exit => remove
 }
 
@@ -33,6 +36,9 @@ public final class ProviderMux: ProviderSink {
     public var onUsage: ((Usage) -> Void)?
     public var onBuddy: ((BuddyState) -> Void)?
     public var onSessions: (([Session]) -> Void)?
+    /// Row content for the session list, emitted in the same order as onSessions. Separate callback
+    /// because it is a separate BLE frame (SessionDetailLimits: the frozen sessions frame has no room).
+    public var onSessionDetails: (([SessionDetail]) -> Void)?
     public var onAttention: (() -> Void)?   // aggregate 0 -> >0 attention-bucket transition
     public var onPromptArrived: (() -> Void)?   // a buddy-enabled provider raised a deliverable prompt (cue the user)
 
@@ -54,6 +60,7 @@ public final class ProviderMux: ProviderSink {
     private var lastUsage: Usage?
     private var lastBuddy: BuddyState?
     private var lastSessions: [Session] = []
+    private var lastDetails: [SessionDetail] = []
 
     public init(now: @escaping () -> Date = Date.init, idleTTL: TimeInterval = 300) {
         self.now = now
@@ -138,6 +145,8 @@ public final class ProviderMux: ProviderSink {
             registry.markNeedsInput(providerID: id, sessionId: key)
         case .branch(let key, let branch):
             registry.setBranch(providerID: id, sessionId: key, branch: branch)
+        case .detail(let key, let project, let title, let msg):
+            registry.setDetail(providerID: id, sessionId: key, project: project, title: title, msg: msg)
         case .end(let key):
             registry.end(providerID: id, sessionId: key)
         }
@@ -206,11 +215,18 @@ public final class ProviderMux: ProviderSink {
         let (front, queued) = broker.waitingSessions()
         let snap = registry.snapshot(now: now(), waitingFront: front, waitingQueued: queued,
                                      includeProvider: { [weak self] in self?.buddyEnabled($0) ?? false })
-        guard snap != lastSessions else { return }
+        // Details can change while the session list does not (a new message under an unchanged state and
+        // ts), so either changing has to publish -- otherwise the device shows a stale message body.
+        let details = registry.details(for: snap)
+        let sessionsChanged = snap != lastSessions
+        let detailsChanged = details != lastDetails
+        guard sessionsChanged || detailsChanged else { return }
         let prevAttention = lastSessions.contains { $0.state == .attention }
         let nowAttention = snap.contains { $0.state == .attention }
         lastSessions = snap
+        lastDetails = details
         if !prevAttention && nowAttention { onAttention?() }
-        onSessions?(snap)
+        if sessionsChanged { onSessions?(snap) }
+        if detailsChanged { onSessionDetails?(details) }
     }
 }
