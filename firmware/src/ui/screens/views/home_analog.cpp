@@ -1,4 +1,5 @@
 #include "ui/screen.h"
+#include "ui/fmt.h"
 #include "ui/styles.h"
 #include "ui/state_view.h"
 #include "ui/theme.h"
@@ -189,7 +190,7 @@ static void update(void) {
     lv_label_set_text(s_temp, "--");
     lv_label_set_text(s_hum, "--");
   } else {
-    char tb[16]; snprintf(tb, sizeof(tb), "%.1f\xC2\xB0", w.temp_c);
+    char tb[16]; fmt_temp(tb, sizeof(tb), w.temp_c);
     lv_label_set_text(s_temp, tb);
     char hb[16]; snprintf(hb, sizeof(hb), "%.0f%%", w.humidity_pct);
     lv_label_set_text(s_hum, hb);

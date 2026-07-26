@@ -1,4 +1,5 @@
 #include "ui/screen.h"
+#include "ui/fmt.h"
 #include "ui/styles.h"
 #include "ui/state_view.h"
 #include "ui/theme.h"
@@ -14,7 +15,7 @@
 
 
 static lv_obj_t *s_status;     // top-right slot (battery / state chip)
-static lv_obj_t *s_clock, *s_date;
+static lv_obj_t *s_clock, *s_date, *s_merid;
 static lv_obj_t *s_temp, *s_temp_u;
 static lv_obj_t *s_hum;
 static lv_obj_t *s_cond;
@@ -59,6 +60,14 @@ static void build(lv_obj_t* page) {
   lv_label_set_text(s_clock, "--:--");
   lv_obj_align(s_clock, LV_ALIGN_CENTER, 0, -30);
 
+  // Meridiem lives in its own label: hero fonts are digit/symbol subsets with no A-Z (fonts/MANIFEST.md),
+  // so "AM"/"PM" cannot render in the clock face. Anchored to the clock so it tracks this theme's layout.
+  s_merid = lv_label_create(page);
+  lv_label_set_text(s_merid, "");
+  lv_obj_set_style_text_font(s_merid, t->f_mono, 0);
+  lv_obj_set_style_text_color(s_merid, t->ink_dim, 0);
+  lv_obj_align_to(s_merid, s_clock, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
+
   s_date = lv_label_create(page);
   lv_obj_add_style(s_date, &S.slot, 0);
   lv_label_set_text(s_date, "-- . -- ---");
@@ -78,7 +87,7 @@ static void build(lv_obj_t* page) {
   lv_label_set_text(s_temp, "--");
   s_temp_u = lv_label_create(tempbox);
   lv_obj_add_style(s_temp_u, &S.slot, 0);
-  lv_label_set_text(s_temp_u, " \xC2\xB0""C");
+  lv_label_set_text(s_temp_u, " \xC2\xB0""F");
 
   sep(wx, t);
 
@@ -100,7 +109,7 @@ static void build(lv_obj_t* page) {
 }
 
 static void update(void) {
-  render_clock_ex(s_clock, s_date, "%a . %d %b", lv_set);
+  render_clock_ex(s_clock, s_merid, s_date, "%a . %d %b", lv_set);
   weather_rec_t w = ds_get_weather();
   uint32_t now = now_s();
   const beacon_theme_t* t = theme_active();
@@ -115,7 +124,7 @@ static void update(void) {
     lv_label_set_text(s_hum, "--");
   } else {
     char tb[16];
-    snprintf(tb, sizeof(tb), "%.1f", w.temp_c);
+    snprintf(tb, sizeof(tb), "%.0f", temp_f(w.temp_c));
     lv_label_set_text(s_temp, tb);
     snprintf(tb, sizeof(tb), "%.0f", w.humidity_pct);
     lv_label_set_text(s_hum, tb);

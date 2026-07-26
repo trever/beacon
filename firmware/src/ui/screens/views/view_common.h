@@ -11,11 +11,29 @@
 // the result is uppercased. Show "--" until the time service has a fix.
 typedef void (*label_setter_t)(lv_obj_t*, const char*);
 
-static inline void render_clock_ex(lv_obj_t* clock_lbl, lv_obj_t* date_lbl,
+// 12-hour clock, "h:mm" + a SEPARATE meridiem label.
+//
+// The meridiem cannot live in the clock label: hero fonts are glyph-subset to
+// `0-9 : % . , + - / degree space` (fonts/MANIFEST.md), so "AM"/"PM" in the hero face renders as
+// missing glyphs. `meridiem_lbl` must therefore be styled with f_body/f_display/f_mono (full ASCII).
+// Pass NULL only if the caller renders the meridiem some other way -- the time itself is then
+// ambiguous, so every current caller supplies one.
+//
+// snprintf rather than strftime("%l:%M"): %l is SPACE-padded, which would shift the hero figure by a
+// glyph width between 9:59 and 10:00.
+static inline void render_clock_ex(lv_obj_t* clock_lbl, lv_obj_t* meridiem_lbl, lv_obj_t* date_lbl,
                                    const char* date_fmt, label_setter_t set) {
-  if (!timekeep_has_time()) { set(clock_lbl, "--:--"); set(date_lbl, "--"); return; }
+  if (!timekeep_has_time()) {
+    set(clock_lbl, "--:--");
+    if (meridiem_lbl) set(meridiem_lbl, "");
+    set(date_lbl, "--");
+    return;
+  }
   struct tm lt; timekeep_localtime(&lt);
-  char hm[8];  strftime(hm, sizeof(hm), "%H:%M", &lt);  set(clock_lbl, hm);
+  int h12 = lt.tm_hour % 12; if (h12 == 0) h12 = 12;   // 00:xx => 12 AM, 12:xx => 12 PM
+  char hm[8]; snprintf(hm, sizeof(hm), "%d:%02d", h12, lt.tm_min);
+  set(clock_lbl, hm);
+  if (meridiem_lbl) set(meridiem_lbl, lt.tm_hour < 12 ? "AM" : "PM");
   char dt[24]; strftime(dt, sizeof(dt), date_fmt, &lt);
   for (char* p = dt; *p; ++p) *p = (char)toupper((unsigned char)*p);
   set(date_lbl, dt);

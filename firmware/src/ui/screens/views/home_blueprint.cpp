@@ -2,6 +2,7 @@
 // centered big clock figure, dimension callouts for temp + humidity. The grid, corner
 // registration marks and crosshair reticle are drawn by the carousel chrome; do NOT redraw.
 #include "ui/screen.h"
+#include "ui/fmt.h"
 #include "ui/styles.h"
 #include "ui/state_view.h"
 #include "ui/theme.h"
@@ -11,7 +12,7 @@
 #include "core/datastore.h"
 #include <Arduino.h>
 
-static lv_obj_t *s_clock, *s_date, *s_temp, *s_hum, *s_status;
+static lv_obj_t *s_clock, *s_date, *s_temp, *s_hum, *s_status, *s_merid;
 
 static void build(lv_obj_t* page) {
   const beacon_theme_t* t = theme_active();
@@ -36,6 +37,14 @@ static void build(lv_obj_t* page) {
   lv_obj_set_style_text_font(s_clock, t->f_hero, 0);
   lv_obj_align(s_clock, LV_ALIGN_CENTER, 0, -10);
 
+  // Meridiem lives in its own label: hero fonts are digit/symbol subsets with no A-Z (fonts/MANIFEST.md),
+  // so "AM"/"PM" cannot render in the clock face. Anchored to the clock so it tracks this theme's layout.
+  s_merid = lv_label_create(page);
+  lv_label_set_text(s_merid, "");
+  lv_obj_set_style_text_font(s_merid, t->f_mono, 0);
+  lv_obj_set_style_text_color(s_merid, t->ink_dim, 0);
+  lv_obj_align_to(s_merid, s_clock, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
+
   // Dimension caption under the figure: hairline dashes flank a mono date string.
   s_date = lv_label_create(page);
   lv_label_set_text(s_date, "--- --  -- --- ---- ---");
@@ -45,7 +54,7 @@ static void build(lv_obj_t* page) {
 
   // Dimension callouts row: + TEMP <v>C  (left)  RH + <v>% (right).
   s_temp = lv_label_create(page);
-  lv_label_set_text(s_temp, "+ TEMP  --.- C");
+  lv_label_set_text(s_temp, "+ TEMP  -- F");
   lv_obj_set_style_text_color(s_temp, t->accent, 0);
   lv_obj_set_style_text_font(s_temp, t->f_mono, 0);
   lv_obj_align(s_temp, LV_ALIGN_BOTTOM_LEFT, SAFE_INSET, -SAFE_INSET);
@@ -58,7 +67,7 @@ static void build(lv_obj_t* page) {
 }
 
 static void update(void) {
-  render_clock_ex(s_clock, s_date, "--- %a %d %b ---", lv_set);
+  render_clock_ex(s_clock, s_merid, s_date, "--- %a %d %b ---", lv_set);
   const beacon_theme_t* t = theme_active();
   weather_rec_t w = ds_get_weather();
   uint32_t now = now_s();
@@ -70,10 +79,10 @@ static void update(void) {
 
   char tb[24], hb[20];
   if (ph) {
-    snprintf(tb, sizeof(tb), "+ TEMP  --.- C");
+    snprintf(tb, sizeof(tb), "+ TEMP  -- F");
     snprintf(hb, sizeof(hb), "RH +  --%%");
   } else {
-    snprintf(tb, sizeof(tb), "+ TEMP  %.1f C", w.temp_c);
+    snprintf(tb, sizeof(tb), "+ TEMP  %.0f F", temp_f(w.temp_c));
     snprintf(hb, sizeof(hb), "RH +  %.0f%%", w.humidity_pct);
   }
   lv_label_set_text(s_temp, tb);

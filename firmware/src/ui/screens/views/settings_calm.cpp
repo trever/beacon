@@ -17,8 +17,23 @@
 #include "ui/screens/screen_common.h"
 #include "ui/wifi_panel.h"
 #include "ui/settings_power_rows.h"
+#include "ui/duration_panel.h"
+#include "ui/durations.h"
+#include "ui/carousel.h"
 #include <Arduino.h>
 static void update(void);
+static lv_obj_t* s_rotate_val;
+
+// Auto-rotate interval. Reuses the shared DURATIONS presets and the generic duration_panel, exactly
+// like Dim/Sleep -- "Never" means off. Re-arms the carousel timer so the change is live, no reboot.
+static void rotate_picked(uint8_t idx) {
+  nvs_set_byte(NVS_ROTATE_KEY, idx);
+  carousel_apply_rotate();
+}
+static void rotate_cb(lv_event_t*) {
+  duration_panel_open("Auto-rotate", nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX), rotate_picked);
+}
+
 
 static lv_obj_t *s_theme_val, *s_bright_val, *s_batt_val, *s_wifi_val;
 static lv_obj_t *s_dim_val, *s_sleep_val;
@@ -98,7 +113,7 @@ static void build(lv_obj_t* page) {
   lv_obj_align(brand, LV_ALIGN_TOP_LEFT, SAFE_INSET + 20, SAFE_INSET + 8);
 
   int y = SAFE_INSET + 36;
-  const int dy = 48;
+  const int dy = 44;   // 8 rows: 48 would push the last one into the bottom corner arc
 
   s_wifi_val = mk_row(page, t, y, "Wi-Fi", "not set >", t->ink_dim, NULL); y += dy;
   lv_obj_t* wifi_row = lv_obj_get_parent(s_wifi_val);   // tap the whole row (big touch target)
@@ -119,12 +134,18 @@ static void build(lv_obj_t* page) {
 
   s_sleep_val = mk_row(page, t, y, "Sleep", "", t->ink_dim, sleep_cb); y += dy;
 
+  s_rotate_val = mk_row(page, t, y, "Auto-rotate", "", t->ink_dim, rotate_cb); y += dy;
+
   mk_row(page, t, y, "About", ">", t->ink_dim, about_cb);
 
   update();
 }
 
 static void update(void) {
+  { uint8_t ri = nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX);
+    if (ri >= DURATION_COUNT) ri = ROTATE_DEFAULT_IDX;   // stale/corrupt index => documented default
+    char rv[16]; snprintf(rv, sizeof(rv), "%s >", DURATIONS[ri].label);
+    lv_label_set_text(s_rotate_val, rv); }
   const beacon_theme_t* t = theme_active();
   char wbuf[48]; net_status_str(wbuf, sizeof(wbuf)); lv_label_set_text_fmt(s_wifi_val, "%s >", wbuf);
   lv_label_set_text_fmt(s_theme_val, "%s >", t->id ? t->id : "--");

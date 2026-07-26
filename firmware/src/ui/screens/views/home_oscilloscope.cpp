@@ -1,4 +1,5 @@
 #include "ui/screen.h"
+#include "ui/fmt.h"
 #include "ui/screens/screen_common.h"
 #include "ui/styles.h"
 #include "ui/state_view.h"
@@ -16,7 +17,7 @@
 // (each a dim eyebrow over a bright phosphor value).
 
 
-static lv_obj_t *s_clock, *s_date, *s_trig;
+static lv_obj_t *s_clock, *s_date, *s_trig, *s_merid;
 static lv_obj_t *s_wave;
 static lv_obj_t *s_temp, *s_humid, *s_sky;
 
@@ -99,6 +100,14 @@ static void build(lv_obj_t* page) {
   lv_obj_set_style_text_font(s_clock, t->f_hero, 0);
   lv_obj_align(s_clock, LV_ALIGN_TOP_MID, 0, SAFE_INSET + 36);
 
+  // Meridiem in its own label: hero fonts carry no A-Z (fonts/MANIFEST.md), so AM/PM cannot render
+  // in the clock face. Anchored to the clock so it follows this theme's placement.
+  s_merid = lv_label_create(page);
+  lv_label_set_text(s_merid, "");
+  lv_obj_set_style_text_font(s_merid, t->f_mono, 0);
+  lv_obj_set_style_text_color(s_merid, t->ink_dim, 0);
+  lv_obj_align_to(s_merid, s_clock, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
+
   s_date = lv_label_create(page);
   lv_label_set_text(s_date, "--");
   lv_obj_set_style_text_color(s_date, t->ink_dim, 0);
@@ -121,7 +130,7 @@ static void build(lv_obj_t* page) {
 
 static void update(void) {
   const beacon_theme_t* t = theme_active(); if (!t) return;
-  render_clock_ex(s_clock, s_date, "%a %d %b", txt_set);
+  render_clock_ex(s_clock, s_merid, s_date, "%a %d %b", txt_set);
   weather_rec_t w = ds_get_weather();
   uint32_t now = now_s();
 
@@ -135,7 +144,7 @@ static void update(void) {
     txt_set(s_temp, "--");
     txt_set(s_humid, "--");
   } else {
-    snprintf(buf, sizeof(buf), "%.1f\xC2\xB0", w.temp_c);
+    fmt_temp(buf, sizeof(buf), w.temp_c);
     txt_set(s_temp, buf);
     snprintf(buf, sizeof(buf), "%.0f%%", w.humidity_pct);
     txt_set(s_humid, buf);

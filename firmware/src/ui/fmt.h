@@ -24,6 +24,18 @@ static inline void fmt_value(char* buf, size_t n, double v) {
   snprintf(buf, n, "%s", out);
 }
 
+// Temperature display. The weather record stores CELSIUS -- that is what Open-Meteo returns and what
+// `weather_rec_t.temp_c` claims -- so the unit conversion is a display concern and lives here. Keeping
+// the record canonical means a future metric/imperial toggle changes only this helper, not the fetch
+// path or the stored schema.
+static inline double temp_f(double c) { return c * 9.0 / 5.0 + 32.0; }
+
+// Fahrenheit, whole degrees + degree sign (UTF-8 0xC2 0xB0, present in every display/body/mono
+// subset). Whole degrees because a tenth of a degree F is below what the reading is worth.
+static inline void fmt_temp(char* buf, size_t n, double celsius) {
+  snprintf(buf, n, "%.0f\xC2\xB0", temp_f(celsius));
+}
+
 // Signed change: glyph (^ up / v down / - flat) + abs percent, e.g. "^ 0.12%".
 // Returns: +1 up, -1 down, 0 flat (caller picks up/down/dim color).
 static inline int fmt_change(char* buf, size_t n, double pct) {

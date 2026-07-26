@@ -5,6 +5,8 @@
 #include "ui/theme.h"
 #include "ui/theme_catalog.h"
 #include "ui/chrome.h"
+#include "ui/durations.h"
+#include "ui/idle_glue.h"
 #include "core/nvs.h"
 #include "config/layout.h"
 #include "ui/screens/screen_home.h"
@@ -85,6 +87,34 @@ static void tick_cb(lv_timer_t*) {
   set_dots(s_current);
 }
 
+// --- auto-rotate (FR-SET: unattended page cycling) ---
+//
+// Advances one page on a user-configurable interval so the device reads as an ambient display when
+// nobody is touching it. Two guards keep it from fighting the user or the power budget:
+//   1. Recent touch defers it. lv_disp_get_inactive_time() is the same activity clock the dim/sleep
+//      logic uses, so a rotation never lands mid-gesture or yanks the page you just swiped to.
+//   2. Dim/asleep suppresses it, because rotating an unlit panel burns QSPI flushes for nothing --
+//      and #60 pauses the update tick there anyway, so a rotated page would arrive unpopulated.
+static lv_timer_t* s_rotate = nullptr;
+
+static void rotate_cb(lv_timer_t*) {
+  uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
+  if (period == 0) return;                       // "Never" => off (timer stays armed but inert)
+  if (idle_is_inactive()) return;                // dim/asleep: don't spend flushes on an unlit panel
+  if (lv_disp_get_inactive_time(NULL) < period) return;   // user active within the interval => defer
+  lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);    // same path a swipe takes (SCROLL_END -> show)
+}
+
+// Re-arm after a settings change so a new interval takes effect without a reboot. Polls at a fraction
+// of the interval rather than exactly on it: the inactivity test above needs to be re-checked more
+// often than once per period, or a rotation deferred by a touch would wait a whole extra cycle.
+void carousel_apply_rotate(void) {
+  uint32_t period = DURATIONS[nvs_get_byte(NVS_ROTATE_KEY, ROTATE_DEFAULT_IDX)].ms;
+  uint32_t poll = period ? (period / 4 < 1000 ? 1000 : period / 4) : 5000;
+  if (!s_rotate) s_rotate = lv_timer_create(rotate_cb, poll, NULL);
+  else           lv_timer_set_period(s_rotate, poll);
+}
+
 #if BEACON_PERF
 // Deterministic swipe benchmark (BEACON_PERF only). Animating a one-page scroll on a timer drives the
 // EXACT render path a finger does -- scroll animation, SCROLL_END, show(), recenter() -- so the
@@ -156,6 +186,7 @@ void carousel_init(void) {
   recenter();                                                      // pin start to the center slot
   show(start);
   s_tick = lv_timer_create(tick_cb, 500, NULL);
+  carousel_apply_rotate();   // arm auto-rotate from the persisted interval
 #if BEACON_PERF
   lv_timer_create(autoswipe_cb, 700, NULL);   // continuous scroll load; see autoswipe_cb
 #endif

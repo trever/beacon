@@ -3,6 +3,7 @@
 // dim dateline, two centered weather readouts (temp / humidity). Sparse, white-on-black,
 // one faint red accent. Background + chrome are drawn by the carousel.
 #include "ui/screen.h"
+#include "ui/fmt.h"
 #include "ui/styles.h"
 #include "ui/state_view.h"
 #include "ui/theme.h"
@@ -16,7 +17,7 @@ static void update(void);
 
 
 static lv_obj_t *s_dot, *s_brand, *s_topright;
-static lv_obj_t *s_clock, *s_date, *s_city;
+static lv_obj_t *s_clock, *s_date, *s_city, *s_merid;
 static lv_obj_t *s_temp, *s_hum;
 static lv_obj_t *s_status;
 
@@ -52,6 +53,14 @@ static void build(lv_obj_t* page) {
   lv_obj_set_style_text_font(s_clock, t->f_hero, 0);
   lv_obj_set_style_text_color(s_clock, t->ink, 0);
   lv_obj_align(s_clock, LV_ALIGN_CENTER, 0, -28);
+
+  // Meridiem lives in its own label: hero fonts are digit/symbol subsets with no A-Z (fonts/MANIFEST.md),
+  // so "AM"/"PM" cannot render in the clock face. Anchored to the clock so it tracks this theme's layout.
+  s_merid = lv_label_create(page);
+  lv_label_set_text(s_merid, "");
+  lv_obj_set_style_text_font(s_merid, t->f_body, 0);
+  lv_obj_set_style_text_color(s_merid, t->ink_dim, 0);
+  lv_obj_align_to(s_merid, s_clock, LV_ALIGN_OUT_RIGHT_BOTTOM, 6, -14);
 
   s_date = lv_label_create(page);
   lv_label_set_text(s_date, "-- -- ----");
@@ -105,7 +114,7 @@ static void build(lv_obj_t* page) {
 }
 
 static void update(void) {
-  render_clock_ex(s_clock, s_date, "%a %d %b", lv_set);
+  render_clock_ex(s_clock, s_merid, s_date, "%a %d %b", lv_set);
   { char c[48]; strncpy(c, geoip_city(), sizeof(c) - 1); c[sizeof(c) - 1] = 0;   // matches place[48] (issue #54)
     for (char* p = c; *p; ++p) *p = (char)tolower((unsigned char)*p);   // calm lane is lowercase
     lv_label_set_text(s_city, c); }
@@ -126,7 +135,7 @@ static void update(void) {
     lv_label_set_text(s_temp, "--");
     lv_label_set_text(s_hum, "--");
   } else {
-    snprintf(buf, sizeof(buf), "%.1f\xC2\xB0", w.temp_c);
+    fmt_temp(buf, sizeof(buf), w.temp_c);
     lv_label_set_text(s_temp, buf);
     snprintf(buf, sizeof(buf), "%.0f%%", w.humidity_pct);
     lv_label_set_text(s_hum, buf);

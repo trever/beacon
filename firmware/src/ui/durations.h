@@ -18,3 +18,9 @@ static const duration_opt_t DURATIONS[] = {
 #define DURATION_COUNT ((uint8_t)(sizeof(DURATIONS) / sizeof(DURATIONS[0])))
 #define DURATION_DEFAULT_DIM   2   // 1 min
 #define DURATION_DEFAULT_SLEEP 4   // 5 min
+
+// Auto-rotate interval (carousel_apply_rotate). Reuses DURATIONS so the picker, the labels and the
+// persisted-index rules are shared; "Never" (last entry) means off, which is the default -- the
+// device must not start cycling pages on somebody who never asked for it.
+#define NVS_ROTATE_KEY    "rotidx"   // <=15 chars (NVS key limit)
+#define ROTATE_DEFAULT_IDX (DURATION_COUNT - 1)   // "Never"
