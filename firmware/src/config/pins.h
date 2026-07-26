@@ -14,6 +14,12 @@
 #define PIN_IIC_SDA 15
 #define PIN_IIC_SCL 14
 
+// Side buttons (docs/research 2026-06-05: PWR via AXP2101, BOOT, user GPIO18). Active LOW.
+// GPIO0 is also the download-mode strap -- held during RESET it enters the bootloader; runtime use is
+// unaffected. PWR is PMU-owned (long-hold powers off) and is not read as a GPIO.
+#define PIN_BTN_PREV  0    // BOOT
+#define PIN_BTN_NEXT 18    // user button
+
 // Touch
 #define PIN_TOUCH_INT 11
 #define ADDR_TOUCH    0x5A

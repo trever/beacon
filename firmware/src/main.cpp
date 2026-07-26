@@ -23,6 +23,7 @@
 #include "ui/idle_glue.h"
 #include "ui/capture.h"
 #include "hal/imu.h"
+#include "hal/buttons.h"
 #include "core/imu_detect.h"
 #include "ui/overlays.h"
 #if defined(BEACON_AUDIO_SPIKE)
@@ -97,6 +98,7 @@ void setup() {
   if (!display_begin()) { LOGE("halt: display"); return; }
   display_brightness(nvs_get_brightness(204));   // restore persisted brightness (FR-SET-2); 204 = 80% default
   touch_begin();
+  buttons_begin();
   if (!imu_begin()) LOGE("imu: not detected (gestures disabled)");
   // Escape hatch: holding a finger on the screen during boot forces the setup portal even with stored
   // creds (recovery when you're on a new network and can't reach the saved one). ~0.6s sample window.
@@ -162,6 +164,15 @@ void loop() {
   uint8_t g = imu_poll();
   if (g & IMU_RAISE) lv_disp_trig_activity(NULL);   // wake from dim/sleep
   if (g & IMU_SHAKE) ui_dismiss_top_overlay();
+
+  // Side buttons: page prev/next, but only when nothing on screen has a better claim. An open overlay
+  // (wifi/duration/about/pair) takes them as "dismiss", matching what IMU shake already does -- paging
+  // the carousel behind a modal would be both invisible and confusing.
+  if (uint8_t btn = buttons_poll()) {
+    lv_disp_trig_activity(NULL);              // any press wakes and restarts the idle clock
+    if (!ui_dismiss_top_overlay())            // consumed by an overlay?
+      carousel_advance((btn & BTN_EVT_NEXT) ? +1 : -1);
+  }
   // Sleep by LVGL's own hint instead of a fixed 5 ms. Mid-swipe LVGL asks to be called back
   // immediately (next==0) and the old flat delay(5) burned ~5 ms of every ~23 ms frame -- ~20% of
   // throughput at the exact moment it was scarcest. Floor of 1 tick keeps yielding to the scheduler

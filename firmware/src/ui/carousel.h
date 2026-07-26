@@ -12,6 +12,7 @@ void carousel_set_tick_paused(bool paused);  // pause/resume the 500ms update ti
 // carousel_init() calls it once at boot. Safe to call repeatedly.
 void carousel_apply_rotate(void);
 void carousel_goto_buddy(void);              // navigate to the CLAUDE/buddy screen (auto-wake, no animation)
+void carousel_advance(int dir);              // +1 next / -1 prev page, animated (physical buttons)
 #if BEACON_CAPTURE
 int  carousel_count(void);                   // number of screens (screenshot sweep)
 const char* carousel_screen_id(int idx);     // canonical id of screen idx (screenshot filenames)

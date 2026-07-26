@@ -121,6 +121,15 @@ static void rotate_cb(lv_timer_t*) {
   lv_obj_scroll_by(s_pager, -SCREEN_W, 0, LV_ANIM_ON);   // same path a swipe takes (SCROLL_END -> show)
 }
 
+// Advance one page in either direction (+1 next, -1 prev). Same scroll path a swipe takes, so
+// SCROLL_END -> show() -> recenter() all run normally. Also pushes the auto-rotate dwell out, so a
+// deliberate button press is not immediately overridden by a rotation that was already due.
+void carousel_advance(int dir) {
+  if (dir == 0) return;
+  lv_disp_trig_activity(NULL);   // count as user activity: wake, and restart dim/sleep + rotate dwell
+  lv_obj_scroll_by(s_pager, dir > 0 ? -SCREEN_W : SCREEN_W, 0, LV_ANIM_ON);
+}
+
 // Re-arm after a settings change so a new interval takes effect without a reboot. Polls at a fraction
 // of the interval so the touch-grace check is re-evaluated often enough to be responsive, while the
 // actual advance is paced by s_rotate_due.
