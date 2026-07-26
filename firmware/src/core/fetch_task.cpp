@@ -5,6 +5,8 @@
 #include "fetch/weather.h"
 #include "fetch/finance.h"
 #include "fetch/geoip.h"
+#include "fetch/ice.h"
+#include "config/ice.h"
 #include "config/ticker_table.h"
 #include "util/log.h"
 #include <Arduino.h>
@@ -13,9 +15,13 @@
 #define WEATHER_CADENCE_S 600u    // 10 min (tech.md §6)
 #define RETRY_S            60u    // flat retry after a failed fetch (backoff added only if 429s appear)
 
-// Source slots: index 0 = weather, 1..N = ticker[idx-1]. next_due holds the epoch each is due.
+// Source slots: 0 = weather, 1 = ICE D4 RIN, TICKER_BASE.. = ticker[idx-TICKER_BASE].
+// next_due holds the epoch each is due. Adding a fixed source means bumping TICKER_BASE and every
+// slot<->ticker conversion below; they are centralized here for that reason.
 #define SRC_WEATHER 0
-static uint32_t s_next_due[1 + MAX_TICKERS];
+#define SRC_ICE     1
+#define TICKER_BASE 2
+static uint32_t s_next_due[TICKER_BASE + MAX_TICKERS];
 
 // One shared scratch for every fetch body (#65 M6); 8KB fits the largest (Yahoo chart ~unfiltered).
 static char s_scratch[8192];
@@ -24,8 +30,9 @@ size_t fetch_scratch_cap(void) { return sizeof(s_scratch); }
 
 static uint32_t cadence_of(int slot) {
   if (slot == SRC_WEATHER) return WEATHER_CADENCE_S;
+  if (slot == SRC_ICE)     return ICE_CADENCE_S;
   ticker_runtime_t t;
-  return ticker_table_get(slot - 1, &t) ? t.cadence_s : WEATHER_CADENCE_S;
+  return ticker_table_get(slot - TICKER_BASE, &t) ? t.cadence_s : WEATHER_CADENCE_S;
 }
 
 // Host each slot fetches from -- lets the scheduler drain same-host due slots back-to-back so one TLS
@@ -33,8 +40,9 @@ static uint32_t cadence_of(int slot) {
 // fetch modules; a mismatch only loses the reuse (falls back to oldest-due), never correctness.
 static const char* slot_host(int slot) {
   if (slot == SRC_WEATHER) return "api.open-meteo.com";
+  if (slot == SRC_ICE)     return ICE_HOST;
   ticker_runtime_t t;
-  if (!ticker_table_get(slot - 1, &t)) return "";
+  if (!ticker_table_get(slot - TICKER_BASE, &t)) return "";
   switch (t.source) {
     case SRC_YAHOO:       return "query1.finance.yahoo.com";
     case SRC_BINANCE:     return "data-api.binance.vision";
@@ -43,17 +51,20 @@ static const char* slot_host(int slot) {
 }
 
 static data_err_t run_slot(int slot) {
-  return (slot == SRC_WEATHER) ? fetch_weather() : fetch_finance((uint8_t)(slot - 1));
+  if (slot == SRC_WEATHER) return fetch_weather();
+  if (slot == SRC_ICE)     return fetch_ice();
+  return fetch_finance((uint8_t)(slot - TICKER_BASE));
 }
 
 // Flip all device-plane records to ST_OFFLINE when the link drops (don't fetch while down).
 static void mark_offline(void) {
   ds_set_state_weather(ST_OFFLINE, ERR_NO_ROUTE);
+  ds_set_state_ice(ST_OFFLINE, ERR_NO_ROUTE);
   for (uint8_t i = 0; i < ds_get_finance_count(); i++) ds_set_state_finance(i, ST_OFFLINE, ERR_NO_ROUTE);
 }
 
 static void fetch_task(void*) {
-  int slots = 1 + ticker_table_count();
+  int slots = TICKER_BASE + ticker_table_count();
   uint32_t last_gen = ticker_table_gen();
   for (int i = 0; i < slots; i++) s_next_due[i] = 0;   // all due at first connect
   bool was_up = false;
@@ -70,8 +81,8 @@ static void fetch_task(void*) {
     // every finance slot due immediately so the new tickers fetch promptly; weather (slot 0) is untouched.
     uint32_t gen = ticker_table_gen();
     if (gen != last_gen) {
-      slots = 1 + ticker_table_count();
-      for (int i = 1; i < slots; i++) s_next_due[i] = now;
+      slots = TICKER_BASE + ticker_table_count();
+      for (int i = TICKER_BASE; i < slots; i++) s_next_due[i] = now;
       last_gen = gen;
     }
 

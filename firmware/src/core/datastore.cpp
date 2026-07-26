@@ -6,6 +6,7 @@
 
 static ds_lock_t        s_lock;
 static weather_rec_t    s_weather;
+static ice_rec_t        s_ice;
 static finance_rec_t    s_finance[MAX_TICKERS];
 static uint8_t          s_finance_count;
 static usage_rec_t      s_usage;
@@ -17,6 +18,7 @@ void datastore_init(void) {
   ds_lock_init(s_lock);
   ds_lock_take(s_lock);
   memset(&s_weather, 0, sizeof(s_weather));       hdr_loading(&s_weather.hdr);
+  memset(&s_ice, 0, sizeof(s_ice));               hdr_loading(&s_ice.hdr);
   memset(&s_usage, 0, sizeof(s_usage));           hdr_loading(&s_usage.hdr);
   memset(&s_buddy, 0, sizeof(s_buddy));           hdr_loading(&s_buddy.hdr);
 
@@ -85,6 +87,16 @@ void ds_apply_sessions(const buddy_session_t* s, uint8_t count, uint32_t now) {
 }
 
 // --- explicit state transitions: do not touch value payload ---
+void ds_set_ice(const ice_rec_t* r) {
+  ds_lock_take(s_lock);
+  s_ice = *r; s_ice.hdr.state = ST_LIVE; s_ice.hdr.err = ERR_NONE;
+  ds_lock_give(s_lock);
+}
+
+void ds_set_state_ice(screen_state_t s, data_err_t e) {
+  ds_lock_take(s_lock); s_ice.hdr.state = s; s_ice.hdr.err = e; ds_lock_give(s_lock);
+}
+
 void ds_set_state_weather(screen_state_t s, data_err_t e) {
   ds_lock_take(s_lock); s_weather.hdr.state = s; s_weather.hdr.err = e; ds_lock_give(s_lock);
 }
@@ -113,6 +125,10 @@ void ds_set_hub_offline(void) {
 }
 
 // --- getters: by-value snapshots ---
+ice_rec_t ds_get_ice(void) {
+  ds_lock_take(s_lock); ice_rec_t r = s_ice; ds_lock_give(s_lock); return r;
+}
+
 weather_rec_t ds_get_weather(void) {
   ds_lock_take(s_lock); weather_rec_t r = s_weather; ds_lock_give(s_lock); return r;
 }
@@ -138,6 +154,7 @@ static void sweep_one(record_hdr_t* h, uint32_t now, uint32_t stale_s) {
 void ds_tick_staleness(uint32_t now) {
   ds_lock_take(s_lock);
   sweep_one(&s_weather.hdr,    now, WEATHER_STALE_S);
+  sweep_one(&s_ice.hdr,        now, ICE_STALE_S);
   sweep_one(&s_usage.hdr,      now, USAGE_STALE_S);
   sweep_one(&s_buddy.hdr,      now, BUDDY_STALE_S);
   for (uint8_t i = 0; i < s_finance_count; i++) sweep_one(&s_finance[i].hdr, now, finance_stale_s(i));

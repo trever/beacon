@@ -14,11 +14,11 @@
 
 | Thing | Count | Source of truth |
 |---|---|---|
-| Carousel screens | 5 (home, finance, usage, buddy, settings) | `firmware/src/ui/carousel.cpp` `MODULES[]` |
+| Carousel screens | 6 (home, finance, ice, usage, buddy, settings) | `firmware/src/ui/carousel.cpp` `MODULES[]` |
 | Themes | 7 | `firmware/src/ui/theme_catalog.h` `THEME_COUNT` |
-| Per-theme views | 35 (5 screens x 7 themes) | `firmware/src/ui/screens/views/` |
-| Firmware host tests | 29 suites / 185 cases | `firmware/test/test_*/` |
-| Hub tests | 204 cases | `hub/Tests/` |
+| Per-theme views | 42 (6 screens x 7 themes) | `firmware/src/ui/screens/views/` |
+| Firmware host tests | 30 suites / 191 cases | `firmware/test/test_*/` |
+| Hub tests | 216 cases | `hub/Tests/` |
 | Device->hub commands | 4 (`permission`, `open`, `config_ack`, `report`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
 | Hub->device blocks | 5 (`usage`, `buddy`, `loc` share the status frame; `sessions` and `config` are standalone frames) | `hub/CONTRACT.md` §A/§B2 |
 | Hub providers | 3 (claude, codex, omp) | `hub/Sources/beacon-hub/AppDelegate.swift` `startProviders()` |
@@ -90,7 +90,8 @@ Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8
 
 ### Fetch (`src/fetch/`)
 `weather.cpp`/`parse_weather.cpp` (Open-Meteo) · `finance.cpp`/`parse_finance.cpp` (Yahoo + Binance
-mirror) · `geoip.cpp`/`parse_geoip.cpp`. **The `parse_*.cpp` half is pure and host-tested; the
+mirror) · `geoip.cpp`/`parse_geoip.cpp` · `ice.cpp`/`parse_ice.cpp` (ICE D4 RIN futures; endpoint +
+cadence in `config/ice.h`). **The `parse_*.cpp` half is pure and host-tested; the
 non-parse half does the HTTP.** Keep that split when adding a source.
 
 ---

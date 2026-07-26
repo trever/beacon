@@ -9,12 +9,13 @@
 #include "config/layout.h"
 #include "ui/screens/screen_home.h"
 #include "ui/screens/screen_finance.h"
+#include "ui/screens/screen_ice.h"
 #include "ui/screens/screen_usage.h"
 #include "ui/screens/screen_buddy.h"
 #include "ui/screens/screen_settings.h"
 
 static const screen_module_t* MODULES[] = {
-  &home_module, &finance_module, &usage_module, &buddy_module, &settings_module,
+  &home_module, &finance_module, &ice_module, &usage_module, &buddy_module, &settings_module,
 };
 static const int COUNT = (int)(sizeof(MODULES) / sizeof(MODULES[0]));
 
@@ -22,6 +23,9 @@ static lv_obj_t* s_pager = nullptr;
 static lv_obj_t* s_pages[8];
 static lv_obj_t* s_dots[8];
 static int s_current = 0;
+// Index of the buddy screen in MODULES. Named so a screen inserted before it cannot silently send
+// wake-on-prompt to the wrong page (it moved 3 -> 4 when the ICE screen landed).
+#define BUDDY_INDEX 4
 static bool s_settling = false;   // guards reentrant SCROLL_END from our own recenter()
 static lv_timer_t* s_tick = nullptr;   // the 500ms visible-screen update timer; paused while idle (#60)
 
@@ -170,11 +174,11 @@ void carousel_set_tick_paused(bool paused) {
 int carousel_current(void) { return s_current; }
 lv_obj_t* carousel_root(void) { return s_pager; }
 
-// Buddy screen is at index 3 in MODULES (home=0, finance=1, usage=2, buddy=3, settings=4).
+// Buddy screen index in MODULES (home=0, finance=1, ice=2, usage=3, buddy=4, settings=5).
 // Kept as a named function rather than carousel_goto(3) so callers don't embed the magic index.
 void carousel_goto_buddy(void) {
-  if (s_current == 3) return;   // already there; no scroll churn
-  show(3);
+  if (s_current == BUDDY_INDEX) return;   // already there; no scroll churn
+  show(BUDDY_INDEX);
   recenter();
 }
 
