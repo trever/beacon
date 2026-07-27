@@ -5,6 +5,17 @@ import BeaconHubKit
 // and persist+push on every edit via the B3 path (model.onApplyTickerEdit). All search/merge/encoding
 // logic is the tested B1/B2 layer; this view only debounces, displays, and mutates a local working copy.
 // Shares HubViewModel with the popover panel so the sync badge reflects the live config_ack.
+//
+// WS-5 (docs/plans/2026-07-27-hub-visual-system-plan.md SS"WS-5") re-tokenises this file onto the
+// shared component layer (HubStyle/HubRows/HubSurfaces): `Module`/`DeckButton` are gone, the private
+// `ResultRow`/`CurrentRow`/`TickerRowIconButton`/`SourceChip` row types are gone in favour of shared
+// leaf components (`Card`, `HubButton`, `IconButton`, `HubBadge`, `EmptyState`, `RowSeparator`) composed
+// directly in this file's own row builders -- there is no single shared "row" shape that fits an
+// Add-with-validation row and a reorder-with-trash row, so those two stay bespoke compositions built
+// from shared tokens/leaf views rather than a hand-rolled duplicate abstraction (design SS9.2's private-
+// helper allowance). `SyncBadge` keeps its own compact layout (no shared component covers an inline
+// icon+text status badge outside a full-width `StatusRow`) but now sources its glyph/tint from the one
+// `HubState` vocabulary instead of an independent switch-based colour mapping (design SS3.3).
 
 struct TickerEditorView: View {
     @ObservedObject var model: HubViewModel
@@ -17,46 +28,74 @@ struct TickerEditorView: View {
     // keyed by row id (cleared when that row is retried). Keeps add async without blocking the UI.
     @State private var validatingID: String?
     @State private var addErrors: [String: String] = [:]
+    // Trash no longer removes on tap (design SS3.10): it stages the row here and a destructive `.alert`
+    // names it before `remove(_:)` actually runs.
+    @State private var pendingRemoval: TickerRow?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             header
             searchModule
             resultsModule
             currentListModule
         }
-        .padding(12)
-        .frame(width: 420, height: 520, alignment: .top)
+        .padding(HubSpace.m)
+        // Width is this view's external frame contract (embedded by DeviceTab.tickerSection, WS-4) and
+        // stays fixed. Height converts from a hard `height: 520` to ideal+min (design SS8.3) so larger
+        // system text sizes can grow the rows without clipping; DeviceTab hosts this inside its own
+        // ScrollView, so a taller editor just scrolls rather than overflowing a fixed popover.
+        .frame(width: 420, alignment: .top)
+        .frame(minHeight: 420, idealHeight: 520)
         // Seed from the persisted list; re-seed if it changes underneath us (e.g. a push edit elsewhere).
         .onAppear { working = model.tickerRows }
         .onChange(of: model.tickerRows) { working = $0 }
+        .alert("Remove \(pendingRemoval?.name ?? "ticker")?",
+               isPresented: Binding(get: { pendingRemoval != nil },
+                                    set: { if !$0 { pendingRemoval = nil } }),
+               presenting: pendingRemoval) { row in
+            Button("Cancel", role: .cancel) { pendingRemoval = nil }
+            Button("Remove", role: .destructive) { remove(row); pendingRemoval = nil }
+        } message: { row in
+            Text("This removes \(row.sym) from the shared ticker list; Markets and Chart both stop " +
+                 "showing it. You can add it back any time from search.")
+        }
     }
 
     // MARK: - Header / sync badge
 
     private var header: some View {
         HStack {
-            Text("Tickers").font(.system(size: 15, weight: .semibold))
+            Text("Tickers").font(HubType.pane).foregroundStyle(HubColor.inkPrimary)
             Spacer()
-            SyncBadge(status: model.tickerSync)
+            syncBadge
         }
+    }
+
+    private var syncBadge: some View {
+        let state = model.tickerSync.hubState
+        return HStack(spacing: HubSpace.xs) {
+            Image(systemName: state.glyph).foregroundStyle(state.tint)
+            Text(model.tickerSync.hubLabel).foregroundStyle(HubColor.inkSecondary)
+        }
+        .font(HubType.secondary)
     }
 
     // MARK: - Search
 
     private var searchModule: some View {
-        Module {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.system(size: 12))
+        Card {
+            HStack(spacing: HubSpace.s) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(HubColor.inkSecondary)
+                    .font(HubType.control)
                 TextField("Search Binance + Yahoo", text: $query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(HubType.control)
                     .onChange(of: query) { runSearch($0) }
                 if !query.isEmpty {
-                    Button { query = ""; results = [] } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    IconButton(systemImage: "xmark.circle.fill", label: "Clear search") {
+                        query = ""; results = []
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -83,22 +122,19 @@ struct TickerEditorView: View {
     // MARK: - Results
 
     private var resultsModule: some View {
-        Module(padding: 0) {
+        Card(padding: .rows) {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if results.isEmpty {
-                        Text(query.isEmpty ? "Type to search symbols." : "No matches.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(11)
+                        EmptyState(systemImage: "magnifyingglass",
+                                   title: query.isEmpty ? "Type to search symbols." : "No matches.",
+                                   message: query.isEmpty
+                                       ? "Search Binance and Yahoo Finance by name or symbol."
+                                       : "Try a different symbol or name.")
                     } else {
                         ForEach(results, id: \.row.id) { candidate in
-                            ResultRow(candidate: candidate,
-                                      canAdd: working.count < ChartInstrumentSelection.maxTickers && !working.contains { $0.id == candidate.row.id },
-                                      validating: validatingID == candidate.row.id,
-                                      error: addErrors[candidate.row.id],
-                                      add: { add(candidate.row) })
-                            Divider().padding(.leading, 11)
+                            resultRow(candidate)
+                            RowSeparator(hasLeadingIcon: false)
                         }
                     }
                 }
@@ -107,42 +143,113 @@ struct TickerEditorView: View {
         .frame(maxHeight: 200)
     }
 
+    // Name / symbol-middot-exchange is design SS3.4's own row-depth benchmark (the same join
+    // PageDesignerChartPopover.instrumentSecondary uses for the chart's instrument search) -- applied
+    // here too so a Yahoo result stays distinguishable from a same-named lookalike, plus the source chip
+    // so a symbol that exists on both Binance and Yahoo is never ambiguous about which one "Add" wires up.
+    @ViewBuilder
+    private func resultRow(_ candidate: TickerCandidate) -> some View {
+        VStack(alignment: .leading, spacing: HubSpace.xs) {
+            HStack(spacing: HubSpace.s) {
+                VStack(alignment: .leading, spacing: HubSpace.hair) {
+                    Text(candidate.row.name)
+                        .font(HubType.bodyEmph).foregroundStyle(HubColor.inkPrimary).lineLimit(1)
+                    HStack(spacing: HubSpace.s) {
+                        Text(resultSecondary(candidate))
+                            .font(HubType.caption).foregroundStyle(HubColor.inkSecondary).lineLimit(1)
+                        HubBadge(candidate.sourceLabel)
+                    }
+                }
+                Spacer(minLength: HubSpace.s)
+                if validatingID == candidate.row.id {
+                    ProgressView().controlSize(.small)
+                } else {
+                    HubButton(title: "Add", kind: .primary, isEnabled: canAdd(candidate.row)) {
+                        add(candidate.row)
+                    }
+                }
+            }
+            // A failed test-fetch is retryable (add again once the device is reachable), so it is `warn`,
+            // not `error` (design SS3.3: "TickerEditorView uses red for a failed test-fetch ... miscast").
+            // Text stays `inkPrimary` at `type.secondary`; the glyph alone carries the state colour.
+            if let error = addErrors[candidate.row.id] {
+                HStack(spacing: HubSpace.xs) {
+                    Image(systemName: HubState.warn.glyph)
+                        .foregroundStyle(HubState.warn.tint).font(HubType.caption)
+                    Text(error).font(HubType.secondary).foregroundStyle(HubColor.inkPrimary).lineLimit(2)
+                }
+            }
+        }
+        .padding(.horizontal, HubSpace.m).padding(.vertical, HubSpace.s)
+    }
+
+    private func resultSecondary(_ candidate: TickerCandidate) -> String {
+        guard let exchange = candidate.exchange, !exchange.isEmpty else { return candidate.row.sym }
+        return "\(candidate.row.sym) \u{00B7} \(exchange)"
+    }
+
+    private func canAdd(_ row: TickerRow) -> Bool {
+        working.count < ChartInstrumentSelection.maxTickers && !working.contains { $0.id == row.id }
+    }
+
     // MARK: - Current list
 
+    private var isFull: Bool { working.count >= ChartInstrumentSelection.maxTickers }
+
     private var currentListModule: some View {
-        Module(padding: 0) {
+        Card(padding: .rows) {
             VStack(spacing: 0) {
                 HStack {
-                    Text("Current list").font(.system(size: 12, weight: .semibold))
+                    Text("Current list").font(HubType.section).foregroundStyle(HubColor.inkPrimary)
                     Spacer()
+                    // "list is full" affordance (device caps at MAX_TICKERS): the counter recolours via
+                    // the shared `state.warn` token instead of a raw `.orange` once at capacity.
                     Text("\(working.count) / \(ChartInstrumentSelection.maxTickers)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(working.count >= ChartInstrumentSelection.maxTickers ? .orange : .secondary)
+                        .font(HubType.caption.monospacedDigit())
+                        .foregroundStyle(isFull ? HubColor.stateWarn : HubColor.inkSecondary)
                 }
-                .padding(.horizontal, 11).padding(.top, 11).padding(.bottom, 6)
+                .padding(.horizontal, HubSpace.m).padding(.top, HubSpace.m).padding(.bottom, HubSpace.s)
 
                 if working.isEmpty {
-                    Text("Add symbols from search above.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 11).padding(.bottom, 11)
+                    EmptyState(systemImage: "list.bullet",
+                               title: "No tickers yet.",
+                               message: "Add symbols from the search above.")
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(Array(working.enumerated()), id: \.element.id) { idx, row in
-                                CurrentRow(row: row,
-                                           canMoveUp: idx > 0,
-                                           canMoveDown: idx < working.count - 1,
-                                           moveUp: { move(idx, by: -1) },
-                                           moveDown: { move(idx, by: 1) },
-                                           remove: { remove(row) })
-                                Divider().padding(.leading, 11)
+                                currentRow(row, index: idx)
+                                RowSeparator(hasLeadingIcon: false)
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func currentRow(_ row: TickerRow, index: Int) -> some View {
+        HStack(spacing: HubSpace.s) {
+            VStack(alignment: .leading, spacing: HubSpace.hair) {
+                Text(row.name).font(HubType.bodyEmph).foregroundStyle(HubColor.inkPrimary).lineLimit(1)
+                Text(row.sym).font(HubType.caption).foregroundStyle(HubColor.inkSecondary).lineLimit(1)
+            }
+            Spacer(minLength: HubSpace.s)
+            // Labelled "earlier"/"later" (not "up"/"down" or "previous"/"next") naming the ticker moved --
+            // design SS8.2's own phrasing for this exact reorder-chevron pattern.
+            IconButton(systemImage: "chevron.up", label: "Move \(row.name) earlier", isEnabled: index > 0) {
+                move(index, by: -1)
+            }
+            IconButton(systemImage: "chevron.down", label: "Move \(row.name) later",
+                       isEnabled: index < working.count - 1) {
+                move(index, by: 1)
+            }
+            IconButton(systemImage: "trash", label: "Remove \(row.name)") {
+                pendingRemoval = row
+            }
+        }
+        .padding(.horizontal, HubSpace.m).padding(.vertical, HubSpace.s)
     }
 
     // MARK: - Mutations (each commits via B3: persist + push)
@@ -186,127 +293,27 @@ struct TickerEditorView: View {
     private func commit() { model.onApplyTickerEdit(working) }
 }
 
-// MARK: - Rows
+// MARK: - Sync status vocabulary
 
-private struct ResultRow: View {
-    let candidate: TickerCandidate
-    let canAdd: Bool
-    let validating: Bool
-    let error: String?
-    let add: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(candidate.row.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(candidate.row.sym).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                        SourceChip(label: candidate.sourceLabel)
-                    }
-                }
-                Spacer(minLength: 6)
-                if validating {
-                    ProgressView().controlSize(.small)
-                } else {
-                    DeckButton(title: "Add", kind: .primary, enabled: canAdd, action: add)
-                }
-            }
-            if let error {
-                Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
-            }
+private extension TickerSyncStatus {
+    // Routes the sync indicator through the one shared status vocabulary (design SS3.3) instead of an
+    // independent switch-based glyph/colour mapping -- this file was one of the five call sites SS3.3
+    // names for consolidation into `HubState` (HubRows.swift).
+    var hubState: HubState {
+        switch self {
+        case .idle:    return .notSetUp
+        case .pending: return .checking
+        case .synced:  return .ok
+        case .error:   return .error
         }
-        .padding(.horizontal, 11).padding(.vertical, 8)
     }
-}
 
-private struct CurrentRow: View {
-    let row: TickerRow
-    let canMoveUp: Bool
-    let canMoveDown: Bool
-    let moveUp: () -> Void
-    let moveDown: () -> Void
-    let remove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                Text(row.sym).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 6)
-            TickerRowIconButton(systemImage: "chevron.up", enabled: canMoveUp, action: moveUp)
-            TickerRowIconButton(systemImage: "chevron.down", enabled: canMoveDown, action: moveDown)
-            TickerRowIconButton(systemImage: "trash", tint: .red, enabled: true, action: remove)
-        }
-        .padding(.horizontal, 11).padding(.vertical, 8)
-    }
-}
-
-// Renamed from `IconButton` (WS-0, docs/plans/2026-07-27-hub-visual-system-plan.md SS3): the shared
-// component layer now owns that name for a labelled, 28x28-hit-target button (HubSurfaces.swift), and a
-// file-scoped `private` type of the identical name in this file still collides with it at this file's
-// own lookup scope even though it is private. This is a mechanical rename only -- same fields, same
-// behaviour, same unlabelled 22x22 rendering the design doc names as one of the two sites `control.hitMin`
-// exists to replace (`TickerEditorView.swift:254`). WS-5 owns converting this file to the shared
-// `IconButton` for real; that conversion is out of WS-0's scope.
-private struct TickerRowIconButton: View {
-    let systemImage: String
-    var tint: Color = .secondary
-    let enabled: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage).font(.system(size: 12)).frame(width: 22, height: 22)
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(tint)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.3)
-    }
-}
-
-private struct SourceChip: View {
-    let label: String
-    var body: some View {
-        Text(label)
-            .font(.system(size: 9, weight: .semibold))
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.primary.opacity(0.1), in: Capsule())
-            .foregroundStyle(.secondary)
-    }
-}
-
-private struct SyncBadge: View {
-    let status: TickerSyncStatus
-    var body: some View {
-        Label(text, systemImage: icon)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(color)
-    }
-    private var text: String {
-        switch status {
+    var hubLabel: String {
+        switch self {
         case .idle:            return "Not synced"
-        case .pending:         return "Syncing…"
+        case .pending:         return "Syncing\u{2026}"
         case .synced(let n):   return "Synced \(n)"
         case .error(let msg):  return "Error: \(msg)"
-        }
-    }
-    private var icon: String {
-        switch status {
-        case .idle:    return "circle"
-        case .pending: return "arrow.triangle.2.circlepath"
-        case .synced:  return "checkmark.circle.fill"
-        case .error:   return "exclamationmark.triangle.fill"
-        }
-    }
-    private var color: Color {
-        switch status {
-        case .idle:    return .secondary
-        case .pending: return .secondary
-        case .synced:  return .green
-        case .error:   return .red
         }
     }
 }
