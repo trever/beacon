@@ -464,7 +464,8 @@ private struct PageOptions: View {
     /// hasn't produced a room list yet, so this never contradicts a `.loading`/`.failed`/`.notAuthorized`
     /// state by claiming something is "not in the current groups" before groups were even fetched.
     private var roomOrphan: String? {
-        guard !currentRoom.isEmpty, case .loaded(let names) = roomFetch, !names.contains(currentRoom)
+        guard !currentRoom.isEmpty, case .loaded(let names) = roomFetch,
+              !names.contains(where: { $0.name == currentRoom })
         else { return nil }
         return currentRoom
     }
@@ -820,7 +821,11 @@ private enum SonosRoomFetchState: Equatable {
     case loading
     case notAuthorized
     case failed(String)
-    case loaded([String])
+    // WS-0b widened SonosRoomListResult.rooms from [String] to [SonosRoomSummary] (BeaconHubKit) so a row
+    // carries more than a bare name; this compile-only carve-out follows suit rather than re-deriving
+    // names locally. WS-2 (wave 1) is what actually renders the added depth -- this file changes nothing
+    // about how it looks.
+    case loaded([SonosRoomSummary])
 }
 
 /// Room-picker popover for the Sonos page (Defect 2): replaces the old free-text field. Every state the
@@ -882,8 +887,12 @@ private struct SonosRoomPopover: View {
                             RoomRow(name: "\(orphan) (not in current groups)", isCurrent: true) { select(orphan) }
                             Divider()
                         }
-                        ForEach(names, id: \.self) { name in
-                            RoomRow(name: name, isCurrent: name == currentRoom) { select(name) }
+                        // WS-0b compile-only carve-out: `name` is now a SonosRoomSummary, not a String --
+                        // `.name` is read out immediately so this row still shows (and acts on) a bare
+                        // room name, unchanged in appearance. WS-2 is what actually renders the added
+                        // depth (player count / playback), via BeaconHubKit.SonosRoomList.menuTitle.
+                        ForEach(names, id: \.name) { room in
+                            RoomRow(name: room.name, isCurrent: room.name == currentRoom) { select(room.name) }
                             Divider()
                         }
                     }

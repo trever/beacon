@@ -17,10 +17,15 @@ struct SonosNowPlaying: Equatable {
 // replaces the free-text field). Deliberately its own vocabulary, not ProviderOutcome: this is reported
 // straight to a UI completion handler, never through noteOutcome, and never touches fails/backoffUntil --
 // see SonosProvider.fetchAvailableRooms's doc comment for why.
+//
+// WS-0b ("the Sonos room seam", design 2026-07-27-hub-visual-system): `rooms` widened from `[String]`
+// (names only) to `[SonosRoomSummary]` so a row has something true to say beyond the name -- player count
+// and member names are free from the same parseGroups response; playback state is best-effort, filled in
+// by a bounded per-group fan-out in fetchGroupsForRoomList/enrichAndDeliverRoomList below.
 enum SonosRoomListResult: Equatable {
     case notAuthorized       // no secret and/or no OAuth credential yet
     case failed(String)      // reached Sonos (or tried to) and it did not work; message is display-ready
-    case rooms([String])     // group names, in whatever order the API returned them; may be empty
+    case rooms([SonosRoomSummary])   // one per group, in whatever order the API returned them; may be empty
 }
 
 // Resolves the Sonos household/groups, polls the selected room's playback metadata, and reports a
@@ -404,9 +409,67 @@ final class SonosProvider {
                     self.deliverRoomList(.failed(Self.describeRoomListFailure(result)), completion)
                     return
                 }
-                self.deliverRoomList(.rooms(parsed.groups.map(\.name)), completion)
+                self.enrichAndDeliverRoomList(parsed: parsed, completion: completion)
             }
         }
+    }
+
+    // WS-0b: bounded, best-effort playback enrichment for the room list. Player count and member names
+    // (below, via SonosRoomList.summarize) are free -- already fully decoded by parseGroups above. Playback
+    // state is not: it is one GET /groups/{id}/playback per group, so it is capped, deadlined, and
+    // deliberately kept OUT of the poll gate the now-playing poller alone owns (see this file's own
+    // fetchAvailableRooms doc comment) -- a playback request that fails here just leaves that room's
+    // `playing` at nil, never a gate event.
+    //
+    // Runs on `queue` (called from within a `self.queue.async` block above); every read/write of the local
+    // state below (`playingByName`, `delivered`) happens back on `queue` too -- each per-group completion
+    // hops onto `queue` before touching them, and both the DispatchGroup's `notify` and the deadline timer
+    // are scheduled on `queue` -- so nothing here needs a separate lock (mirrors the queue-confinement
+    // SonosProvider already uses for cachedCredential/householdId/groupCache above).
+    private static let maxGroupsToEnrichPlayback = 12
+    private static let playbackEnrichmentDeadline: TimeInterval = 1.5
+
+    private func enrichAndDeliverRoomList(parsed: SonosAPI.GroupsResponse, completion: @escaping (SonosRoomListResult) -> Void) {
+        let groupTuples = parsed.groups.map { (name: $0.name, playerIds: $0.playerIds) }
+        let playerTuples = parsed.players.map { (id: $0.id, name: $0.name) }
+
+        guard !parsed.groups.isEmpty, parsed.groups.count <= Self.maxGroupsToEnrichPlayback else {
+            // Nothing to enrich, or the household is bigger than the design's own "< 12 items" premise for
+            // a Menu-style picker -- report player counts/names only, immediately, rather than firing a
+            // burst of playback requests sized for a household this is not.
+            let summaries = SonosRoomList.summarize(groups: groupTuples, players: playerTuples, playing: [:])
+            deliverRoomList(.rooms(summaries), completion)
+            return
+        }
+
+        var playingByName: [String: Bool] = [:]
+        var delivered = false   // latch: guarantees the completion fires exactly once, including on the deadline path
+        let deliverOnce: () -> Void = { [weak self] in
+            guard let self, !delivered else { return }
+            delivered = true
+            let summaries = SonosRoomList.summarize(groups: groupTuples, players: playerTuples, playing: playingByName)
+            self.deliverRoomList(.rooms(summaries), completion)
+        }
+
+        let dg = DispatchGroup()
+        for group in parsed.groups {
+            dg.enter()
+            api(path: "groups/\(group.id)/playback") { [weak self] result in
+                self?.queue.async {
+                    if result.status == 200, result.networkError == nil, let data = result.data,
+                       let playing = SonosAPI.parsePlaybackState(data) {
+                        playingByName[group.name] = playing
+                    }
+                    dg.leave()
+                }
+            }
+        }
+
+        // The common case (all groups answer well inside the deadline): `notify` fires first, delivers,
+        // and the deadline block below later becomes a no-op via the latch -- there is no timer object to
+        // cancel or leak, just one scheduled block that either fires first or fires harmlessly late.
+        dg.notify(queue: queue) { deliverOnce() }
+        queue.asyncAfter(deadline: .now() + Self.playbackEnrichmentDeadline) { deliverOnce() }
     }
 
     private static func describeRoomListFailure(_ r: APIResult) -> String {
