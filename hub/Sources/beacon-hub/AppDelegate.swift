@@ -150,7 +150,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
         // and on-change frames only, never the 30s heartbeat.
         heartbeat = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.mux.reap(); self?.sendFullFrame(includeLocation: false) }
+            Task { @MainActor in
+                self?.mux.reap()
+                self?.sendFullFrame(includeLocation: false)
+                // Sonos rides the heartbeat too. stale.h gives it SONOS_STALE_S = 300 and calls it "the
+                // same class as usage/buddy" -- but usage and buddy are FIELDS of the StatusFrame above,
+                // so they are refreshed every 30 s for free, while `sonos` is a standalone frame that was
+                // only ever pushed on change and on reconnect. A record with a staleness window fed by a
+                // change-only push goes stale whenever nothing changes: pause the music, or just let one
+                // track run past five minutes, and the device marks it stale while the hub is polling
+                // perfectly happily. Resending makes it behave like the class it claims to be.
+                self?.pushSonosFrame()
+            }
         }
         heartbeat?.tolerance = 3   // #66 L6: let the OS coalesce the 30s heartbeat wakeup.
     }
