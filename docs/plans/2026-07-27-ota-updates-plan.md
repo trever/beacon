@@ -1649,10 +1649,10 @@ have predicted either.
 
 | Workstream | Smallest revert | What the device does afterwards |
 |---|---|---|
-| Phase 0 | Any of its four commits independently | Wire layer is inert (nothing dispatches `ota`), seams are `nil` closures. **Do not revert the `FIRMWARE_VERSION` fix in isolation** once anything compares versions |
+| Phase 0 | Any of its up-to-four commits independently (P-1 verification is now often a no-diff check, not a commit) | Wire layer is inert (nothing dispatches `ota`), seams are `nil` closures. **Do not revert the `FIRMWARE_VERSION` fix in isolation** once anything compares versions |
 | WS-1 | One commit | No hatch, no `hatch` flag, hub stops offering updates — the correct degraded state. A published tag cannot be un-published; tag a fix instead |
 | WS-2 | (d) overlay -> (c) transfer -> keep (a) rollback + (b) pure logic | **Never revert (a) `ota_rollback.cpp` alone while (c) is live** — that restores "marks itself valid before `setup()`", which is worse than no OTA |
-| WS-3 | The `AppDelegate` wiring commit | Two tested, unused components; the hub offers nothing. Reach for this first if the LAN listener misbehaves |
+| WS-3 | The `AppDelegate` wiring commit (any `LanAssetServer` extension commit reverts independently — check for other callers, i.e. album art, before reverting it) | Two tested, unused components; the hub offers nothing. Reach for this first if the LAN listener misbehaves |
 | WS-4 | One commit, view layer only | Hub is functional and headless; the device-side offer row still works. Cheapest revert in the plan |
 | WS-5 | One commit, three lines | The hub loses the CI cross-check; the device's own SHA-256 over BLE is unaffected |
 | WS-6 | Docs only | No behaviour change |

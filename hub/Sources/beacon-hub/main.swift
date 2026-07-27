@@ -62,6 +62,12 @@ if CommandLine.arguments.dropFirst().first == "sonos-authorize" {
     SonosAuthorizerCLI.run()   // never returns; exits via exit(0)/exit(1)/exit(2)
 }
 
+// Register the device's bundled faces (Space Grotesk, JetBrains Mono -- see DeviceGlass.swift) before any
+// device-glass view is built, so DeviceGlassFont.resolve finds them on the very first paint instead of
+// racing it. Safe to call here, before NSApplication exists: CoreText registration touches no
+// Bluetooth/TCC-gated API, unlike the CLI subcommands above which `exit()` before reaching this point.
+DeviceGlassFont.registerBundledFonts()
+
 // Menubar agent entry point. .accessory => no Dock icon / app bundle needed for development. This is the
 // app's RESTING policy: SettingsWindowController promotes to .regular while the Settings window is open
 // (design §9.1, provisional -- buys a real menu bar, ⌘,, ⌘W, window cycling; costs a Dock icon that

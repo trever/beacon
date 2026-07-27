@@ -129,6 +129,10 @@ mkdir -p "$APP/Contents/Resources"
 cp Resources/beacon-prompt.wav "$APP/Contents/Resources/"   # prompt-arrival chime (MenubarController loads via Bundle.main)
 cp Resources/beacon-attention.wav "$APP/Contents/Resources/"   # attention chime (your-turn)
 cp Resources/BeaconHub.icns "$APP/Contents/Resources/"      # app icon (CFBundleIconFile)
+# Device glass fonts (Space Grotesk, JetBrains Mono -- design SS6.4, DeviceGlass.swift): SwiftPM does not
+# copy Resources/ on its own, so this is the only place these ship. main.swift registers them at launch
+# via DeviceGlassFont.registerBundledFonts(); the whole-bundle codesign below already covers this dir.
+cp -R Resources/fonts "$APP/Contents/Resources/"
 # Bundle the installer assets so the in-app "Install" button works from the shipped .app (HooksInstaller
 # resolves these via Bundle.main, dev-fallback to the repo). Keep the shim executable (+x) on copy.
 cp build-app.sh "$APP/Contents/Resources/"
