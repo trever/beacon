@@ -216,6 +216,70 @@ bool hub_parse_sonos(const char* json, size_t len, sonos_rec_t* out, bool* had_s
 // Defined below with the other frame builders; declared here so the pages ack can sit beside its parser.
 static size_t finish_frame(JsonDocument& doc, char* buf, size_t cap);
 
+// "sart" frame (CONTRACT.md §A4, design docs/specs/2026-07-27-sonos-album-art-design.md §2): unlike
+// "sonos" this is NOT a full snapshot of persistent state -- it is a one-shot instruction ("gen G has
+// this url" / "gen G has no art"), so a frame that doesn't carry "sart" correctly returns false /
+// *had_sart=false, and the CALLER must not read that as "clear the art" (D-3): clearing happens only on
+// an explicit S2 (has_url==false), via ds_clear_sonos_art().
+bool hub_parse_sart(const char* json, size_t len, hub_sart_t* out, bool* had_sart) {
+  *had_sart = false;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len)) return false;    // not valid JSON
+  if ((doc["v"] | 0) != 1) return false;                 // unknown major version => ignore
+  JsonVariantConst s = doc["sart"];
+  if (!s.is<JsonObjectConst>()) return false;             // no "sart" object in this frame
+
+  // NOT `s["gen"] | 0`: ArduinoJson's operator| deduces T=int from the literal 0, and is<int>() is false
+  // for a value above INT32_MAX (e.g. the worst-case uint32 gen), silently falling back to 0 instead of
+  // the real value -- same trap documented on hub_parse_comps's rev. `gen` is REQUIRED in both S1/S2.
+  if (!s["gen"].is<uint32_t>() && !s["gen"].is<int>()) return false;
+  uint32_t gen = s["gen"].as<uint32_t>();
+
+  const char* url = s["url"].as<const char*>();
+  bool has_url = (url != nullptr);
+  if (has_url) {
+    size_t n = strlen(url);
+    // Over-cap: REJECT the whole frame rather than truncate (design §2.3's required coverage) -- a
+    // truncated URL is a guaranteed-failing fetch that looks like a network fault, not a protocol error.
+    if (n > SONOS_ART_URL_LEN - 1) return false;
+    memcpy(out->url, url, n);
+    out->url[n] = '\0';
+  } else {
+    out->url[0] = '\0';
+  }
+  out->gen = gen;
+  out->has_url = has_url;
+  *had_sart = true;
+  return true;
+}
+
+// device -> hub Sonos art outcome (S3, CONTRACT.md §B4): one-way, one per gen, no ack expected. A null
+// or empty err on a failure falls back to "net" (the vocabulary's generic transport-failure value).
+size_t hub_build_sart_stat(char* buf, size_t cap, uint32_t gen, bool ok, const char* err) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["v"] = 1;
+  doc["cmd"] = "sart_stat";
+  doc["gen"] = gen;
+  doc["ok"] = ok;
+  if (!ok) doc["err"] = (err && *err) ? err : "net";
+  return finish_frame(doc, buf, cap);
+}
+
+// device -> hub device report, `what:"device"` (D-1, CONTRACT.md §B4): extends the §B3 `report` verb
+// with a second `what` value. `ip` is OMITTED entirely (never "") when the caller passes NULL/empty --
+// an empty string would let the hub attempt to build a URL to nowhere instead of treating the device as
+// unreachable.
+size_t hub_build_device_report(char* buf, size_t cap, const char* ip) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["v"] = 1;
+  doc["cmd"] = "report";
+  doc["what"] = "device";
+  if (ip && *ip) doc["ip"] = ip;
+  return finish_frame(doc, buf, cap);
+}
+
 data_err_t hub_parse_pages(const char* json, size_t len, uint32_t* rev, page_list_t* out,
                            const char** err_out) {
   static const char* E_MALFORMED = "malformed";

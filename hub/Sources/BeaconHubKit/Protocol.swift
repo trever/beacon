@@ -313,6 +313,61 @@ public struct SonosFrame: Codable {
     }
 }
 
+/// Frozen caps for the `sart` frame (CONTRACT.md §A4, design `docs/specs/2026-07-27-sonos-album-art-
+/// design.md` §2). Every byte of `url` is drawn from `[0-9a-f.:/htp]` -- none of which JSON-escapes --
+/// so, unlike `SonosFrame`/`SessionDetailsFrame`, character caps bound wire bytes EXACTLY (the `comps`
+/// frame's property, CONTRACT.md §A3). No encode-measure-shrink loop is needed or present here.
+public enum SonosArtLimits {
+    public static let urlMaxChars = 96
+    /// HUB_FRAME_MAX in firmware/src/core/hub_proto.h -- asserted in tests, not enforced at runtime,
+    /// because the fixed charset already makes the worst case (139 B) provably under this ceiling.
+    public static let frameMaxBytes = 1024
+}
+
+/// Standalone hub->device frame (CONTRACT.md §A4) -- NOT a field on `sonos` (design §2.1): the `sonos`
+/// frame's own worst case already has only 22 B of headroom, and a 96-byte URL competing with a long
+/// track title for the same shrink budget would mean the loop decides which the user loses. `gen` is an
+/// opaque tile IDENTITY minted by the hub, never persisted, never an ordering (D-2, plan §3) -- the
+/// device compares it with `!=`, not `>`, because this counter resets on every hub relaunch.
+///
+/// S1 (art available): `url` present. S2 (no art for this track): `url` nil -- OMITTED from the wire,
+/// never `null` or `""` (Codable already does this: a nil optional is dropped, not encoded as null).
+public struct SonosArtFrame: Codable {
+    public var sart: SonosArt
+    public let v: Int
+
+    public struct SonosArt: Codable, Equatable {
+        public var gen: UInt32
+        public var url: String?
+        public init(gen: UInt32, url: String? = nil) { self.gen = gen; self.url = url }
+    }
+
+    public init(gen: UInt32, url: String? = nil) {
+        self.sart = SonosArt(gen: gen, url: url)
+        self.v = 1
+    }
+
+    /// Plain encode, no shrink loop: the fixed `[0-9a-f.:/htp]` charset means character caps already
+    /// bound bytes exactly, so the 139 B worst case (§2.3) is provable rather than measured. Tests
+    /// assert `count <= SonosArtLimits.frameMaxBytes`, not this function.
+    ///
+    /// `Foundation.JSONEncoder` escapes `/` as `\/` by default. That is valid JSON -- RFC 8259 makes the
+    /// escape OPTIONAL, not required -- but it silently breaks the "character caps bound bytes exactly"
+    /// claim this frame exists to make, since `url` always contains at least the two slashes in
+    /// `http://`. Measured: 141 B for the 96-char cap URL instead of the design's 139 B.
+    ///
+    /// `.withoutEscapingSlashes` is the supported way to turn that off (macOS 10.15+; this package
+    /// targets macOS 13). It is set HERE ONLY, deliberately: every other frame in this file measures its
+    /// own wire bytes with an encode-measure-shrink loop, so escaping is already accounted for in their
+    /// budgets, and adding this flag to them would change bytes on a frozen wire for no benefit.
+    public func encoded() throws -> Data {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var d = try enc.encode(self)
+        d.append(0x0A)
+        return d
+    }
+}
+
 // One hub->device status frame. usage/buddy/loc are independently optional (send what changed; the
 // device keeps an absent block's last values). encoded() emits the §7.1 wire form with "v":1 + a \n.
 public struct StatusFrame: Codable {
@@ -354,6 +409,15 @@ public enum DeviceCommand: Equatable {
     // reject an `err` ("malformed" only -- there is deliberately no "too_many_slots", design §4.3 rule 4).
     // Unlike `pagesAck`, the device does NOT restart, so the link stays up and the ack is reliable.
     case compsAck(rev: UInt32, ok: Bool, count: Int?, err: String?)
+    // One outcome per Sonos album-art `gen` (S3, CONTRACT.md §B4). One-way -- NO ack expected, unlike
+    // every *Ack case above: `gen` already tells the hub which tile this refers to. `err` is one of
+    // {conn_refused, timeout, http, size, net, no_wifi} on !ok (design §2.3); nil on ok.
+    case sartStat(gen: UInt32, ok: Bool, err: String?)
+    // The device's own LAN IP (D-1, CONTRACT.md §B4, additive `report` `what:"device"`), emitted once
+    // per BLE connection alongside `.report(what: "tickers", ...)`. `ip` is nil when the device reports
+    // WiFi down -- distinct from an empty string, which never appears on the wire (the device omits the
+    // key entirely rather than sending "").
+    case deviceReport(ip: String?)
 
     public static func parse(_ data: Data) -> DeviceCommand? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -374,8 +438,20 @@ public enum DeviceCommand: Equatable {
         case "config_ack":
             guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
             return .configAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)
+        case "sart_stat":
+            guard let gen = obj["gen"] as? Int, gen >= 0, let ok = obj["ok"] as? Bool else { return nil }
+            return .sartStat(gen: UInt32(gen), ok: ok, err: obj["err"] as? String)
         case "report":
-            guard (obj["what"] as? String) == "tickers",
+            // `what` namespaces the verb (§B3); an unrecognized value (or a missing one) drops the whole
+            // frame, same as an unknown top-level `cmd` -- an older/newer peer on either side degrades
+            // to "ignore", never a crash or a misparse into the wrong shape.
+            guard let what = obj["what"] as? String else { return nil }
+            if what == "device" {
+                return .deviceReport(ip: obj["ip"] as? String)
+            }
+            // The `what:"tickers"` guard below is UNCHANGED from before this case gained a `what` switch
+            // (WS-0 D-1): same fields, same bounds, same failure shape, byte for byte.
+            guard what == "tickers",
                   let rev = obj["rev"] as? Int, rev >= 0,
                   let part = obj["part"] as? Int, let parts = obj["parts"] as? Int,
                   parts > 0, part >= 0, part < parts,

@@ -693,6 +693,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .assembled(let rows): adoptDeviceReport(rows)
             case .pending, .dropped:   break
             }
+        // Album art plan WS-0 (docs/plans/2026-07-27-sonos-album-art-plan.md §4): these two cases exist
+        // only to freeze the wire and keep this exhaustive switch compiling for wave-B/C. No handling
+        // yet -- WS-4 (`SonosArtPublisher`) wires the real behavior (device-report-driven interface
+        // selection, sart_stat-driven Local Network diagnostics). Intentionally inert: WS-0 ships no UI,
+        // no HTTP client, no image decoding.
+        case .sartStat, .deviceReport:
+            break
         }
     }
 

@@ -14,3 +14,12 @@
 // report (a retry restarts at part 0, which restarts the hub's accumulator, so a partial never half-adopts).
 // A null link returns 0. Caller-owned: reading the runtime table into `rows` and the connection gating.
 int hub_emit_report(HubLink* link, const ticker_runtime_t* rows, int count);
+
+// Emit the once-per-connection device report (D-1, `cmd:"report"` `what:"device"`, CONTRACT.md §B4) --
+// a single, unchunked frame carrying only this device's LAN IP, so the hub learns which of its OWN
+// network interfaces to advertise a LAN asset URL on. `ip` is passed straight through to
+// hub_build_device_report: NULL/empty means WiFi is down, and the frame omits the "ip" key entirely
+// rather than sending an empty string. Same latch-only-on-full-success discipline as hub_emit_report:
+// returns true iff enqueued (or `link` is null -- native no-op success); the caller must NOT latch its
+// once-per-connection flag on false, and should retry on the next inbound frame this connection.
+bool hub_emit_device_report(HubLink* link, const char* ip);

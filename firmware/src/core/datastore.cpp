@@ -13,6 +13,7 @@ static uint8_t          s_finance_count;
 static usage_rec_t      s_usage;
 static buddy_rec_t      s_buddy;
 static sonos_rec_t      s_sonos;
+static sonos_art_rec_t  s_sonos_art;   // D-3: separate from s_sonos on purpose -- see records.h
 
 static void hdr_loading(record_hdr_t* h) { h->last_updated = 0; h->state = ST_LOADING; h->err = ERR_NONE; }
 
@@ -25,6 +26,7 @@ void datastore_init(void) {
   memset(&s_usage, 0, sizeof(s_usage));           hdr_loading(&s_usage.hdr);
   memset(&s_buddy, 0, sizeof(s_buddy));           hdr_loading(&s_buddy.hdr);
   memset(&s_sonos, 0, sizeof(s_sonos));           hdr_loading(&s_sonos.hdr);
+  memset(&s_sonos_art, 0, sizeof(s_sonos_art));   // no hdr -- gen=0 already means "no art ever published"
 
   // Seed finance ids/count from the runtime ticker table (already initialized -- NVS-restored list or
   // defaults), NOT DEFAULT_TICKERS: after a reboot with a saved hub config the table holds the restored
@@ -82,6 +84,36 @@ void ds_set_buddy(const buddy_rec_t* r) {
 void ds_set_sonos(const sonos_rec_t* r) {
   ds_lock_take(s_lock);
   s_sonos = *r; s_sonos.hdr.state = ST_LIVE; s_sonos.hdr.err = ERR_NONE;
+  ds_lock_give(s_lock);
+}
+
+// Sonos album art (D-3): writes gen/idx/have VERBATIM -- no ordering check against the prior gen, no
+// clamping. D-2 requires callers to compare gen with `!=`, so accepting a numerically smaller gen here
+// (e.g. after a hub relaunch resets its in-memory counter) must work exactly like any other gen.
+void ds_publish_sonos_art(uint32_t gen, uint8_t idx) {
+  ds_lock_take(s_lock);
+  s_sonos_art.gen  = gen;
+  s_sonos_art.idx  = idx;
+  s_sonos_art.have = true;
+  ds_lock_give(s_lock);
+}
+
+// S2: "no art for this track". Sets ONLY have=false -- gen/idx/seen_gen are left untouched, matching
+// the header comment's "bumps nothing else". This is an EXPLICIT clear, distinct from an absent sart
+// frame (design §2.3's "absence must never mean clear the art" rule is enforced by hub_task.cpp simply
+// never calling this on a missing frame, not by anything in this function).
+void ds_clear_sonos_art(void) {
+  ds_lock_take(s_lock);
+  s_sonos_art.have = false;
+  ds_lock_give(s_lock);
+}
+
+// Core 1's ack after it re-points the lv_img descriptor to buf[idx] (swap protocol rule 4/5). Core 0
+// must not begin writing the back buffer until this catches up to the published gen, or a bounded
+// timeout elapses (WS-2's job; this accessor only stores the value).
+void ds_sonos_art_seen(uint32_t gen) {
+  ds_lock_take(s_lock);
+  s_sonos_art.seen_gen = gen;
   ds_lock_give(s_lock);
 }
 void ds_apply_sessions(const buddy_session_t* s, uint8_t count, uint32_t now) {
@@ -176,6 +208,9 @@ buddy_rec_t ds_get_buddy(void) {
 }
 sonos_rec_t ds_get_sonos(void) {
   ds_lock_take(s_lock); sonos_rec_t r = s_sonos; ds_lock_give(s_lock); return r;
+}
+sonos_art_rec_t ds_get_sonos_art(void) {
+  ds_lock_take(s_lock); sonos_art_rec_t r = s_sonos_art; ds_lock_give(s_lock); return r;
 }
 
 // --- staleness sweep ---

@@ -262,6 +262,109 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(DeviceCommand.parse(Data("garbage".utf8)))
     }
 
+    // ===================== SonosArtFrame (CONTRACT.md §A4, plan WS-0) =====================
+
+    // Byte-exact fixture shared with firmware/test/test_sart_proto/test_main.cpp
+    // test_sart_byte_exact_round_trip_matches_swift_fixture -- the SAME literal on both sides (design
+    // §2.2's S1 example), so a future change that breaks one representation breaks both.
+    func testSonosArtFrameByteExactRoundTrip() throws {
+        let expected = #"{"sart":{"gen":7,"url":"http://192.168.1.42:54321/a/0123456789abcdef0123456789abcdef"},"v":1}"# + "\n"
+        let data = try SonosArtFrame(gen: 7, url: "http://192.168.1.42:54321/a/0123456789abcdef0123456789abcdef").encoded()
+        XCTAssertEqual(String(data: data, encoding: .utf8), expected)
+    }
+
+    // S1 at the cap: gen = UInt32.max (10 digits), url exactly 96 chars (SonosArtLimits.urlMaxChars).
+    // Design §2.3: exactly 139 bytes on the wire. Assert the number, not just `< frameMaxBytes`.
+    func testSonosArtFrameS1AtCapIs139Bytes() throws {
+        let url = "http://" + String(repeating: "1", count: SonosArtLimits.urlMaxChars - "http://".count)
+        XCTAssertEqual(url.utf8.count, SonosArtLimits.urlMaxChars)
+        let data = try SonosArtFrame(gen: .max, url: url).encoded()
+        XCTAssertEqual(data.count, 139, "S1 at cap must be exactly 139 B (design §2.3)")
+        XCTAssertTrue(data.count <= SonosArtLimits.frameMaxBytes)
+    }
+
+    // S2 (no art this track) at the cap: gen = UInt32.max, url nil. Design §2.3: exactly 34 bytes.
+    func testSonosArtFrameS2AtCapIs34Bytes() throws {
+        let data = try SonosArtFrame(gen: .max).encoded()
+        XCTAssertEqual(data.count, 34, "S2 at cap must be exactly 34 B (design §2.3)")
+        let obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let sart = obj["sart"] as! [String: Any]
+        XCTAssertNil(sart["url"], "S2 must omit url, never null or \"\"")
+    }
+
+    func testSonosArtFrameEncodesV1AndNewline() throws {
+        let data = try SonosArtFrame(gen: 1).encoded()
+        XCTAssertEqual(data.last, 0x0A)
+        let obj = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(obj["v"] as? Int, 1)
+        XCTAssertEqual((obj["sart"] as! [String: Any])["gen"] as? UInt32, 1)
+    }
+
+    // ===================== sart_stat / device report (CONTRACT.md §B4, D-1) =====================
+
+    func testParseSartStatOk() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","gen":7,"ok":true}"#.utf8))
+        XCTAssertEqual(c, .sartStat(gen: 7, ok: true, err: nil))
+    }
+
+    func testParseSartStatErr() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","gen":7,"ok":false,"err":"conn_refused"}"#.utf8))
+        XCTAssertEqual(c, .sartStat(gen: 7, ok: false, err: "conn_refused"))
+    }
+
+    // timeout (TCC-denial shape) and conn_refused (firewall shape) must parse to genuinely distinct
+    // values -- design §2.3 is explicit that a later workstream's Local Network row depends on this.
+    func testParseSartStatTimeoutAndConnRefusedAreDistinct() {
+        let timeout = DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","gen":1,"ok":false,"err":"timeout"}"#.utf8))
+        let refused = DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","gen":1,"ok":false,"err":"conn_refused"}"#.utf8))
+        XCTAssertEqual(timeout, .sartStat(gen: 1, ok: false, err: "timeout"))
+        XCTAssertEqual(refused, .sartStat(gen: 1, ok: false, err: "conn_refused"))
+        XCTAssertNotEqual(timeout, refused)
+    }
+
+    func testSartStatRejectsMissingFields() {
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","ok":true}"#.utf8)))     // no gen
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_stat","gen":7}"#.utf8)))       // no ok
+        XCTAssertNil(DeviceCommand.parse(Data("garbage".utf8)))
+    }
+
+    func testParseDeviceReportWithIp() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"report","what":"device","ip":"192.168.1.42"}"#.utf8))
+        XCTAssertEqual(c, .deviceReport(ip: "192.168.1.42"))
+    }
+
+    // WiFi down: the "ip" key is OMITTED entirely on the wire (D-1) -- must parse to nil, not "".
+    func testParseDeviceReportOmitsIpWhenWifiDown() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"report","what":"device"}"#.utf8))
+        XCTAssertEqual(c, .deviceReport(ip: nil))
+    }
+
+    // (c) Back-compat (design §2.4): `report` `what:"tickers"` must still parse EXACTLY as it did before
+    // this case gained a `what` branch -- same literal as testParseReportChunk, byte for byte.
+    func testParseReportTickersUnchangedAfterDeviceReportAdded() {
+        let json = #"""
+        {"v":1,"cmd":"report","what":"tickers","rev":0,"part":0,"parts":2,"tickers":[\#
+        {"id":"bz_btcusdt","src":"binance","sym":"BTCUSDT","name":"BTC","kind":"crypto","cadence":60,"stale":600,"basis":"24h"}]}
+        """#
+        guard case let .report(what, rev, part, parts, rows) = DeviceCommand.parse(Data(json.utf8)) else {
+            return XCTFail("expected .report")
+        }
+        XCTAssertEqual(what, "tickers")
+        XCTAssertEqual(rev, 0)
+        XCTAssertEqual(part, 0)
+        XCTAssertEqual(parts, 2)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0], TickerRow(id: "bz_btcusdt", src: .binance, sym: "BTCUSDT", name: "BTC",
+                                          kind: .crypto, cadence: 60, stale: 600, basis: .h24))
+    }
+
+    // (b) DeviceCommand.parse still returns nil for an unknown cmd (design §2.4) -- unaffected by the
+    // new sart_stat/report-what:"device" cases.
+    func testParseStillRejectsUnknownCmd() {
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"sart_bogus","gen":1,"ok":true}"#.utf8)))
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"report","what":"bogus"}"#.utf8)))
+    }
+
     func testAckAndErr() throws {
         let ack = try JSONSerialization.jsonObject(with: HubAck.ack(id: "req_abc", ok: true)) as! [String: Any]
         XCTAssertEqual(ack["v"] as? Int, 1)

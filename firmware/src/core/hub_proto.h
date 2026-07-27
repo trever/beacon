@@ -76,6 +76,52 @@ bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* h
 // on invalid JSON, wrong v, or no "sonos" object (leaves *out untouched on a false return).
 bool hub_parse_sonos(const char* json, size_t len, sonos_rec_t* out, bool* had_sonos);
 
+// --- Inbound: hub -> device Sonos album-art frame (S1/S2, CONTRACT.md §A4, design
+// docs/specs/2026-07-27-sonos-album-art-design.md §2) ---
+// S1 (art available): {"v":1,"sart":{"gen":N,"url":"http://<ipv4>:<port>/a/<32 hex>"}}
+// S2 (no art this track): {"v":1,"sart":{"gen":N}} -- has_url=false, out->url left empty ("").
+// A separate, standalone frame like "sonos"/"sessions" -- NOT joined into sonos_rec_t (D-3, records.h):
+// hub_parse_sonos is a full-snapshot parser that zeroes absent fields on every call, so any art field
+// living inside sonos_rec_t would be wiped by every ordinary "sonos" heartbeat. This function returning
+// false (or *had_sart=false) on a frame that simply doesn't carry "sart" must NEVER be read by the
+// caller as "clear the art" (design §2.3) -- clearing happens ONLY on an explicit S2, via the caller
+// calling ds_clear_sonos_art() when has_url==false, which this parser has no opinion on either way.
+// `gen` is required in both S1 and S2 and is an opaque tile IDENTITY, not an ordering (D-2): the caller
+// must compare with `!=`, never `>` -- the hub's in-memory gen counter resets on every hub relaunch.
+// An over-cap url (> SONOS_ART_URL_LEN-1 = 96 bytes) is REJECTED: the whole frame fails to parse
+// (returns false) rather than silently truncating into a guaranteed-failing fetch that would look like
+// a network fault instead of a protocol violation. Returns false on invalid JSON, wrong v, no "sart"
+// object, missing/non-numeric "gen", or an over-cap "url" (leaves *out untouched in every false case).
+// THIS WORKSTREAM (WS-0) SUPPLIES ONLY THE PARSER -- it does NOT wire a `"\"sart\""` check into
+// on_frame's frame_has() dispatch chain in hub_task.cpp. Without that dispatch, on_frame's fall-through
+// silently swallows every "sart" frame into hub_parse_status (see hub_parse_comps's header comment for
+// the same warning about "comps"). The NEXT workstream to touch hub_task.cpp (device art transport) MUST
+// add `if (frame_has(json, len, "\"sart\"")) { ...; return; }` alongside the existing "config"/"pages"/
+// "comps" checks, BEFORE the loc/status fall-through, or this parser is dead code on a real device.
+typedef struct { uint32_t gen; char url[SONOS_ART_URL_LEN]; bool has_url; } hub_sart_t;
+bool hub_parse_sart(const char* json, size_t len, hub_sart_t* out, bool* had_sart);
+
+// --- Outbound: device -> hub Sonos art outcome (S3, CONTRACT.md §B4) ---
+// One-way, one per gen, NO ack expected -- gen already tells the hub which tile this refers to.
+// ok  => {"v":1,"cmd":"sart_stat","gen":G,"ok":true}\n
+// err => {"v":1,"cmd":"sart_stat","gen":G,"ok":false,"err":"E"}\n
+// `err` in {conn_refused, timeout, http, size, net, no_wifi} (design §2.3's split vocabulary, reused
+// from OTA); a null/empty err on a failure falls back to "net". A superseded gen (a newer job replaced
+// this one before it finished) emits NO sart_stat at all -- CONTRACT.md §D's silent-withdraw precedent
+// -- so there is deliberately no "cancelled"/"superseded" value in the err vocabulary.
+// Returns bytes written (incl. '\n', excl. NUL), or 0 on overflow / invalid args.
+size_t hub_build_sart_stat(char* buf, size_t cap, uint32_t gen, bool ok, const char* err);
+
+// --- Outbound: device -> hub device report (D-1, CONTRACT.md §B4, additive `report` `what:"device"`) ---
+// {"v":1,"cmd":"report","what":"device","ip":"192.168.1.42"}\n -- "ip" OMITTED entirely (never an empty
+// string) when WiFi is down. One-way, no ack, emitted once per BLE connection alongside the existing
+// ticker report (hub_report.h). Lets the hub learn the device's own LAN IP: it needs this to pick which
+// of ITS OWN network interfaces to advertise a LAN asset URL on (a Mac may have Wi-Fi + Ethernet + a VPN
+// utun + a Thunderbolt bridge), and later to enforce OTA's "accept only the connection whose remote
+// endpoint matches this IP" restriction -- WS-0 supplies only the frame, not that restriction.
+// Returns bytes written (incl. '\n', excl. NUL), or 0 on overflow / invalid args.
+size_t hub_build_device_report(char* buf, size_t cap, const char* ip);
+
 // --- Outbound: device -> hub command builders ---
 // Write a newline-terminated command frame into buf. Returns bytes written (incl. the '\n', excl. the
 // NUL), or 0 on overflow / invalid args. `id` echoes the originating (short) prompt id.

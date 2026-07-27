@@ -248,6 +248,57 @@ by the device **live, with no restart** — the load-bearing difference from §A
   drops the `comps` frame exactly as it drops `sdetail`/`sessions` on older builds; Home renders its
   compiled layout. No version bump either direction.
 
+## A4. Hub -> device Sonos album art frame (additive, design
+`docs/specs/2026-07-27-sonos-album-art-design.md` §2, plan `docs/plans/2026-07-27-sonos-album-art-plan.md`
+§3 D-1..D-9)
+
+Which 200x200 tile (if any) the device should show for the currently-selected Sonos room's album art. A
+**standalone** frame, like `sonos`/`sessions` -- NOT a field on `sonos`: the `sonos` frame's own worst
+case already has only 22 B of headroom against `HUB_FRAME_MAX` (§A "sonos" block), and folding a 96-byte
+URL into it would make the shrink loop sacrifice track/artist/album text to make room for the art -- that
+is backwards, since if anything must be dropped it should be the art, not the artist's name. Parsed by
+`hub_parse_sart`, encoded by `BeaconHubKit/Protocol.swift SonosArtFrame`.
+
+```json
+{"sart":{"gen":7,"url":"http://192.168.1.42:54321/a/0123456789abcdef0123456789abcdef"},"v":1}
+{"sart":{"gen":8},"v":1}
+```
+
+- **S1** (art available, **139 B worst case**): `gen` + `url`. **S2** (no art for this track, **34 B
+  worst case**): `gen` only -- `url` OMITTED, never `null` or `""`. Key order is
+  `JSONEncoder(.sortedKeys)`, matching every other hub->device frame; both are newline-terminated.
+- `url` is `http://` + an IPv4 dotted quad + `:` + a port + `/a/` + 32 lowercase hex -- **never a
+  `.local` hostname** (the device has no mDNS resolver wired). Every byte is drawn from
+  `[0-9a-f.:/htp]`, none of which JSON-escapes, so **character caps bound bytes exactly** here -- no
+  encode-measure-shrink loop, unlike `sonos`/`sdetail`. This is the `comps` frame's property (§A3);
+  third instance of the pattern, precedent settled. **Frozen caps:** `url` <= **96** chars; `gen` is
+  **uint32**. An over-cap `url` on the wire is REJECTED (the whole frame fails to parse), never
+  truncated -- a truncated URL is a guaranteed-failing fetch that looks like a network fault.
+- **`gen`, not `rev`.** In this protocol `rev` always means "a config revision the device persists and
+  acks" (`config`/`pages`/`comps`). `gen` identifies a *tile's content*, is never persisted, and is
+  never acked through the config machinery.
+- **`gen` is an opaque tile IDENTITY, not an ordering; the device compares with `!=`, never `>` (D-2).**
+  The hub's `gen` counter is in-memory and resets on every hub relaunch, so a device already holding
+  `gen=7` can legitimately be handed `gen=1` next -- a `>` comparison would then ignore it forever.
+  uint32 wrap is a non-issue under the same `!=` rule.
+- **No `w`/`h` and no digest.** The tile is always 200x200 by contract (design §3.1), so dimensions on
+  the wire would be redundant. Art never becomes executable the way an OTA firmware image does, so the
+  worst outcome of wrong bytes is a wrong picture -- caught deterministically on the device by
+  `Content-Length == 80000` plus "exactly 80,000 bytes received", not by hashing. Deliberate divergence
+  from OTA, stated so it reads as a decision rather than an omission.
+- **Absence of a `sart` frame must NEVER mean "clear the art".** Art is cleared **only** by an explicit
+  S2. This is the opposite rule from `sonos`, whose full-snapshot semantics mean an absent field clears
+  -- which is exactly why the device stores art in its OWN record, `sonos_art_rec_t`, never inside
+  `sonos_rec_t`: `hub_parse_sonos` fills its output fresh on every call, so a field living there would be
+  zeroed by every ordinary `sonos` heartbeat (D-3).
+- A `sart` frame that arrives before the device has allocated its tile buffers (the `sonos` screen not
+  in the current page list) is dropped silently: no fetch is attempted and no `sart_stat` is emitted.
+- Old firmware ignores the unknown frame (additive, no version bump) -- identical to how
+  `sessions`/`sdetail`/`sonos`/`comps`/`pages` each landed: `on_frame`'s dispatch chain keys off known
+  block names and falls through to `hub_parse_status`, which accepts the valid `v:1` frame but fills
+  neither `usage` nor `buddy` (same as a `loc`-only frame today). New firmware + old hub: no `sart`
+  frame ever arrives, so the device never allocates a buffer and never downloads.
+
 ## B. Device -> hub commands + hub acks (FROZEN, `tech.md` §7.1)
 
 ```json
@@ -344,6 +395,54 @@ fields (not a nested `config` object). The hub adopts only when its store is pri
   `part` order == display order; line <= ~900 B; row never split; <= 16 rows; trailing `0x0A`).
 - **No ack.** One-way and informational. An older hub that does not know `cmd:"report"` drops it
   (`DeviceCommand.parse` returns `nil` on an unknown `cmd`).
+
+## B4. Device -> hub Sonos art outcome + device report (additive, design
+`docs/specs/2026-07-27-sonos-album-art-design.md` §2, plan §3 D-1)
+
+**`sart_stat`** -- one-way, one per §A4's `gen`, **no ack expected** (`gen` already tells the hub which
+tile this refers to). Mirror of `hub_proto.cpp` (`hub_build_sart_stat`) and `BeaconHubKit/Protocol.swift`
+(`DeviceCommand.sartStat`).
+
+```json
+{"v":1,"cmd":"sart_stat","gen":7,"ok":true}
+{"v":1,"cmd":"sart_stat","gen":7,"ok":false,"err":"conn_refused"}
+```
+
+- **75 B worst case** (`gen` at `4294967295`, `err` at its cap). `err` in {`conn_refused`, `timeout`,
+  `http`, `size`, `net`, `no_wifi`} -- reused deliberately from OTA's split vocabulary: `timeout` at zero
+  bytes received is the **TCC-denial** shape and `conn_refused` is the **firewall** shape, and those two
+  are precisely the evidence a later workstream's Local Network Settings row consumes. Do not collapse
+  them into one value.
+- **A superseded `gen`** (a newer art job replaced this one before it finished downloading) **emits NO
+  `sart_stat` at all** -- matching this document's §D silent-withdraw precedent, not a `cancelled`/
+  `superseded` err value.
+- Old hub drops the unknown `cmd` (`DeviceCommand.parse` returns `nil`), same as every other cmd here.
+
+**Device report, `what:"device"`** -- extends §B3's `report` verb with a second `what` value (D-1). The
+hub has never learned the device's IP before this frame existed. It needs to: both to pick which of
+*its own* network interfaces to advertise a LAN asset URL on (a Mac may have Wi-Fi + Ethernet + a VPN
+`utun` + a Thunderbolt bridge, and only one of them is routable to the device), and, later, to enforce
+OTA's "accept only the connection whose remote endpoint matches this IP" restriction. Emitted **once per
+BLE connection**, alongside the existing ticker report, latching together under the same
+latch-only-on-full-success discipline as §B3 (`hub_task.cpp`'s `!s_reported` site). Mirror of
+`hub_proto.cpp` (`hub_build_device_report`) / `hub_report.cpp` (`hub_emit_device_report`) and
+`BeaconHubKit/Protocol.swift` (`DeviceCommand.deviceReport`).
+
+```json
+{"v":1,"cmd":"report","what":"device","ip":"192.168.1.42"}
+```
+
+- `ip` is `WiFi.localIP().toString()`; **omitted entirely (never `""`) when WiFi is down** -- an empty
+  string would let the hub attempt to build a URL to nowhere instead of correctly treating the device as
+  unreachable.
+- `what` namespaces the verb exactly like §B3's `"tickers"`; the hub ignores any other `what`. **No
+  ack.** Old hub: `DeviceCommand.parse` returns `nil` on the unrecognized `what`, dropped exactly like an
+  unknown `cmd`.
+- This project (album art WS-0) widens the frame with `ip` only. OTA's Phase 0 (a separate, later
+  project, `docs/plans/2026-07-27-ota-updates-plan.md`) widens the SAME frame additively with
+  `fw`/`chip`/`slot`/`slotsz`/`appsz`/`hatch`/`pend` -- the established extend-rather-than-create pattern
+  every frame in this document follows; whichever project ships first owns this section first, by
+  convention, and the ordering is arbitrary.
 
 ## C. Upstream shapes (RECORDED — real token-redacted captures, 2026-06-11)
 
