@@ -108,6 +108,32 @@ The mockup device frames render the true rounded shape; [`docs/design/mockups/sa
 - **Prompt** — alert label + tool + mono command hint + Deny/Approve split actions. Used by Coding Buddy.
 - **Eyebrow** — mono `BEACON / <SCREEN>` + right-side status (used sparingly, one per screen — not on every section).
 
+## Home complications grid
+
+Home is a **host**, not a hand-laid layout: a header, and a six-slot vertical grid the hub assigns
+content to (Phase 1, 2026-07-27). Each complication occupies 1 or 2 slot units; the clock is the only
+2-unit complication today.
+
+- **Six slots, 62 px pitch**, anchored at absolute y `68 · 130 · 192 · 254 · 316 · 378` (measured from
+  the panel's top edge, already inside the 40 px safe inset). A placement's container top sits 14 px
+  above its anchor (`COMP_BAND_TOP_DY`), and its height is `62 * size - 2` px — verified on hardware
+  that this does **not** clip a shape-B secondary line's descenders (3 px of clearance measured against
+  a lowercase string with a true descender).
+- **No separator rule above slot 1** (nothing above it to separate from — a rule there would land in
+  the header band); every other occupied slot draws a 1px hairline at its container's top edge.
+- **Two row shapes**, both left-aligned inside the container:
+  - **Shape A** (data rows — market instruments, ICE futures, AI usage, weather): a dim label top-left,
+    a display-weight value top-right, and a dim secondary line bottom-right (a signed change % plus a
+    trend glyph where the source has one; no trend claim for values with no up/down meaning).
+  - **Shape B** (narrative rows — the Agents/Claude block, Sonos now-playing): a leading icon, a
+    primary line (what's happening), and a dim secondary line underneath (state, or artist/room).
+  - The **clock** is neither shape: hero-size time + a small meridiem label + a date line, filling both
+    of its two slots.
+- Complications are **not tappable in Phase 1** — nothing in the grid should read as a button.
+- Seven complications compiled today: `clock` (2 slots), `fin`, `ice`, `agents`, `usage`, `weather`,
+  `sonos` (1 slot each); `fin`/`usage` take a hub-assigned argument (a ticker id / a usage provider id).
+  An eighth, `chart` (2 slots, a sparkline), is reserved in the catalog for a later phase.
+
 ## Firmware mapping
 
 - Color/type tokens => a `Theme` struct of `lv_style_t` + `lv_font_t` pointers, applied at screen build / theme switch.

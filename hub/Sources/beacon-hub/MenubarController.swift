@@ -2,6 +2,17 @@ import AppKit
 import SwiftUI
 import BeaconHubKit
 
+// The replacement setup-hint row (design §2.3): which provider, if any, needs the menu's
+// "<Provider> hooks not installed · Set up" item shown. Pure so it's host-testable without AppKit/NSMenu.
+// `.checking` deliberately does NOT count as "needs setup" -- the first hooks check hasn't resolved yet,
+// and flashing the hint before it does would be the same premature-failure-state bug StatusRow's glyph
+// comment already calls out for the Settings UI.
+enum MenubarHooksHint {
+    static func providerNeedingSetup(_ toggles: [ProviderToggle]) -> ProviderToggle? {
+        toggles.first { $0.buddyOn && $0.hooks == .bad }
+    }
+}
+
 // NSStatusItem + NSPopover hosting the SwiftUI HubPanel (design 4A). Mirrors link status + last-sync age,
 // the four usage values, any provider error strings, a pairing hint, and Quit. Pure display; AppDelegate
 // pushes state in via the same setters and `on*` closures as before. The status-bar icon and the prompt
@@ -22,6 +33,11 @@ final class MenubarController: NSObject {
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
     private let model = HubViewModel()
+    // The replacement setup-hint row (design §2.3): lives in the app menu (installQuitShortcut) rather than
+    // the popover, hidden until MenubarHooksHint finds a provider that needs it. Non-modal, no focus theft --
+    // a menu item only reveals itself on an explicit click, same as the old checkbox's replacement was
+    // supposed to be.
+    private var hooksHintItem: NSMenuItem?
 
     // The shared view model, exposed so the dedicated ticker editor window (issue #92) observes the same
     // live tickerSync/tickerRows/search closure that the popover panel does.
@@ -118,15 +134,53 @@ final class MenubarController: NSObject {
     }
 
     // Accessory apps have no main menu, so ⌘Q has nowhere to bind. Install a minimal application menu with
-    // a Quit item; its key equivalent fires while the app is active (it is, after activate-on-show).
+    // Settings…/⌘, (design §2.3), the hooks-hint row (hidden until needed), Close Window/⌘W (so the new
+    // real Settings window has the standard close shortcut, design §5 acceptance gate (e)), and Quit; every
+    // key equivalent fires while the app is active (it is, after activate-on-show, and §9.1 additionally
+    // makes it .regular while Settings is open).
     private func installQuitShortcut() {
         let main = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        let settingsItem = appMenu.addItem(withTitle: "Settings\u{2026}", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self   // MenubarController is not in the responder chain; nil target would silently no-op.
+
+        let hint = NSMenuItem(title: "", action: #selector(openSettingsOnSources), keyEquivalent: "")
+        hint.target = self
+        hint.isHidden = true
+        hooksHintItem = hint
+        appMenu.addItem(hint)
+
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(NSMenuItem.separator())
         appMenu.addItem(withTitle: "Quit Beacon", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
         NSApp.mainMenu = main
+    }
+
+    @objc private func openSettings() { onOpenSettings?() }
+
+    // Opens Settings pre-steered at the Sources tab (design §2.3's "opens Settings on the Sources tab").
+    // Pre-seeds the persisted tab selection, which SettingsRootView's @AppStorage picks up whether the
+    // window is being built for the first time or was already alive -- see SettingsTabPersistence's doc
+    // comment for why this goes through UserDefaults rather than a new AppDelegate-wired closure.
+    @objc private func openSettingsOnSources() {
+        SettingsTabPersistence.save(.sources)
+        onOpenSettings?()
+    }
+
+    // Recomputed on every provider-toggle refresh (registration, live toggle, hooks install/refresh) so the
+    // hint appears/disappears live rather than only at menu-open time.
+    private func updateHooksHint(_ toggles: [ProviderToggle]) {
+        guard let hint = hooksHintItem else { return }
+        if let needy = MenubarHooksHint.providerNeedingSetup(toggles) {
+            hint.title = "\(needy.label) hooks not installed \u{00B7} Set up"
+            hint.isHidden = false
+        } else {
+            hint.isHidden = true
+        }
     }
 
     @objc private func togglePopover() {
@@ -166,8 +220,13 @@ final class MenubarController: NSObject {
     }
 
     // Rebuild the per-provider toggle cards (design 2026-07-19). Called on registration and on every live
-    // toggle so the switches reflect the persisted ProviderSettings truth.
-    func setProviderToggles(_ toggles: [ProviderToggle]) { model.providers = toggles }
+    // toggle so the switches reflect the persisted ProviderSettings truth. Also drives the replacement
+    // setup-hint row (design §2.3) live, since this fires on every hooks re-check/install, not just at
+    // menu-open time.
+    func setProviderToggles(_ toggles: [ProviderToggle]) {
+        model.providers = toggles
+        updateHooksHint(toggles)
+    }
 
     // Global (non-provider) setup checks shown in the Settings window.
     func setBluetoothCheck(_ s: CheckState) { model.setupBluetooth = s }

@@ -5,8 +5,9 @@
 #include "core/datastore.h"
 #include "core/location.h"
 #include "core/timekeep.h"
+#include "core/complications.h"
 #include "config/ticker_table.h"
-#include "ui/carousel.h"   // carousel_apply_pages
+#include "ui/carousel.h"   // carousel_apply_pages, carousel_apply_comps
 #include "util/log.h"
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -77,6 +78,43 @@ static void on_pages(const char* json, size_t len) {
   LOGI("hub: pages rev=%u applied (%u pages); restarting to rebuild the carousel", (unsigned)rev, (unsigned)n);
   delay(250);          // let the BLE stack flush the ack frame before the reset
   ESP.restart();
+}
+
+static void send_comps_ack(uint32_t rev, bool ok, const char* err, int count) {
+  if (!g_link) return;
+  char buf[96];
+  size_t n = hub_build_comps_ack(buf, sizeof(buf), rev, ok, err, count);
+  if (n) g_link->send(buf, n);
+  LOGI("hub: comps_ack rev=%u ok=%d err=%s count=%d", (unsigned)rev, ok, err ? err : "", count);
+}
+
+// A "comps" frame: which renderers occupy Home's six slots, in what order (design §6.1, plan §4 item 7).
+// Unlike pages, this never restarts -- carousel_apply_comps() persists + queues, and the LVGL tick
+// applies it live within one 500 ms tick (comp_stack_apply(), gated on !s_settling).
+static void on_comps(const char* json, size_t len) {
+  uint32_t rev = 0;
+  comp_list_t want; bool explicit_empty = false;
+  const char* err = nullptr;
+  if (hub_parse_comps(json, len, &rev, "home", &want, &explicit_empty, &err) != ERR_NONE) {
+    send_comps_ack(rev, false, err ? err : "malformed", 0);
+    return;
+  }
+  // The "home" face is absent from this frame's `slots` -- hub_parse_comps documents this as
+  // ERR_NONE with *out empty and *explicit_empty=false, and THE CALLER DOES NOTHING (no ack): the
+  // frame simply doesn't carry this face, unlike an omitted `pages` list, which IS an error (the one
+  // place the pages analogy breaks -- see the header comment on hub_parse_comps).
+  if (want.count == 0 && !explicit_empty) return;
+
+  bool changed = false;
+  uint8_t n = carousel_apply_comps(&want, explicit_empty, &changed);
+
+  if (!changed) {
+    send_comps_ack(rev, true, nullptr, (int)n);
+    LOGI("hub: comps rev=%u already active; no rebuild", (unsigned)rev);
+    return;
+  }
+  send_comps_ack(rev, true, nullptr, (int)n);
+  LOGI("hub: comps rev=%u applied (%u placements)", (unsigned)rev, (unsigned)n);
 }
 
 // Snapshot the device's current ticker table and emit it to the hub as chunked cmd:"report" frames so a
@@ -165,6 +203,8 @@ static void on_frame(const char* json, size_t len) {
   if (frame_has(json, len, "\"config\"")) { on_config(json, len); return; }
   // Page config, same treatment: dispatched before the loc/status fall-through so it is not swallowed.
   if (frame_has(json, len, "\"pages\"")) { on_pages(json, len); return; }
+  // Complication config, likewise dispatched before the fall-through (hub_parse_comps's header comment).
+  if (frame_has(json, len, "\"comps\"")) { on_comps(json, len); return; }
 
   // A "loc" block (issue #54) may ride the (re)connect full frame or arrive alone. Parsed independently
   // of usage/buddy; persist via core/location (hub source wins) + apply tz OUTSIDE any location lock.

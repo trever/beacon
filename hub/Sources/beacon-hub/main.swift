@@ -62,7 +62,11 @@ if CommandLine.arguments.dropFirst().first == "sonos-authorize" {
     SonosAuthorizerCLI.run()   // never returns; exits via exit(0)/exit(1)/exit(2)
 }
 
-// Menubar agent entry point. .accessory => no Dock icon / app bundle needed for development.
+// Menubar agent entry point. .accessory => no Dock icon / app bundle needed for development. This is the
+// app's RESTING policy: SettingsWindowController promotes to .regular while the Settings window is open
+// (design §9.1, provisional -- buys a real menu bar, ⌘,, ⌘W, window cycling; costs a Dock icon that
+// appears/vanishes with the window) and demotes back to .accessory on windowWillClose, so this line only
+// ever needs to set the baseline once, at launch.
 // AppKit + AppDelegate are main-actor isolated; the bootstrap runs there explicitly.
 MainActor.assumeIsolated {
     let app = NSApplication.shared

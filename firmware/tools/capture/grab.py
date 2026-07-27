@@ -51,7 +51,12 @@ def rle_to_image(data: bytes, w: int, h: int) -> Image.Image:
     return rgb565_arr_to_image(px, w, h)
 
 
-FRAME_RE = re.compile(rb"\nFRAME (\w+) (\w+) (\d+) (\d+) (\d+)\n")
+# Screen ids are the on-screen eyebrow text (ui/screen.h's screen_module_t.id) and are NOT always a
+# single word -- the chart screen's id is literally "S&P 500" (config/chart.h / screen_chart.cpp). The
+# theme id has no spaces (THEME_CATALOG ids are lowercase single words), so match it greedily-narrow and
+# let the screen id be everything up to the three trailing numeric fields.
+FRAME_RE = re.compile(rb"\nFRAME (\w+) (.+?) (\d+) (\d+) (\d+)\n")
+FRAME_LINE_RE = re.compile(r"^FRAME (\S+) (.+) (\d+) (\d+) (\d+)$")
 
 
 def read_line(ser):
@@ -107,8 +112,11 @@ def live_sweep(ser, out, frames):
             break
         if not text.startswith("FRAME "):
             continue
-        _, theme, screen, w, h, clen = text.split()
-        w, h, clen = int(w), int(h), int(clen)
+        m = FRAME_LINE_RE.match(text)
+        if not m:
+            print(f"warn: unparsed FRAME line: {text!r}", file=sys.stderr)
+            continue
+        theme, screen, w, h, clen = m.group(1), m.group(2), int(m.group(3)), int(m.group(4)), int(m.group(5))
         payload = read_exact(ser, clen)
         if payload is None:
             print(f"warn: timed out reading {theme}/{screen}", file=sys.stderr)
