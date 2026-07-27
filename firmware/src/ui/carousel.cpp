@@ -17,8 +17,12 @@
 #include "ui/screens/screen_buddy.h"
 #include "ui/screens/screen_settings.h"
 
+// Markets (finance_module) is intentionally not listed: the user does not want the ticker list on the
+// device. screen_finance.cpp is left in the build rather than deleted -- the ticker FETCH still feeds the
+// chart screen (finance_by_id("sp500")) and the home dashboard, and the page set is about to become
+// hub-configurable at runtime, at which point this array becomes a registry rather than a fixed list.
 static const screen_module_t* MODULES[] = {
-  &home_module, &finance_module, &chart_module, &ice_module, &buddy_module,
+  &home_module, &chart_module, &ice_module, &buddy_module,
   &settings_module,
 };
 static const int COUNT = (int)(sizeof(MODULES) / sizeof(MODULES[0]));
@@ -28,8 +32,9 @@ static lv_obj_t* s_pages[8];
 static lv_obj_t* s_dots[8];
 static int s_current = 0;
 // Index of the buddy screen in MODULES. Named so a screen inserted before it cannot silently send
-// wake-on-prompt to the wrong page (it has moved twice: 3 -> 4 for ICE, 4 -> 5 for the graph).
-#define BUDDY_INDEX 4
+// wake-on-prompt to the wrong page (it has moved: 3 -> 4 for ICE, 4 -> 5 for the graph, 5 -> 4 when
+// usage was dropped, 4 -> 3 when markets was hidden).
+#define BUDDY_INDEX 3
 static bool s_settling = false;   // guards reentrant SCROLL_END from our own recenter()
 static lv_timer_t* s_tick = nullptr;   // the 500ms visible-screen update timer; paused while idle (#60)
 
