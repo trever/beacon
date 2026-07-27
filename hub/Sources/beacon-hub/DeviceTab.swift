@@ -87,9 +87,13 @@ struct DeviceTab: View {
                     Text("Version").font(HubType.body).foregroundStyle(HubColor.inkSecondary)
                     Spacer()
                     // Was `ink.tertiary` (~2.8:1, below the 4.5:1 floor) for genuine content (design §2.3,
-                    // §8.1) -- moved to `ink.secondary`.
+                    // §8.1) -- moved to `ink.secondary`, then promoted again to `ink.primary` (WS-8): this
+                    // VALUE is the row's entire answer to "what firmware version," with no other rendering
+                    // anywhere -- exactly the sole-carrier case the WS-8 ruling narrows `ink.secondary` to
+                    // exclude. "Version" (the field's own label, just above) stays `ink.secondary`: it is
+                    // orientation, not the row's content.
                     Text("Not reported by this firmware build")
-                        .font(HubType.body).foregroundStyle(HubColor.inkSecondary)
+                        .font(HubType.body).foregroundStyle(HubColor.inkPrimary)
                 }
             }
         }
@@ -97,10 +101,19 @@ struct DeviceTab: View {
 }
 
 #if DEBUG
-#Preview {
+#Preview("Light") {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.setupBluetooth = .ok
     m.setupPaired = .ok
     return DeviceTab(model: m).frame(width: 720, height: 560)
+        .preferredColorScheme(.light)
+}
+
+#Preview("Dark") {
+    let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
+    m.setupBluetooth = .ok
+    m.setupPaired = .ok
+    return DeviceTab(model: m).frame(width: 720, height: 560)
+        .preferredColorScheme(.dark)
 }
 #endif

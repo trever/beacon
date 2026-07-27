@@ -74,13 +74,16 @@ internal struct ProviderRowGroup: View {
         }
     }
 
-    // ink.secondary, not ink.tertiary (design §2.3: "ink.tertiary may not carry content... the
-    // unsupported — markers... move to ink.secondary").
+    // Was ink.tertiary, then ink.secondary (design §2.3: "ink.tertiary may not carry content... the
+    // unsupported — markers... move to ink.secondary"), now ink.primary (WS-8): this mark REPLACES the
+    // Toggle a supported provider would show here -- it is the row's entire state for this column, not a
+    // caption beside one, so it is the same sole-carrier case as `DeviceTab`'s firmware value, which
+    // design §2.3 named in the very same sentence as this marker.
     @ViewBuilder private func toggle(supported: Bool, isOn: Binding<Bool>) -> some View {
         if supported {
             Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch)
         } else {
-            Text("\u{2014}").font(HubType.body).foregroundStyle(HubColor.inkSecondary)
+            Text("\u{2014}").font(HubType.body).foregroundStyle(HubColor.inkPrimary)
         }
     }
 
@@ -101,7 +104,7 @@ internal struct ProviderRowGroup: View {
 }
 
 #if DEBUG
-#Preview {
+#Preview("Light") {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.providers = [
         ProviderToggle(id: "claude", label: "Claude", supportsUsage: true, supportsBuddy: true,
@@ -110,5 +113,18 @@ internal struct ProviderRowGroup: View {
                        usageOn: true, buddyOn: true, hooks: .bad),
     ]
     return SourcesTab(model: m).frame(width: 720, height: 560)
+        .preferredColorScheme(.light)
+}
+
+#Preview("Dark") {
+    let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
+    m.providers = [
+        ProviderToggle(id: "claude", label: "Claude", supportsUsage: true, supportsBuddy: true,
+                       usageOn: true, buddyOn: true, hooks: .ok),
+        ProviderToggle(id: "codex", label: "Codex", supportsUsage: true, supportsBuddy: false,
+                       usageOn: true, buddyOn: true, hooks: .bad),
+    ]
+    return SourcesTab(model: m).frame(width: 720, height: 560)
+        .preferredColorScheme(.dark)
 }
 #endif

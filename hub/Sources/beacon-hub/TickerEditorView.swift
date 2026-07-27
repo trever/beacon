@@ -20,6 +20,7 @@ import BeaconHubKit
 
 struct TickerEditorView: View {
     @ObservedObject var model: HubViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var query = ""
     @State private var results: [TickerCandidate] = []
@@ -198,11 +199,16 @@ struct TickerEditorView: View {
                 HStack {
                     Text("Current list").font(HubType.section).foregroundStyle(HubColor.inkPrimary)
                     Spacer()
-                    // "list is full" affordance (device caps at MAX_TICKERS): the counter recolours via
-                    // the shared `state.warn` token instead of a raw `.orange` once at capacity.
+                    // "list is full" affordance (device caps at MAX_TICKERS): the counter used to recolour
+                    // via the shared `state.warn` token at capacity, which is exactly the "state colour
+                    // alone" pattern design SS2.3 bans -- there is no glyph here to offload the colour
+                    // onto, and the WS-8 arithmetic contrast tests measure `state.warn` as `type.caption`
+                    // text at ~2.1-2.3:1 in light appearance, below the 4.5:1 floor (worse than the plain
+                    // `ink.secondary` count it replaced). `ink.primary` at capacity is both legible and
+                    // more insistent than the everyday `ink.secondary` tally.
                     Text("\(working.count) / \(ChartInstrumentSelection.maxTickers)")
                         .font(HubType.caption.monospacedDigit())
-                        .foregroundStyle(isFull ? HubColor.stateWarn : HubColor.inkSecondary)
+                        .foregroundStyle(isFull ? HubColor.inkPrimary : HubColor.inkSecondary)
                 }
                 .padding(.horizontal, HubSpace.m).padding(.top, HubSpace.m).padding(.bottom, HubSpace.s)
 
@@ -279,10 +285,15 @@ struct TickerEditorView: View {
         commit()
     }
 
+    // Same reorder-chevron pattern as PageDesignerView.moveEnabled (design §8.2) -- gated the same way,
+    // wrapped in `withAnimation` so a live reorder is not just correct but reads as one, and degrading to
+    // instant under `accessibilityReduceMotion` (design §8.4).
     private func move(_ index: Int, by offset: Int) {
         let target = index + offset
         guard working.indices.contains(index), working.indices.contains(target) else { return }
-        working.swapAt(index, target)
+        withAnimation(HubMotion.animation(HubMotion.normal, reduceMotion: reduceMotion)) {
+            working.swapAt(index, target)
+        }
         commit()
     }
 
