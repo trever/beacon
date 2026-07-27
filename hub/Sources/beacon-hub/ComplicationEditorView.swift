@@ -16,6 +16,21 @@ import BeaconHubKit
 // Pages inspector's 260 pt column (228 pt of content after the inspector's own SS5.1 padding), and every
 // literal font size / colour / radius here has been replaced by HubStyle/HubRows/HubSurfaces tokens and
 // components. The model above is untouched -- only pixels moved.
+//
+// Defect 1 fix: PageDesignerView's `inspector` container pads only the header it renders directly
+// (`inspectorHeader`) -- it never wraps the embedded content view in horizontal padding, exactly like
+// PageOptions (PageDesignerInspector.swift), which pads its own body rather than relying on its container
+// to. This view used to apply NO horizontal padding of its own, so "Complications"/the badge/the stack all
+// sat flush against the column's left edge while the header above them (padded by the container) did not
+// -- two visibly different left edges. The `#Preview`s below happened to hide this: they wrapped the view
+// in their own `.padding(HubSpace.l)`, which simulated the correct inset without the production code
+// actually having it.
+//
+// One owner, chosen: EACH embedded inspector section pads itself at `HubSpace.l` horizontal / `HubSpace.m`
+// vertical -- the same call PageOptions already makes -- rather than PageDesignerView.inspector wrapping
+// whatever it embeds. That keeps the Divider directly under the header full-bleed (matching the
+// composition column's own Divider-is-full-bleed convention) while every block of *content* shares the
+// header's HubSpace.l left edge.
 struct ComplicationEditorView: View {
     @ObservedObject var model: HubViewModel
 
@@ -36,6 +51,10 @@ struct ComplicationEditorView: View {
             Divider()
             palette
         }
+        // Matches PageOptions's own self-padding exactly (PageDesignerInspector.swift) -- see the doc
+        // comment above `struct ComplicationEditorView` for why this view, not its container, owns the
+        // inset.
+        .padding(.horizontal, HubSpace.l).padding(.vertical, HubSpace.m)
     }
 
     // --- header ---
@@ -116,10 +135,17 @@ struct ComplicationEditorView: View {
         return nil
     }
 
+    // Defect 2 fix: `HubShape.control` is a `RoundedRectangle` -- like any bare `Shape`, its ideal height is
+    // effectively infinite, so a `minHeight`-only frame leaves it free to accept whatever height its
+    // container offers rather than hugging its own content. Here that container is
+    // `PageDesignerView.inspector`'s outer VStack, which ends in a trailing `Spacer(minLength: 0)`: with
+    // nothing else claiming the pane's extra vertical space, this shape happily grabbed all of it, pushing
+    // `warnings`/the Divider/`palette` (the AVAILABLE grid) down and off-screen. Pinning BOTH ends of the
+    // frame makes the zone exactly 26 pt regardless of how much height its ancestors offer.
     private var appendDropZone: some View {
         HubShape.control
             .strokeBorder(HubColor.lineHairline, style: StrokeStyle(lineWidth: HubStroke.hairline, dash: [4, 3]))
-            .frame(minHeight: 26)
+            .frame(height: 26)
             .overlay {
                 if rows.isEmpty {
                     Text("Drop here").font(HubType.caption).foregroundStyle(HubColor.inkSecondary)
@@ -282,16 +308,19 @@ private struct ArgPickerList: View {
     }
 }
 
-#Preview("228 pt -- light") {
+// 260 pt: the real inspector column width this view is embedded at (PageDesignerView.inspector's
+// `minWidth`). The view pads itself down to 228 pt of content -- previewing at 260 with no extra preview-
+// level padding is what actually matches production now; the old 228 pt + `.padding(HubSpace.l)` preview
+// was simulating the inset from OUTSIDE, which is exactly what let Defect 1 hide from anyone eyeballing
+// just this preview.
+#Preview("260 pt column (228 pt content) -- light") {
     ComplicationEditorView(model: HubViewModel())
-        .frame(width: 228)
-        .padding(HubSpace.l)
+        .frame(width: 260)
         .preferredColorScheme(.light)
 }
 
-#Preview("228 pt -- dark") {
+#Preview("260 pt column (228 pt content) -- dark") {
     ComplicationEditorView(model: HubViewModel())
-        .frame(width: 228)
-        .padding(HubSpace.l)
+        .frame(width: 260)
         .preferredColorScheme(.dark)
 }

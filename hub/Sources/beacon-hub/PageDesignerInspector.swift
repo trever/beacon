@@ -23,6 +23,13 @@ struct PageOptions: View {
     // The selected room, mirrored into local @State from model.onLoadSonosRoom() -- see the doc comment
     // on `sonosSection` below for why this does NOT live in row.opts/PageConfigStore.
     @State private var currentRoom: String = ""
+    // Defect 3(b): `.onAppear`/`.onChange(of: row.id)`/`.onReceive(didBecomeKeyNotification)` below can
+    // each independently kick off a `fetchRooms()`, and SonosProvider.fetchAvailableRooms itself may now
+    // answer a single call twice (names first, enrichment after -- see its doc comment). Bumping this on
+    // every new call and stamping each call's completions with the generation at the time it started means
+    // a completion from an OLDER, superseded fetch can never overwrite what a newer one already reported,
+    // however the two overlap or reorder.
+    @State private var roomFetchGeneration = 0
 
     /// How many configurable options the selected page has -- the ONLY input to `InspectorLayout.tier`.
     /// `agents` is dynamic (one row per registered provider) rather than a fixed count, so a future third
@@ -50,11 +57,23 @@ struct PageOptions: View {
         .padding(.horizontal, HubSpace.l).padding(.vertical, HubSpace.m)
         .onAppear { refreshSonosIfNeeded() }
         // PageDesignerWindowController builds this window once and reuses it across opens (same as
-        // SettingsWindowController), so onAppear above only ever fires the first time this row was
-        // selected. Re-deriving on refocus keeps this honest the same way SonosSettingsView does, and --
-        // now that the room list itself is a `Menu` with no macOS-13 "did open" callback to hang a refetch
-        // off of -- this is also the mechanism that keeps the room LIST fresh (a speaker coming back
-        // online, a room renamed) without the user having to quit and reopen Beacon Hub.
+        // SettingsWindowController), so `onAppear` above only fires the FIRST time any non-Home page is
+        // selected in this window's life -- switching e.g. from Chart to Sonos keeps this same `PageOptions`
+        // identity (SwiftUI doesn't tear the view down just because `row` changed under it), so `onAppear`
+        // does not refire on every row switch. `.onChange(of: row.id)` is what DOES fire on that
+        // transition, single-parameter because the package targets macOS 13 (design SS9.1) where the
+        // two-parameter overload doesn't exist -- matching PageDesignerView's own `enabledRows.map(\.id)`
+        // onChange.
+        //
+        // Defect 3(b) (perceived speed): this is also what lets the Sonos fetch start the moment the page
+        // is SELECTED rather than waiting for the room `Menu` to be opened -- the up-to-1.5s
+        // household->groups->playback chain (SonosProvider.fetchAvailableRooms) usually has a head start on
+        // the user before they ever reach for the button.
+        .onChange(of: row.id) { _ in refreshSonosIfNeeded() }
+        // Re-deriving on refocus keeps this honest the same way SonosSettingsView does, and -- now that the
+        // room list itself is a `Menu` with no macOS-13 "did open" callback to hang a refetch off of -- this
+        // is also the mechanism that keeps the room LIST fresh (a speaker coming back online, a room
+        // renamed) without the user having to quit and reopen Beacon Hub.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             refreshSonosIfNeeded()
         }
@@ -97,13 +116,40 @@ struct PageOptions: View {
     // SonosProvider.setSelectedRoom so the group cache still invalidates), independent of Save & push and
     // of whether this page is enabled.
 
+    // Defect 3(a): a plain, non-`Button` `Text("Loading rooms\u{2026}")` menu ITEM (in `sonosMenuContent`
+    // below) used to be the only thing that said "loading" -- and since a `Menu`'s content only renders
+    // once the user has actually opened it, there was no cue beforehand, and the disabled/greyed row that
+    // produced read as a stray floating box rather than progress. `LoadingState` (HubSurfaces.swift) is the
+    // shared component for exactly this (150 ms grace before showing, so a fetch faster than that -- "a
+    // 40ms room fetch," per its own doc comment -- never flashes a spinner). It does NOT go INSIDE the
+    // Menu's own label, though: AppKit flattens a `Menu`'s label to a single static title (the same
+    // flattening trap `roomMenuItem` below already routes around for menu ITEMS), so a live `ProgressView`
+    // placed there is not guaranteed to render or animate as one. It sits BESIDE the Menu instead, visible
+    // only while `isLoadingRooms`, and the Menu itself is disabled for that same span (there is nothing
+    // useful to pick yet) -- the "disable the control with a subtle progress indicator" option, chosen
+    // because it is the one both spinner AND button can express without abusing the Menu label. `roomLabel`
+    // already prefers `currentRoom` over the "Choose room" placeholder whenever a room is already selected,
+    // so a background refresh after a room was picked never regresses the button back to a placeholder
+    // while it reloads.
     @ViewBuilder private var sonosSection: some View {
-        Menu {
-            sonosMenuContent
-        } label: {
-            Text(roomLabel).font(HubType.control)
+        HStack(spacing: HubSpace.s) {
+            Menu {
+                sonosMenuContent
+            } label: {
+                Text(roomLabel).font(HubType.control)
+            }
+            .disabled(!row.enabled || isLoadingRooms)
+            if isLoadingRooms {
+                LoadingState("Loading rooms\u{2026}")
+            }
         }
-        .disabled(!row.enabled)
+    }
+
+    private var isLoadingRooms: Bool {
+        switch roomFetch {
+        case .idle, .loading: return true
+        default: return false
+        }
     }
 
     private var roomLabel: String {
@@ -176,10 +222,21 @@ struct PageOptions: View {
         }
     }
 
+    // Defect 3(b): `onAppear`/`onChange(of: row.id)`/`onReceive(didBecomeKeyNotification)` can each start a
+    // fetch independently, and SonosProvider.fetchAvailableRooms may itself answer one call twice (names,
+    // then enrichment -- see its doc comment). Stamping this call with the generation at the moment it
+    // started, and checking it still matches when a completion lands, means a completion from a call this
+    // view has since SUPERSEDED (a newer fetch already started) can never clobber whatever the newer one
+    // already reported, however the two overlap or land out of order. A completion belonging to the CURRENT
+    // generation still always applies, so the two deliveries of one fetch (names, then enriched) both land
+    // normally, in the order SonosProvider sends them.
     private func fetchRooms() {
+        roomFetchGeneration += 1
+        let generation = roomFetchGeneration
         roomFetch = .loading
         model.onFetchSonosRooms { result in
             Task { @MainActor in
+                guard generation == roomFetchGeneration else { return }
                 switch result {
                 case .notAuthorized: roomFetch = .notAuthorized
                 case .failed(let reason): roomFetch = .failed(reason)
