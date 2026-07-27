@@ -45,4 +45,28 @@ final class SonosAuthorizerTests: XCTestCase {
     func testParseQueryEmptyValues() {
         XCTAssertNil(SonosLoopbackServer.parseQuery("/callback?code=&state="))
     }
+
+    // Regression: the loopback server used to be held only by a local in authorize(), so it deallocated
+    // the instant that function returned. The socket stayed bound (NWListener keeps its own bring-up
+    // alive) but newConnectionHandler captures the server weakly, so every accepted connection was
+    // silently dropped -- the browser hung on an ESTABLISHED connection and the weakly-captured timeout
+    // never fired to end it. Observed live against Sonos on 2026-07-27. authorize() must retain it.
+    //
+    // Needs a real stored secret + a non-placeholder client ID, since preflight() runs first; skipped
+    // where those are absent (CI) rather than reaching into the Keychain from a test.
+    func testAuthorizeRetainsTheLoopbackServerAfterReturning() throws {
+        try XCTSkipIf(SonosAuthorizer.preflight() != nil, "no Sonos secret/client ID configured here")
+        XCTAssertFalse(SonosAuthorizer.hasActiveServer, "precondition: no flow in flight")
+
+        let finished = expectation(description: "flow ends")
+        // Stubbed openURL: never launch a browser from a test.
+        SonosAuthorizer.authorize(timeout: 1, openURL: { _ in }) { _ in finished.fulfill() }
+
+        // The bug: this was false here, because `server` had already died.
+        XCTAssertTrue(SonosAuthorizer.hasActiveServer,
+                      "authorize() must retain the loopback server until the flow completes")
+
+        wait(for: [finished], timeout: 5)
+        XCTAssertFalse(SonosAuthorizer.hasActiveServer, "and must release it once the flow ends")
+    }
 }

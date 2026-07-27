@@ -128,6 +128,14 @@ final class SonosLoopbackServer {
 // otherwise-idle process with no run loop to hand work back to) still blocks its OWN thread afterward, via
 // its own semaphore, purely to stay alive until `completion` fires.
 enum SonosAuthorizer {
+    // Retains the in-flight loopback server for the life of one authorize flow -- see the long comment
+    // in authorize(). Also means a second authorize cannot start while one is pending, which is what we
+    // want: two servers would fight over the fixed port.
+    private static var active: SonosLoopbackServer?
+
+    // Test seam: is a flow currently holding the loopback server open?
+    static var hasActiveServer: Bool { active != nil }
+
     // Coarse progress the UI renders as the flow proceeds. The CLI ignores this -- it already prints its
     // own fixed messages at the start and the end.
     enum Stage: Equatable {
@@ -159,24 +167,36 @@ enum SonosAuthorizer {
         let url = SonosOAuth.authorizeURL(state: state)
 
         let server = SonosLoopbackServer()
+        // The server MUST outlive this function. Everything the listener needs captures it weakly
+        // (newConnectionHandler, the timeout work item, the per-connection receive), so if the only
+        // reference is this local, `server` deallocates the moment authorize() returns. The socket
+        // stays bound -- NWListener keeps its own bring-up alive -- but every accepted connection is
+        // dropped on the floor: `self?.accept(conn)` no-ops, nothing is ever read or answered, and the
+        // browser hangs on an ESTABLISHED connection forever because the timeout is weak too and never
+        // fires either. Holding it here is what makes the callback actually arrive.
+        Self.active = server
+        let done: (Result<Void, SonosAuthError>) -> Void = { result in
+            Self.active = nil
+            completion(result)
+        }
         server.start(timeout: timeout) { result in
             switch result {
             case .failure(let e):
-                completion(.failure(e))
+                done(.failure(e))
             case .success(let callback):
-                guard callback.state == state else { completion(.failure(.stateMismatch)); return }
+                guard callback.state == state else { done(.failure(.stateMismatch)); return }
                 progress(.exchangingToken)
                 SonosOAuth.exchange(code: callback.code, secret: secret) { exResult in
                     switch exResult {
                     case .failure(let e):
-                        completion(.failure(e))
+                        done(.failure(e))
                     case .success(let cred):
                         guard let blob = ProviderCredentials.sonosBlob(accessToken: cred.accessToken,
                                                                        expiresAt: cred.expiresAt,
                                                                        refreshToken: cred.refreshToken),
                               SonosKeychain.writeOAuthBlob(blob)
-                        else { completion(.failure(.keychainWriteFailed)); return }
-                        completion(.success(()))
+                        else { done(.failure(.keychainWriteFailed)); return }
+                        done(.success(()))
                     }
                 }
             }
