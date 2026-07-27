@@ -58,12 +58,24 @@ enum SonosAPI {
         return response.groups.first { $0.playerIds.contains(player.id) }
     }
 
-    struct TrackMetadata: Equatable { let track: String?; let artist: String?; let album: String? }
+    struct TrackMetadata: Equatable { let track: String?; let artist: String?; let album: String?; let imageUrl: String? }
 
     // GET /groups/{id}/playbackMetadata -> { "container": {...}, "currentItem": { "track": { "name",
-    // "artist": {"name"}, "album": {"name"} } } }. A stream with nothing loaded still returns a
-    // parseable body (container present, currentItem absent) -- that is "nothing playing", not shape
+    // "artist": {"name"}, "album": {"name"}, "imageUrl" } } }. A stream with nothing loaded still returns
+    // a parseable body (container present, currentItem absent) -- that is "nothing playing", not shape
     // drift, so it falls back to the container's name rather than failing to parse.
+    //
+    // imageUrl (design 2026-07-27-sonos-album-art §6.1): both `track` and `container` carry their own
+    // direct `imageUrl` string field per the Sonos Control API's playback-objects schema
+    // (developer.sonos.com/reference/types/playback-objects -- confirmed 2026-07-27, not assumed) --
+    // neither is nested under anything else. Same currentItem-then-container precedence
+    // parsePlaybackMetadata already uses for the *name*: a specific track's art wins when present, and a
+    // station/playlist container's art (its logo) is the fallback for a stream with no per-track art of
+    // its own -- exactly the radio/podcast case the design's risk 1 calls out. Public Sonos-developer
+    // reports (community thread "Cloud Control API: Missing imageUrl in metadataStatus when playing a
+    // radio station") corroborate that risk: imageUrl is reported to come back empty, or as a
+    // LAN-only `http://<player-ip>:1400/getaa?...` URL, for some services through this endpoint -- which
+    // is exactly why SonosArtRenderer must not assume a fetch will succeed.
     static func parsePlaybackMetadata(_ data: Data) -> TrackMetadata? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         let container = obj["container"] as? [String: Any]
@@ -72,7 +84,9 @@ enum SonosAPI {
         let name = (track?["name"] as? String) ?? (container?["name"] as? String)
         let artist = (track?["artist"] as? [String: Any])?["name"] as? String
         let album = (track?["album"] as? [String: Any])?["name"] as? String
-        return TrackMetadata(track: name, artist: artist, album: album)
+        let imageUrl = (track?["imageUrl"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? (container?["imageUrl"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return TrackMetadata(track: name, artist: artist, album: album, imageUrl: imageUrl)
     }
 
     // GET /groups/{id}/playback -> { "playbackState": "PLAYBACK_STATE_PLAYING" | "_PAUSED" | "_IDLE" |

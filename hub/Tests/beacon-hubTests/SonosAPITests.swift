@@ -95,14 +95,14 @@ final class SonosAPITests: XCTestCase {
          "currentItem":{"track":{"name":"Song","artist":{"name":"Artist"},"album":{"name":"Album"}}}}
         """#
         let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
-        XCTAssertEqual(got, SonosAPI.TrackMetadata(track: "Song", artist: "Artist", album: "Album"))
+        XCTAssertEqual(got, SonosAPI.TrackMetadata(track: "Song", artist: "Artist", album: "Album", imageUrl: nil))
     }
 
     func testParsePlaybackMetadataNothingPlayingFallsBackToContainer() {
         // No currentItem loaded, but a valid container -- "nothing playing", not shape drift.
         let json = #"{"container":{"name":"Kitchen Radio"}}"#
         let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
-        XCTAssertEqual(got, SonosAPI.TrackMetadata(track: "Kitchen Radio", artist: nil, album: nil))
+        XCTAssertEqual(got, SonosAPI.TrackMetadata(track: "Kitchen Radio", artist: nil, album: nil, imageUrl: nil))
     }
 
     func testParsePlaybackMetadataTotallyEmptyBodyIsShapeDrift() {
@@ -113,7 +113,71 @@ final class SonosAPITests: XCTestCase {
     func testParsePlaybackMetadataMissingArtistAlbumTolerated() {
         let json = #"{"currentItem":{"track":{"name":"Song"}}}"#
         XCTAssertEqual(SonosAPI.parsePlaybackMetadata(Data(json.utf8)),
-                       SonosAPI.TrackMetadata(track: "Song", artist: nil, album: nil))
+                       SonosAPI.TrackMetadata(track: "Song", artist: nil, album: nil, imageUrl: nil))
+    }
+
+    // --- playback metadata: imageUrl (design 2026-07-27-sonos-album-art §6.1) ---
+    //
+    // Fixtures modeled on the Sonos Control API's documented playback-objects schema
+    // (developer.sonos.com/reference/types/playback-objects, confirmed 2026-07-27): `imageUrl` is a
+    // direct string field on BOTH `track` and `container`, not nested under anything else.
+
+    // A track-level image (a specific song's cover art) wins over the container's (the playlist/service
+    // logo) -- same currentItem-then-container precedence parsePlaybackMetadata already applies to name.
+    func testParsePlaybackMetadataImageUrlPrefersTrackOverContainer() {
+        let json = #"""
+        {"container":{"name":"My Playlist","imageUrl":"https://cdn.example.com/playlist-logo.png"},
+         "currentItem":{"track":{"name":"Song","artist":{"name":"Artist"},"album":{"name":"Album"},
+                                 "imageUrl":"https://cdn.example.com/song-cover.jpg"}}}
+        """#
+        let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
+        XCTAssertEqual(got?.imageUrl, "https://cdn.example.com/song-cover.jpg")
+    }
+
+    // The risk this project exists to retire (design §10 risk 1): a radio/podcast container often carries
+    // only a station logo, with no per-track art. The track-level field is absent (not merely empty), and
+    // the container's imageUrl is the only art available -- falls back to it, same as it already falls
+    // back to the container's name for "nothing playing".
+    func testParsePlaybackMetadataImageUrlFallsBackToContainerWhenTrackHasNone() {
+        let json = #"""
+        {"container":{"name":"Kitchen Radio","imageUrl":"https://cdn.example.com/station-logo.png"},
+         "currentItem":{"track":{"name":"Live Show"}}}
+        """#
+        let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
+        XCTAssertEqual(got?.imageUrl, "https://cdn.example.com/station-logo.png")
+    }
+
+    // The other half of risk 1: neither track nor container carries art at all (some services return
+    // nothing, per the design's own risk analysis and corroborating public reports of imageUrl being
+    // unreliable in the Sonos Cloud Control API). imageUrl must be nil, not a shape-drift failure -- a
+    // track with no art is a normal, parseable response.
+    func testParsePlaybackMetadataImageUrlAbsentIsNilNotFailure() {
+        let json = #"{"currentItem":{"track":{"name":"Song","artist":{"name":"Artist"}}}}"#
+        let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
+        XCTAssertNotNil(got)
+        XCTAssertNil(got?.imageUrl)
+    }
+
+    // A community-reported real-world shape: the field is present but an empty string rather than absent.
+    // Treated the same as absent (falls through to the container, or to nil) -- an empty URL is not a
+    // fetchable art URL.
+    func testParsePlaybackMetadataImageUrlEmptyStringTreatedAsAbsent() {
+        let json = #"""
+        {"container":{"name":"Kitchen Radio","imageUrl":""},
+         "currentItem":{"track":{"name":"Live Show","imageUrl":""}}}
+        """#
+        let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
+        XCTAssertNil(got?.imageUrl)
+    }
+
+    // Reported shape (Sonos community: "Cloud Control API: Missing imageUrl ... when playing a radio
+    // station"): imageUrl can come back as a LAN-only player-local URL rather than an internet CDN one.
+    // parsePlaybackMetadata does not (and must not) special-case this -- it decodes whatever string is
+    // there verbatim; SonosArtRenderer is what decides fetchability.
+    func testParsePlaybackMetadataImageUrlLocalPlayerURLDecodedVerbatim() {
+        let json = #"{"currentItem":{"track":{"name":"Song","imageUrl":"http://192.168.1.50:1400/getaa?s=1&u=x"}}}"#
+        let got = SonosAPI.parsePlaybackMetadata(Data(json.utf8))
+        XCTAssertEqual(got?.imageUrl, "http://192.168.1.50:1400/getaa?s=1&u=x")
     }
 
     // --- playback state ---
