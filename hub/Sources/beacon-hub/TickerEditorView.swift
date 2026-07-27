@@ -235,15 +235,22 @@ private struct CurrentRow: View {
                 Text(row.sym).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 6)
-            IconButton(systemImage: "chevron.up", enabled: canMoveUp, action: moveUp)
-            IconButton(systemImage: "chevron.down", enabled: canMoveDown, action: moveDown)
-            IconButton(systemImage: "trash", tint: .red, enabled: true, action: remove)
+            TickerRowIconButton(systemImage: "chevron.up", enabled: canMoveUp, action: moveUp)
+            TickerRowIconButton(systemImage: "chevron.down", enabled: canMoveDown, action: moveDown)
+            TickerRowIconButton(systemImage: "trash", tint: .red, enabled: true, action: remove)
         }
         .padding(.horizontal, 11).padding(.vertical, 8)
     }
 }
 
-private struct IconButton: View {
+// Renamed from `IconButton` (WS-0, docs/plans/2026-07-27-hub-visual-system-plan.md SS3): the shared
+// component layer now owns that name for a labelled, 28x28-hit-target button (HubSurfaces.swift), and a
+// file-scoped `private` type of the identical name in this file still collides with it at this file's
+// own lookup scope even though it is private. This is a mechanical rename only -- same fields, same
+// behaviour, same unlabelled 22x22 rendering the design doc names as one of the two sites `control.hitMin`
+// exists to replace (`TickerEditorView.swift:254`). WS-5 owns converting this file to the shared
+// `IconButton` for real; that conversion is out of WS-0's scope.
+private struct TickerRowIconButton: View {
     let systemImage: String
     var tint: Color = .secondary
     let enabled: Bool
