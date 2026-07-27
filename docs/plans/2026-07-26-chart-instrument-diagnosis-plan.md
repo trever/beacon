@@ -1,6 +1,18 @@
 # Plan: diagnose why the Chart page ignores its selected instrument
 
-**Status:** open. Written 2026-07-26. Self-contained — assumes no prior session context.
+**Status:** CLOSED, no code bug, 2026-07-26. Verdict: the leading hypothesis was right. The hub's
+`sym`/`symbol` key naming was checked first (per a stronger, later brief) and is consistent end to end
+(`sym` both sides) — only `hub/CONTRACT.md:109`'s example JSON is stale, not the code. All three
+remaining candidate causes were ruled out by direct code reading: (1) `carousel_init()` — which
+synchronously loads NVS page opts — always runs before `fetch_task_start()` in `main.cpp`, so there is
+no first-fetch race; (2) `page_list_equal` compares opts as well as ids, so an instrument-only change
+correctly sets `changed=true` and triggers `ESP.restart()`, which rebuilds DataStore from scratch, so
+there is no stale-record carryover. The device's stored page config is currently `sym=sp500` (confirmed
+via `defaults read com.beacon.hub BeaconPageOpts`), matching commit 8e37722's account of the pre-fix
+restart loop (nasdaq rev=1, quickly followed by sp500 rev=2). The user very likely compared S&P against
+S&P. Live serial confirmation could not be captured this run — see the diagnosis report for why and for
+the exact manual verification steps left for the user. A note on how to verify the active instrument
+(on-screen header, or the `series:`/`chart:` log lines) was added to `docs/codemap.md` §4E.
 
 ## Symptom
 

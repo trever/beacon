@@ -142,6 +142,34 @@ public enum SessionDetailLimits {
     public static let frameMaxBytes = 1024
 }
 
+/// Shared trim step behind every frame whose only defense against JSON-escaping/grapheme blowup is
+/// encode-measure-shrink (`SessionDetailsFrame`, `SonosFrame`): a pure decision over caller-supplied
+/// values grouped by priority (highest first), so both an ARRAY-OF-ROWS case (many slots at one priority
+/// level -- `SessionDetailsFrame` has one `msg` slot per row) and a SINGLE-RECORD case (one slot per
+/// priority level -- `SonosFrame` has exactly one `album`) are the same shape: `[[String?]]`.
+///
+/// Finds the longest non-empty string in the highest-priority group that still has one, and returns its
+/// `(group, slot)` location plus the value with one Character dropped -- never a byte or Unicode scalar,
+/// so a multi-byte or multi-scalar extended grapheme cluster (e.g. a ZWJ emoji sequence) is never split
+/// into invalid UTF-8. A group with nothing left to trim is skipped in favor of the next one. `nil` means
+/// every group is exhausted, which is what bounds the caller's measure-shrink `while` loop.
+///
+/// Deliberately returns a location rather than mutating: closures capturing an `inout` array-of-rows
+/// parameter across heterogeneous call shapes fight Swift's escaping/exclusivity rules, while a pure
+/// function over snapshotted values does not, and is trivially unit-testable on its own.
+private enum FrameShrink {
+    static func trim(priority groups: [[String?]]) -> (group: Int, slot: Int, value: String)? {
+        for (g, group) in groups.enumerated() {
+            var bestIdx = -1, best = 0
+            for (i, v) in group.enumerated() {
+                if let v, v.count > best { best = v.count; bestIdx = i }
+            }
+            if bestIdx >= 0 { return (g, bestIdx, String(group[bestIdx]!.dropLast())) }
+        }
+        return nil
+    }
+}
+
 /// Per-session row content, joined to `Session` by `id`. Kept in its OWN frame rather than added to the
 /// frozen `sessions` entry: those caps are declared frozen in CONTRACT.md, and title+msg would push the
 /// 5-row worst case to ~987/1024 B BEFORE JSON escaping -- one quote-heavy message would silently drop
@@ -190,21 +218,97 @@ public struct SessionDetailsFrame: Codable {
     }
 
     /// Drop one character from the longest text field across all rows, preferring `msg` (the least
-    /// load-bearing). Operates on Characters so a multi-byte scalar is never split into invalid UTF-8.
+    /// load-bearing) over `title`. Delegates to `FrameShrink.trim`, shared with `SonosFrame.shrink`.
     /// Returns false once nothing is left to trim, which bounds the loop.
     private static func shrink(_ rows: inout [SessionDetail]) -> Bool {
-        var target = -1, isMsg = true, best = 0
-        for (i, r) in rows.enumerated() {
-            if let m = r.msg, m.count > best { best = m.count; target = i; isMsg = true }
+        guard let hit = FrameShrink.trim(priority: [rows.map { $0.msg }, rows.map { $0.title }])
+        else { return false }
+        if hit.group == 0 { rows[hit.slot].msg = hit.value } else { rows[hit.slot].title = hit.value }
+        return true
+    }
+}
+
+public enum SonosLimits {
+    public static let roomMaxChars = 20
+    public static let trackMaxChars = 40
+    public static let artistMaxChars = 32
+    public static let albumMaxChars = 32
+    /// HUB_FRAME_MAX in firmware/src/core/hub_proto.h. The device DROPS a longer frame outright, so this
+    /// is a hard ceiling, not a guideline (same contract as SessionDetailLimits.frameMaxBytes).
+    public static let frameMaxBytes = 1024
+}
+
+/// Normalized Sonos now-playing snapshot (design `docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md`
+/// §3). All fields are independently optional -- absent means "not known", and the device reads an
+/// absent `playing` as false; there is no separate wire state for "unknown".
+public struct SonosNowPlaying: Codable, Equatable {
+    public var room: String?
+    public var track: String?
+    public var artist: String?
+    public var album: String?
+    public var playing: Bool?
+    public init(room: String? = nil, track: String? = nil, artist: String? = nil, album: String? = nil,
+                playing: Bool? = nil) {
+        self.room = room; self.track = track; self.artist = artist; self.album = album; self.playing = playing
+    }
+}
+
+/// Standalone hub->device frame (CONTRACT.md "Optional `sonos` block"), NOT embedded in `StatusFrame` or
+/// `PagesFrame` -- same reasoning as `sdetail`: keeps this frame's budget independent of the others and
+/// lets old firmware ignore the whole thing.
+///
+/// `track`/`artist`/`album` are free-form text off the Sonos API, so -- exactly like `sdetail`'s
+/// `msg`/`title` -- character caps do NOT bound the wire size: one `"` costs two bytes escaped, an emoji
+/// four, a control character six as `\uXXXX`, and a single Swift `Character` can itself be an extended
+/// grapheme cluster (e.g. a ZWJ emoji sequence) that alone runs to dozens of bytes. This reuses
+/// `SessionDetailsFrame`'s encode-measure-shrink loop rather than a second implementation of it.
+public struct SonosFrame: Codable {
+    public var sonos: SonosNowPlaying
+    public let v: Int
+
+    public init(_ np: SonosNowPlaying) {
+        self.sonos = SonosNowPlaying(
+            room: np.room.map { String($0.prefix(SonosLimits.roomMaxChars)) },
+            track: np.track.map { String($0.prefix(SonosLimits.trackMaxChars)) },
+            artist: np.artist.map { String($0.prefix(SonosLimits.artistMaxChars)) },
+            album: np.album.map { String($0.prefix(SonosLimits.albumMaxChars)) },
+            playing: np.playing)
+        self.v = 1
+    }
+
+    /// Encode, measure, shrink until the frame is under `HUB_FRAME_MAX` -- the only thing that actually
+    /// guarantees the ceiling for arbitrary human/API text (see `shrink` for the trim order).
+    public func encoded() throws -> Data {
+        var np = sonos
+        var data = try Self.encode(np)
+        while data.count >= SonosLimits.frameMaxBytes, Self.shrink(&np) {
+            data = try Self.encode(np)
         }
-        if target < 0 {
-            for (i, r) in rows.enumerated() {
-                if let t = r.title, t.count > best { best = t.count; target = i; isMsg = false }
-            }
+        return data
+    }
+
+    private static func encode(_ np: SonosNowPlaying) throws -> Data {
+        let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+        var d = try enc.encode(SonosFrame(np))
+        d.append(0x0A)
+        return d
+    }
+
+    /// Drop one character from the least-identifying field first: `album`, then `artist`, then `track`,
+    /// then `room` last -- room is what tells a multi-speaker household's pages apart, so it is the last
+    /// thing sacrificed. Delegates to `FrameShrink.trim` (shared with `SessionDetailsFrame.shrink`) with
+    /// each field as its own single-slot priority group, which reduces to "trim the first non-empty field
+    /// in order" -- the same behavior as the field-by-field checks this replaced. Returns false once every
+    /// field is empty, which bounds the loop.
+    private static func shrink(_ np: inout SonosNowPlaying) -> Bool {
+        guard let hit = FrameShrink.trim(priority: [[np.album], [np.artist], [np.track], [np.room]])
+        else { return false }
+        switch hit.group {
+        case 0: np.album = hit.value
+        case 1: np.artist = hit.value
+        case 2: np.track = hit.value
+        default: np.room = hit.value
         }
-        guard target >= 0, best > 0 else { return false }
-        if isMsg { rows[target].msg = String(rows[target].msg!.dropLast()) }
-        else { rows[target].title = String(rows[target].title!.dropLast()) }
         return true
     }
 }
@@ -245,6 +349,11 @@ public enum DeviceCommand: Equatable {
     // an `err` ("malformed" / "too_many_pages" / "empty"). The device restarts right after acking, so
     // the link drops immediately -- an absent ack is normal if the reset beat the flush.
     case pagesAck(rev: UInt32, ok: Bool, count: Int?, err: String?)
+    // One ack per pushed complication assignment (design §6.1). Echoes the `rev`; on ok carries the
+    // applied PLACEMENT count (not slot units -- 4 placements can occupy 5 when one is the clock), on
+    // reject an `err` ("malformed" only -- there is deliberately no "too_many_slots", design §4.3 rule 4).
+    // Unlike `pagesAck`, the device does NOT restart, so the link stays up and the ack is reliable.
+    case compsAck(rev: UInt32, ok: Bool, count: Int?, err: String?)
 
     public static func parse(_ data: Data) -> DeviceCommand? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -259,6 +368,9 @@ public enum DeviceCommand: Equatable {
         case "pages_ack":
             guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
             return .pagesAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)
+        case "comps_ack":
+            guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
+            return .compsAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)
         case "config_ack":
             guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
             return .configAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)

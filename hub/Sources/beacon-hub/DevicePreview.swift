@@ -9,7 +9,9 @@ import BeaconHubKit
 //
 // Live where we can be: Agents and Home draw from the same session data the hub is already pushing. The
 // device-plane pages (Chart, ICE, Markets) CANNOT be live -- the device fetches those over WiFi itself
-// and the hub never sees the values -- so they are drawn with representative sample figures.
+// and the hub never sees the values -- so they are drawn with representative sample figures. Sonos is
+// hub-plane (the hub will proxy the Sonos API once its provider lands), but that provider does not exist
+// yet, so its sketch is sample data too -- not wired to a live model field, same honesty rule.
 
 enum BeaconPalette {
     static let bg = Color.black                                   // AMOLED off-pixels (DESIGN.md)
@@ -41,6 +43,13 @@ struct DevicePreview: View {
         return sym
     }
 
+    /// The Sonos room this page is configured to follow, from the page's own `opts["room"]` -- mirrors
+    /// how `chartLabel` resolves the chart's instrument from `opts["sym"]`. The room picker itself lives
+    /// in PageDesignerView (owned elsewhere); this only reads whatever value has already been set.
+    private var sonosRoom: String {
+        model.pageRows.first { $0.id == "sonos" }?.opts["room"] ?? "Living Room"
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
@@ -62,6 +71,7 @@ struct DevicePreview: View {
         case "chart":    ChartSketch(size: size, label: chartLabel)
         case "ice":      IceSketch(size: size)
         case "markets":  MarketsSketch(model: model, size: size)
+        case "sonos":    SonosSketch(size: size, room: sonosRoom)
         case "settings": SettingsSketch(size: size)
         default:         UnknownSketch(size: size)
         }
@@ -256,6 +266,33 @@ private struct MarketsSketch: View {
                     .foregroundStyle(BeaconPalette.inkDim)
             }
             Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SonosSketch: View {
+    let size: CGFloat
+    let room: String
+    /// Text only in phase 1 -- no album art (`docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md`
+    /// §3: a BLE tile transport is 15-30 s per track change, so art waits on a phase-2 hub-served LAN
+    /// URL). The hub proxies live playback once its Sonos provider lands (out of scope here); until then
+    /// this is a representative sample, same honesty rule as the device-plane sketches above -- it is not
+    /// wired to any live model field.
+    var body: some View {
+        VStack(alignment: .leading, spacing: size * 0.024) {
+            eyebrow(room, size)
+            hero("Black Hole Sun", size)
+            Text("Soundgarden").font(.system(size: size * 0.05)).foregroundStyle(BeaconPalette.inkDim)
+            Text("Superunknown").font(.system(size: size * 0.038)).foregroundStyle(BeaconPalette.inkDim)
+            Spacer(minLength: 0)
+            HStack(spacing: size * 0.02) {
+                Circle().fill(BeaconPalette.accent).frame(width: size * 0.03, height: size * 0.03)
+                Text("playing").font(.system(size: size * 0.036)).foregroundStyle(BeaconPalette.inkDim)
+                Spacer()
+                Text("sample · live once connected").font(.system(size: size * 0.03))
+                    .foregroundStyle(BeaconPalette.inkDim)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

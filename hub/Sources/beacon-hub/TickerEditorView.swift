@@ -6,9 +6,6 @@ import BeaconHubKit
 // logic is the tested B1/B2 layer; this view only debounces, displays, and mutates a local working copy.
 // Shares HubViewModel with the popover panel so the sync badge reflects the live config_ack.
 
-// Firmware bound (records.h FIN_MAX / MAX_TICKERS). Mirrors the contract; the device rejects a longer list.
-private let maxTickers = 16
-
 struct TickerEditorView: View {
     @ObservedObject var model: HubViewModel
 
@@ -97,7 +94,7 @@ struct TickerEditorView: View {
                     } else {
                         ForEach(results, id: \.row.id) { candidate in
                             ResultRow(candidate: candidate,
-                                      canAdd: working.count < maxTickers && !working.contains { $0.id == candidate.row.id },
+                                      canAdd: working.count < ChartInstrumentSelection.maxTickers && !working.contains { $0.id == candidate.row.id },
                                       validating: validatingID == candidate.row.id,
                                       error: addErrors[candidate.row.id],
                                       add: { add(candidate.row) })
@@ -118,9 +115,9 @@ struct TickerEditorView: View {
                 HStack {
                     Text("Current list").font(.system(size: 12, weight: .semibold))
                     Spacer()
-                    Text("\(working.count) / \(maxTickers)")
+                    Text("\(working.count) / \(ChartInstrumentSelection.maxTickers)")
                         .font(.system(size: 11))
-                        .foregroundStyle(working.count >= maxTickers ? .orange : .secondary)
+                        .foregroundStyle(working.count >= ChartInstrumentSelection.maxTickers ? .orange : .secondary)
                 }
                 .padding(.horizontal, 11).padding(.top, 11).padding(.bottom, 6)
 
@@ -154,7 +151,7 @@ struct TickerEditorView: View {
     // joins the list. While validating, the row's Add button shows a spinner; on failure the reason is
     // surfaced inline and the row is NOT added. Ignore re-taps while a validation is already in flight.
     private func add(_ row: TickerRow) {
-        guard working.count < maxTickers, !working.contains(where: { $0.id == row.id }), validatingID == nil
+        guard working.count < ChartInstrumentSelection.maxTickers, !working.contains(where: { $0.id == row.id }), validatingID == nil
         else { return }
         addErrors[row.id] = nil
         guard let validate = model.onValidateTicker else {
@@ -164,7 +161,7 @@ struct TickerEditorView: View {
         validate(row) { ok, reason in
             validatingID = nil
             guard ok else { addErrors[row.id] = reason ?? "No live data for \(row.sym)"; return }
-            guard working.count < maxTickers, !working.contains(where: { $0.id == row.id }) else { return }
+            guard working.count < ChartInstrumentSelection.maxTickers, !working.contains(where: { $0.id == row.id }) else { return }
             working.append(row)
             commit()
         }

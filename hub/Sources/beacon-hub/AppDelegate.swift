@@ -1,7 +1,17 @@
 import AppKit
 import Foundation
+import CryptoKit
 import ServiceManagement
 import BeaconHubKit
+
+// The first-run Settings auto-open gate (design §2.3, plan §3 item 10), extracted as a pure function so
+// it is host-testable without AppKit. `BeaconFirstRunComplete` (SettingsWindowController) stops driving
+// window presentation and becomes a latch used only by the menubar setup hint; this key drives
+// presentation instead, and unlike that one it is set unconditionally the first time -- there is no
+// "don't show again" opt-out any more (the checkbox that wrote it is deleted, WS-2).
+enum SettingsLaunch {
+    static func shouldAutoOpen(didAutoOpen: Bool) -> Bool { !didAutoOpen }
+}
 
 // Wires the subsystems together (design 2026-07-19): a shared LocalIngestServer + registered
 // AgentProviders (Claude, Codex, omp) feed a ProviderMux, which merges per-provider usage/sessions/prompts
@@ -10,6 +20,10 @@ import BeaconHubKit
 // poller iterates usage-enabled providers; per-provider toggles (ProviderSettings) drive live setEnabled.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set once, forever, the first time Settings auto-opens post-install (SettingsLaunch.shouldAutoOpen).
+    /// Distinct from SettingsWindowController.completeKey ("BeaconFirstRunComplete"): that key still
+    /// exists and is still written by maybeMarkComplete(), but only the menubar hint reads it now.
+    static let didAutoOpenSettingsKey = "BeaconDidAutoOpenSettings"
     private let menubar = MenubarController()
     private let central = BeaconCentral()
     private let mux = ProviderMux()
@@ -20,9 +34,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var codex: HookBuddyProvider?              // typed ref for drain + device-connected
     private var omp: HookBuddyProvider?                // typed ref for drain + device-connected
     private var poller: UsagePoller!                   // built once providers exist
+    private var sonos: SonosProvider?                   // Sonos OAuth + polling (design 2026-07-26-sonos-now-playing-plan)
+    private let sonosSetupStore = SonosSetupStore()     // persisted Client ID (design 2026-07-26-sonos-setup-ui)
+    // Read-side accessor for the selected room (SonosRoomStore is a thin, stateless UserDefaults wrapper --
+    // this instance and the one SonosProvider owns internally always agree, since both just read/write the
+    // same "BeaconSonosSelectedRoom" key). Writes still go through `sonos?.setSelectedRoom` so the group
+    // cache invalidates too; see onLoadSonosRoom/onSetSonosRoom wiring in startSonosSettings.
+    private let sonosRoomStore = SonosRoomStore()
+    // Most recent classified outcome SonosProvider observed, fed by its onOutcome hook -- purely for the
+    // Settings status line (SonosSetupState.derive); never read by the poll gate itself.
+    private var sonosLastOutcome: ProviderOutcome?
+    // Fingerprint of the Sonos Keychain items as of the last check (Defect 1, CLI half): `set-sonos-secret`
+    // and `sonos-authorize` run as a SEPARATE process (main.swift) from this already-running hub, so there
+    // is no direct call path for that CLI to reach SonosProvider -- writing to Keychain does not notify us.
+    // refreshSonosCredentialOnRefocus compares against these on every applicationDidBecomeActive (the user
+    // clicking the menubar icon after running a CLI subcommand counts) and only resets the gate on an
+    // ACTUAL change -- see that method for why an unconditional reset on every refocus is not an option.
+    // SHA-256 digests, never the values themselves: change detection only needs to know whether the bytes
+    // differ, so there is no reason to keep a client secret and an OAuth token resident in process memory
+    // for the app's whole lifetime. SonosProvider caches a credential because it must send it; this does
+    // not. Public repo, and the rest of this flow is careful about the same thing (stdin not argv, only a
+    // character count echoed back) -- holding plaintext here purely to compare it would be out of step.
+    private var sonosLastObservedSecretDigest: String?
+    private var sonosLastObservedOAuthDigest: String?
+
+    private static func sonosCredDigest(_ data: Data?) -> String? {
+        guard let data else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    private static func sonosCredDigest(_ text: String?) -> String? {
+        sonosCredDigest(text.map { Data($0.utf8) })
+    }
     private let location = LocationProvider()
     private let tickerStore = TickerConfigStore()   // desired ticker list + monotonic rev (issue #92)
     private let pageStore = PageConfigStore()      // which device pages, in what order (+ monotonic rev)
+    private let compStore = ComplicationStore()    // Home's six-slot complication assignment (+ monotonic rev)
     private var reportAssembler = ReportAssembler()   // reassembles device->hub ticker report chunks (#105)
     private let tickerSearch = TickerSearch()        // Binance(cached) + Yahoo(live) discovery (issue #92 B4)
     private lazy var tickerEditor = TickerEditorWindowController(model: menubar.viewModel)
@@ -41,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buddy = BuddyState()
     private var sessions: [Session] = []
     private var sessionDetails: [SessionDetail] = []   // resent on (re)connect alongside `sessions`
+    // Latest normalized Sonos now-playing (resent on reconnect, same as sessions/sessionDetails above);
+    // nil until the poller has resolved a room and gotten a live result at least once.
+    private var sonosNowPlaying: (room: String, track: String?, artist: String?, album: String?, playing: Bool)?
     private var lastFix: Loc?   // most recent CoreLocation fix (issue #54); rides the (re)connect full frame
     private var heartbeat: Timer?
 
@@ -81,11 +130,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startProviders()
         startCentral()
         startPoller()
+        // Wire Sonos (onLoadSonosSetup/onAuthorizeSonos/...) BEFORE startSettings(): the latter can
+        // auto-open the Settings window immediately via showIfNeeded() on a not-yet-first-run-complete
+        // machine, and that window is built once and reused for the app's lifetime (SettingsWindowController
+        // never rebuilds it). If it opens before these closures exist, SonosSettingsSection's one-time
+        // onAppear captures HubViewModel's still-default `{ .empty }` onLoadSonosSetup and -- because the
+        // reused window never re-derives except via that onAppear or its own Save/Authorize actions --
+        // Settings could show "Not configured" indefinitely even after the user genuinely configures and
+        // authorizes Sonos through some other path (see also the didBecomeKeyNotification refresh added to
+        // SonosSettingsView.swift, which is the other half of this fix: re-derive on every reopen too, not
+        // just rely on ordering).
+        startSonos()
+        startSonosSettings()
         startSettings()
         startLoginItem()
         startLocation()
         startTickerEditor()
         menubar.setPages(ids: pageStore.current.ids, opts: pageStore.current.opts)
+        menubar.setComps(compStore.current.slots)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
         // and on-change frames only, never the 30s heartbeat.
@@ -99,6 +161,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Hooks can change out-of-band (manual edit) between launches; re-check on re-focus (off-main).
         refreshProviderHooks()
         refreshLoginItem()   // cheap re-sync; the menu-open refresh is the reliable path for this accessory app.
+        refreshSonosCredentialOnRefocus()
+    }
+
+    // Defect 1, CLI half: see sonosLastObservedSecret/sonosLastObservedOAuthBlob's doc comment. Only an
+    // ACTUAL change to either Keychain item resets the gate -- comparing every refocus and resetting
+    // unconditionally would re-issue a request against a genuinely-still-broken credential on every single
+    // app switch, which is exactly the retry-storm issue #7 already burned an hour on. A byte-identical
+    // read means nothing changed and any existing gate (terminal or transient) is left exactly as it was.
+    private func refreshSonosCredentialOnRefocus() {
+        let secret = Self.sonosCredDigest(SonosKeychain.readSecret())
+        let oauthBlob = Self.sonosCredDigest(SonosKeychain.readOAuthBlob())
+        defer { sonosLastObservedSecretDigest = secret; sonosLastObservedOAuthDigest = oauthBlob }
+        guard secret != sonosLastObservedSecretDigest || oauthBlob != sonosLastObservedOAuthDigest else { return }
+        sonos?.resetForCredentialChange()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -125,7 +201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menubar.onInstallProviderHooks = { [weak self] id in self?.installHooks(for: id) }
         menubar.onOpenBluetooth = { SettingsLinks.open(SettingsLinks.bluetooth) }
         refreshProviderHooks()
-        settingsWindow.showIfNeeded()
+        // Design §2.3: open once per install, forever -- not "until every check passes" (the old
+        // showIfNeeded()/BeaconFirstRunComplete gate WS-2 is replacing). BeaconFirstRunComplete keeps
+        // existing solely as the menubar hint's latch; it no longer drives window presentation.
+        let didAutoOpen = UserDefaults.standard.bool(forKey: Self.didAutoOpenSettingsKey)
+        if SettingsLaunch.shouldAutoOpen(didAutoOpen: didAutoOpen) {
+            UserDefaults.standard.set(true, forKey: Self.didAutoOpenSettingsKey)
+            settingsWindow.show()
+        }
     }
 
     // Re-read every provider's hooks state off the main thread (sync file IO + parse), then apply on main
@@ -346,6 +429,129 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pushMenubarUsage()   // a usage toggle re-includes/excludes the provider's card immediately
     }
 
+    // --- sonos (OAuth + polling provider; the BLE frame encoder is owned by a separate agent) ---
+
+    private func startSonos() {
+        // Seed the refocus fingerprint (Defect 1, CLI half) so the FIRST applicationDidBecomeActive after
+        // launch does not see a spurious nil -> already-there "change" and fire an unnecessary reset.
+        sonosLastObservedSecretDigest = Self.sonosCredDigest(SonosKeychain.readSecret())
+        sonosLastObservedOAuthDigest = Self.sonosCredDigest(SonosKeychain.readOAuthBlob())
+        rebuildSonosProvider()
+    }
+
+    // Tear down and reconstruct the provider (design 2026-07-26-sonos-setup-ui): also called by
+    // Disconnect/Clear-secret so a credential change from the UI is not still served out of
+    // SonosProvider's in-memory cachedCredential/groupCache -- rebuilding forces a fresh Keychain read on
+    // the very next poll tick, without touching SonosProvider's own logic at all. The room selection
+    // survives (SonosRoomStore reads the same UserDefaults key regardless of which SonosProvider instance
+    // owns it).
+    private func rebuildSonosProvider() {
+        sonos?.stop()
+        let provider = SonosProvider(session: usageSession)
+        provider.onUpdate = { [weak self] room, track, artist, album, playing in
+            Task { @MainActor in
+                self?.sonosNowPlaying = (room, track, artist, album, playing)
+                self?.pushSonosFrame()
+            }
+        }
+        provider.onOutcome = { [weak self] outcome in
+            Task { @MainActor in self?.sonosLastOutcome = outcome }
+        }
+        sonos = provider
+        provider.start()
+    }
+
+    // --- sonos setup UI (design 2026-07-26-sonos-setup-ui) ---
+
+    private func startSonosSettings() {
+        menubar.viewModel.onLoadSonosSetup = { [weak self] in self?.sonosSnapshot() ?? .empty }
+        menubar.viewModel.onSaveSonosClientID = { [weak self] value in
+            self?.sonosSetupStore.storedClientID = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        menubar.viewModel.onSaveSonosSecret = { [weak self] secret in
+            guard SonosSecretValidation.isValid(secret) else { return .refused(SonosSecretValidation.refusalMessage) }
+            guard SonosKeychain.writeSecret(secret) else { return .keychainWriteFailed }
+            self?.sonosLastObservedSecretDigest = Self.sonosCredDigest(secret)   // keep the refocus fingerprint in sync; see its doc comment
+            return .saved(charCount: secret.count)
+        }
+        menubar.viewModel.onAuthorizeSonos = { [weak self] progress, completion in
+            // SonosAuthorizer.authorize never blocks; its own completion already lands on an unspecified
+            // background queue (URLSession/NWListener callback queues), so hop to the main actor before
+            // touching AppDelegate/HubViewModel state rather than assume the caller already did.
+            SonosAuthorizer.authorize(progress: { stage in
+                Task { @MainActor in progress(stage) }
+            }, completion: { result in
+                Task { @MainActor in
+                    // Defect 1 (live bug): a fresh authorization must start polling NOW, not sit out
+                    // whatever gate a prior missing-credential launch already raised (up to 900s) nor wait
+                    // for an app restart. resetForCredentialChange clears the gate's CONSEQUENCE the same
+                    // way `.live` does and forces an immediate re-check -- it does not touch the terminal/
+                    // transient classification or the backoff curve (see SonosProvider.resetForCredentialChange
+                    // and SonosGateTests.testCredentialChangeClearsTheGate). Also covers re-authorizing
+                    // after a Disconnect: rebuildSonosProvider already swaps in a fresh SonosProvider there,
+                    // and this call targets whichever instance is current.
+                    if case .success = result {
+                        self?.sonos?.resetForCredentialChange()
+                        self?.sonosLastObservedOAuthDigest = Self.sonosCredDigest(SonosKeychain.readOAuthBlob())   // keep the fingerprint in sync
+                    }
+                    completion(result)
+                }
+            })
+        }
+        menubar.viewModel.onDisconnectSonos = { [weak self] in
+            guard let self else { return }
+            SonosKeychain.deleteOAuthBlob()
+            self.sonosNowPlaying = nil
+            self.sonosLastOutcome = nil
+            self.sonosLastObservedOAuthDigest = nil   // keep the refocus fingerprint in sync; see its doc comment
+            self.rebuildSonosProvider()
+        }
+        menubar.viewModel.onClearSonosSecret = { [weak self] in
+            guard let self else { return }
+            SonosKeychain.deleteSecret()
+            self.sonosNowPlaying = nil
+            self.sonosLastOutcome = nil
+            self.sonosLastObservedSecretDigest = nil   // keep the refocus fingerprint in sync; see its doc comment
+            self.rebuildSonosProvider()   // the stored secret is gone too -- stop polling with it
+        }
+        // Defect 2: the Page Designer's room picker (PageDesignerView.swift) calls this to populate itself
+        // from the real household -- see SonosProvider.fetchAvailableRooms's doc comment for why this is a
+        // separate, read-only path rather than reusing fetchHouseholdIfNeeded/fetchGroups.
+        menubar.viewModel.onFetchSonosRooms = { [weak self] completion in
+            guard let self, let sonos = self.sonos else { completion(.notAuthorized); return }
+            sonos.fetchAvailableRooms(completion: completion)
+        }
+        // The room is PROVIDER state, not page-presentation state (see the doc comment on
+        // onLoadSonosRoom/onSetSonosRoom in HubViewModel): read directly from SonosRoomStore, and apply
+        // immediately through SonosProvider.setSelectedRoom -- independent of Save & push and of whether
+        // the Sonos page happens to be enabled, so a disabled page can never strip it.
+        menubar.viewModel.onLoadSonosRoom = { [weak self] in self?.sonosRoomStore.selectedRoom }
+        menubar.viewModel.onSetSonosRoom = { [weak self] room in self?.sonos?.setSelectedRoom(room) }
+    }
+
+    // Everything the Settings UI needs to render the Sonos section, assembled fresh on every call
+    // (Keychain + UserDefaults reads are cheap and local -- see HubViewModel.onLoadSonosSetup).
+    private func sonosSnapshot() -> SonosSetupSnapshot {
+        let stored = sonosSetupStore.storedClientID
+        let env = ProcessInfo.processInfo.environment["SONOS_CLIENT_ID"]
+        let effective = SonosClientID.resolve(stored: stored, env: env)
+        let secret = SonosKeychain.readSecret()
+        let credential = SonosKeychain.readOAuthBlob().flatMap { ProviderCredentials.parseSonos($0) }
+        let status = SonosSetupState.derive(secretStored: secret != nil, credential: credential,
+                                            lastOutcome: sonosLastOutcome, now: Date())
+        return SonosSetupSnapshot(storedClientID: stored, effectiveClientID: effective,
+                                  usingEnvOverride: stored.isEmpty && !(env ?? "").isEmpty,
+                                  secretStored: secret != nil, secretCharCount: secret?.count ?? 0,
+                                  status: status)
+    }
+
+    private func pushSonosFrame() {
+        guard let np = sonosNowPlaying else { return }
+        let payload = BeaconHubKit.SonosNowPlaying(room: np.room, track: np.track, artist: np.artist,
+                                                   album: np.album, playing: np.playing)
+        if let data = try? SonosFrame(payload).encoded() { central.send(data) }
+    }
+
     // --- central ---
 
     private func startCentral() {
@@ -355,8 +561,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         central.onReady = { [weak self] in
             // Link state is refreshed by the isConnected didSet's onPhaseChange (fires just before
             // this); onReady only resends the full frame to a freshly-(re)subscribed device. The
-            // (re)connect frame carries the cached location fix (issue #54). Push the ticker config after
-            // the full frame so a rebooted/re-bonded device re-syncs its list (issue #92).
+            // (re)connect frame carries the cached location fix (issue #54). Push order: tickers -> comps
+            // -> pages (design §7) -- comps before pages so that if the page push restarts the device,
+            // the complication blob is already persisted and the device boots correct.
             Task { @MainActor in
                 self?.reportAssembler.reset()   // discard any partial device report from a prior connection (#105)
                 self?.sendFullFrame(includeLocation: true)
@@ -364,7 +571,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Without this the device redraws its rows on reconnect with no project/title/message.
                 if let data = try? SessionDetailsFrame(self?.sessionDetails ?? []).encoded() { self?.central.send(data) }
                 self?.pushTickerConfig()
+                self?.pushCompConfig()
                 self?.pushPageConfig()
+                self?.pushSonosFrame()   // resend the latest Sonos now-playing on (re)connect, same as sessions/sdetail above
             }
         }
         central.onCommand = { [weak self] cmd in
@@ -378,6 +587,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.menubar.setPages(ids: self.pageStore.current.ids, opts: self.pageStore.current.opts)
             self.menubar.setPageSync(nil)
+        }
+        menubar.viewModel.onApplyComps = { [weak self] slots in self?.applyCompEdit(slots) }
+        menubar.viewModel.onRevertComps = { [weak self] in
+            guard let self else { return }
+            self.menubar.setComps(self.compStore.current.slots)
+            self.menubar.setCompSync(nil)
         }
         menubar.onApplyTickerEdit = { [weak self] rows in self?.applyTickerEdit(rows) }
         central.start()
@@ -443,6 +658,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard rev == tickerStore.current.rev else { break }
             menubar.setTickerSync(ok ? .synced(count ?? tickerStore.current.rows.count)
                                      : .error(err ?? "rejected"))
+        case .compsAck(let rev, let ok, let count, let err):
+            // Same stale-ack discipline as pagesAck/configAck. Unlike pagesAck, the device does NOT
+            // restart -- the link stays up and this ack is reliable.
+            guard rev == UInt32(compStore.current.rev) else { break }
+            menubar.setCompSync(ok ? "Updated \(count ?? 0) complications."
+                                   : "The Beacon rejected the assignment: \(err ?? "unknown")")
         case .open(let id):
             // Route to the owning provider by short id; the provider focuses its own native session.
             guard let (pid, nativeKey) = mux.sessionRoute(shortId: id),
@@ -655,12 +876,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let after = pageStore.set(ids: ids, opts: opts)
         guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
         menubar.setPages(ids: after.ids, opts: after.opts)   // the edit is now the applied baseline
+        // Deliberately NOT reading a room out of `after.opts["sonos"]` here (that was the bug): the room is
+        // PROVIDER state, and `opts` is filtered by `enabled` (HubViewModel.enabledPageOpts) before it ever
+        // reaches this function -- disabling the Sonos page would silently drop the key, and a later save
+        // would then read no room and clear SonosProvider's selection even though the user never touched
+        // it. The Page Designer's room picker calls `onSetSonosRoom` (-> SonosProvider.setSelectedRoom)
+        // directly and immediately on selection now, independent of Save & push and of page enablement.
         guard central.isConnected else {
             menubar.setPageSync("Saved. The Beacon picks this up next time it connects.")
             return
         }
         menubar.setPageSync("Sent - the Beacon is restarting…")
+        // A page save that points the chart at a just-added ticker must land on the device BEFORE the
+        // page push that restarts it -- otherwise the device could reboot with the chart id set but the
+        // ticker row not yet persisted (design 2026-07-26-yahoo-symbol-search). The chart-instrument
+        // picker already live-pushes the ticker config the moment a new symbol is chosen, but re-push here
+        // unconditionally rather than trust that earlier push landed (BLE could have dropped in between);
+        // it is a cheap idempotent re-sync, the same one that already runs on every (re)connect below in
+        // central.onReady, which is what actually guarantees convergence if the device reboots mid-sync.
+        pushTickerConfig()
         pushPageConfig()
+    }
+
+    // --- complications (design §4, plan §3) ---
+
+    // Push the current Home assignment. No-ops while pristine (rev 0): an untouched hub must never push
+    // just for connecting, same promise as pushPageConfig -- except a comps push never restarts the
+    // device, so this is the cheap half of the two.
+    private func pushCompConfig() {
+        guard central.isConnected, let frame = compStore.frame() else { return }
+        guard frame.fitsFrame() else {
+            FileHandle.standardError.write(Data("[beacon-hub] comps config exceeds HUB_FRAME_MAX; not sent\n".utf8))
+            return
+        }
+        do { central.send(try frame.encoded()) }
+        catch {
+            FileHandle.standardError.write(Data("[beacon-hub] comps config encode failed: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    /// Apply a new Home complication assignment from the UI: persist, bump the rev, push. Unlike
+    /// applyPageEdit this must NOT print restart wording -- the device applies it live, no reboot.
+    func applyCompEdit(_ slots: [String: [String]]) {
+        let before = compStore.current
+        let after = compStore.set(slots: slots)
+        guard after.rev != before.rev else { return }   // no-op edit
+        menubar.setComps(after.slots)   // the edit is now the applied baseline
+        guard central.isConnected else {
+            menubar.setCompSync("Saved. The Beacon picks this up next time it connects.")
+            return
+        }
+        menubar.setCompSync("Sent…")
+        pushCompConfig()
     }
 
     private func sendFrame(_ frame: StatusFrame) {

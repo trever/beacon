@@ -6,6 +6,7 @@
 #define WEATHER_STALE_S    1800u   // 30 min
 #define USAGE_STALE_S       300u   // 5 min / hub-offline
 #define BUDDY_STALE_S       300u
+#define SONOS_STALE_S       300u   // hub-plane, pushed on change; same class as usage/buddy
 // ICE D4 RIN: polled every 60 s (matching the ice-tracker app's 30 s, halved for a battery device).
 // Stale at 10 min -- generous because the CONTRACT can legitimately go days without a trade; this
 // threshold is about OUR fetch being stale, and the per-contract last_time carries market liveness.

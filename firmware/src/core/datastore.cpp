@@ -12,6 +12,7 @@ static finance_rec_t    s_finance[MAX_TICKERS];
 static uint8_t          s_finance_count;
 static usage_rec_t      s_usage;
 static buddy_rec_t      s_buddy;
+static sonos_rec_t      s_sonos;
 
 static void hdr_loading(record_hdr_t* h) { h->last_updated = 0; h->state = ST_LOADING; h->err = ERR_NONE; }
 
@@ -23,6 +24,7 @@ void datastore_init(void) {
   memset(&s_series, 0, sizeof(s_series));         hdr_loading(&s_series.hdr);
   memset(&s_usage, 0, sizeof(s_usage));           hdr_loading(&s_usage.hdr);
   memset(&s_buddy, 0, sizeof(s_buddy));           hdr_loading(&s_buddy.hdr);
+  memset(&s_sonos, 0, sizeof(s_sonos));           hdr_loading(&s_sonos.hdr);
 
   // Seed finance ids/count from the runtime ticker table (already initialized -- NVS-restored list or
   // defaults), NOT DEFAULT_TICKERS: after a reboot with a saved hub config the table holds the restored
@@ -77,6 +79,11 @@ void ds_set_buddy(const buddy_rec_t* r) {
   s_buddy = *r; s_buddy.hdr.state = ST_LIVE; s_buddy.hdr.err = ERR_NONE;
   ds_lock_give(s_lock);
 }
+void ds_set_sonos(const sonos_rec_t* r) {
+  ds_lock_take(s_lock);
+  s_sonos = *r; s_sonos.hdr.state = ST_LIVE; s_sonos.hdr.err = ERR_NONE;
+  ds_lock_give(s_lock);
+}
 void ds_apply_sessions(const buddy_session_t* s, uint8_t count, uint32_t now) {
   if (count > BUDDY_SESSIONS_MAX) count = BUDDY_SESSIONS_MAX;
   ds_lock_take(s_lock);
@@ -109,6 +116,10 @@ void ds_set_state_ice(screen_state_t s, data_err_t e) {
   ds_lock_take(s_lock); s_ice.hdr.state = s; s_ice.hdr.err = e; ds_lock_give(s_lock);
 }
 
+void ds_set_state_sonos(screen_state_t s, data_err_t e) {
+  ds_lock_take(s_lock); s_sonos.hdr.state = s; s_sonos.hdr.err = e; ds_lock_give(s_lock);
+}
+
 void ds_set_state_weather(screen_state_t s, data_err_t e) {
   ds_lock_take(s_lock); s_weather.hdr.state = s; s_weather.hdr.err = e; ds_lock_give(s_lock);
 }
@@ -133,6 +144,7 @@ void ds_set_hub_offline(void) {
   ds_lock_take(s_lock);
   s_usage.hdr.state = ST_HUB_OFFLINE;
   s_buddy.hdr.state = ST_HUB_OFFLINE;
+  s_sonos.hdr.state = ST_HUB_OFFLINE;
   ds_lock_give(s_lock);
 }
 
@@ -162,6 +174,9 @@ usage_rec_t ds_get_usage(void) {
 buddy_rec_t ds_get_buddy(void) {
   ds_lock_take(s_lock); buddy_rec_t r = s_buddy; ds_lock_give(s_lock); return r;
 }
+sonos_rec_t ds_get_sonos(void) {
+  ds_lock_take(s_lock); sonos_rec_t r = s_sonos; ds_lock_give(s_lock); return r;
+}
 
 // --- staleness sweep ---
 static void sweep_one(record_hdr_t* h, uint32_t now, uint32_t stale_s) {
@@ -174,6 +189,7 @@ void ds_tick_staleness(uint32_t now) {
   sweep_one(&s_series.hdr,     now, SERIES_STALE_S);
   sweep_one(&s_usage.hdr,      now, USAGE_STALE_S);
   sweep_one(&s_buddy.hdr,      now, BUDDY_STALE_S);
+  sweep_one(&s_sonos.hdr,      now, SONOS_STALE_S);
   for (uint8_t i = 0; i < s_finance_count; i++) sweep_one(&s_finance[i].hdr, now, finance_stale_s(i));
   ds_lock_give(s_lock);
 }

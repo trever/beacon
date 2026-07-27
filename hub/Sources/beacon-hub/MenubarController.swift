@@ -189,6 +189,15 @@ final class MenubarController: NSObject {
     }
 
     func setPageSync(_ text: String?) { model.pageSync = text }
+
+    /// Seed the complication editor: `slots` is the assignment currently on the device (face id -> wire
+    /// strings). Mirrors setPages: both the staged edit and the applied baseline start here.
+    func setComps(_ slots: [String: [String]]) {
+        model.compSlots = slots
+        model.appliedCompSlots = slots
+    }
+
+    func setCompSync(_ text: String?) { model.compSync = text }
     func setTickerRows(_ rows: [TickerRow]) { model.tickerRows = rows }   // issue #92: seed the editor with the persisted list
     func setTickerSearch(_ search: @escaping (String, @escaping ([TickerCandidate]) -> Void) -> Void) {
         model.onSearchTickers = search

@@ -246,6 +246,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(json.contains("\"qlen\":3"), "queued prompt must emit qlen")
     }
 
+    func testParseCompsAckOk() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"comps_ack","rev":5,"ok":true,"count":4}"#.utf8))
+        XCTAssertEqual(c, .compsAck(rev: 5, ok: true, count: 4, err: nil))
+    }
+
+    func testParseCompsAckErr() {
+        let c = DeviceCommand.parse(Data(#"{"v":1,"cmd":"comps_ack","rev":5,"ok":false,"err":"malformed"}"#.utf8))
+        XCTAssertEqual(c, .compsAck(rev: 5, ok: false, count: nil, err: "malformed"))
+    }
+
+    func testCompsAckRejectsMissingFields() {
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"comps_ack","ok":true}"#.utf8)))    // no rev
+        XCTAssertNil(DeviceCommand.parse(Data(#"{"v":1,"cmd":"comps_ack","rev":5}"#.utf8)))      // no ok
+        XCTAssertNil(DeviceCommand.parse(Data("garbage".utf8)))
+    }
+
     func testAckAndErr() throws {
         let ack = try JSONSerialization.jsonObject(with: HubAck.ack(id: "req_abc", ok: true)) as! [String: Any]
         XCTAssertEqual(ack["v"] as? Int, 1)

@@ -23,6 +23,10 @@ uint8_t carousel_apply_pages(const page_list_t* want, bool* changed);
 // Read one option of an ACTIVE page ("chart", "sym", ...). False (and empty `out`) when the page is not
 // in the active set or carries no such option. Screens call this instead of reading NVS themselves.
 bool carousel_page_opt(const char* page_id, const char* key, char* out, size_t cap);
+
+// True when `id` is in the active page list (a three-line export of the existing active_index_of()).
+// Home's permission-prompt takeover uses this to ask "is Agents where the user can already see this?"
+bool carousel_has_page(const char* id);
 void carousel_advance(int dir);              // +1 next / -1 prev page, animated (physical buttons)
 #if BEACON_CAPTURE
 int  carousel_count(void);                   // number of screens (screenshot sweep)

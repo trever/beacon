@@ -78,6 +78,44 @@ final class HubViewModel: ObservableObject {
     @Published var appliedPageOpts: [String: [String: String]] = [:]
     var pagesDirty: Bool { enabledPageIDs != appliedPageIDs || enabledPageOpts != appliedPageOpts }
 
+    // --- Sonos setup (design 2026-07-26-sonos-setup-ui) ---
+    // Keychain/UserDefaults are cheap local reads with no live-push channel of their own (unlike the
+    // BLE-driven state above), so this is pull-based: SonosSettingsView calls onLoadSonosSetup after
+    // every action rather than the model continuously publishing it.
+    var onLoadSonosSetup: () -> SonosSetupSnapshot = { .empty }
+    var onSaveSonosClientID: (String) -> Void = { _ in }
+    var onSaveSonosSecret: (String) -> SonosSecretSaveResult = { _ in .refused("not wired") }
+    // `progress` fires 0+ times as the loopback/exchange flow proceeds; `completion` fires exactly once.
+    // Both arrive on the main actor -- AppDelegate hops back before calling either (SonosAuthorizer.authorize
+    // itself never blocks, so there is nothing to hop OFF of on this side).
+    var onAuthorizeSonos: (@escaping (SonosAuthorizer.Stage) -> Void,
+                           @escaping (Result<Void, SonosAuthError>) -> Void) -> Void = { _, done in
+        done(.failure(.noClientSecret))
+    }
+    var onDisconnectSonos: () -> Void = {}
+    var onClearSonosSecret: () -> Void = {}
+    // Defect 2 (Page Designer room picker): AppDelegate wires this to SonosProvider.fetchAvailableRooms,
+    // a READ-ONLY listing that never calls noteOutcome and never touches the poll gate/backoff
+    // SonosGateTests pins (see that method's doc comment). completion always lands on the main actor.
+    var onFetchSonosRooms: (@escaping (SonosRoomListResult) -> Void) -> Void = { completion in
+        completion(.notAuthorized)
+    }
+    // The selected room is PROVIDER state (SonosRoomStore), not page-presentation state -- unlike
+    // chart.sym it must not ride PageRow.opts/PageConfigStore, whose opts are filtered by `enabled`
+    // (enabledPageOpts above) and would let a disabled Sonos page silently clear it. Pull-based read +
+    // immediate-apply write (through SonosProvider.setSelectedRoom, so the group cache still invalidates),
+    // independent of Save & push and of whether the Sonos page is currently enabled.
+    var onLoadSonosRoom: () -> String? = { nil }
+    var onSetSonosRoom: (String?) -> Void = { _ in }
+    // Home's six-slot complication assignment (design §4). Face id -> wire strings ("clock",
+    // "fin.sp500", ...) -- the same raw shape ComplicationStore persists, so WS-3's editor and
+    // AppDelegate never have to translate between two representations.
+    @Published var compSlots: [String: [String]] = [:]
+    /// The assignment last known to be on the device; Apply is enabled only when compSlots differs.
+    @Published var appliedCompSlots: [String: [String]] = [:]
+    @Published var compSync: String?          // transient status under the Apply button
+    var compsDirty: Bool { compSlots != appliedCompSlots }
+
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}
     var onRequestLoginItem: (Bool) -> Void = { _ in }   // desired on/off; truth re-read async
@@ -90,6 +128,8 @@ final class HubViewModel: ObservableObject {
     var onApplyPages: ([String], [String: [String: String]]) -> Void = { _, _ in }   // push (restarts device)
     var onRevertPages: () -> Void = {}                // discard staged edits, back to what the device runs
     var onOpenPages: () -> Void = {}                  // open the page designer window
+    var onApplyComps: ([String: [String]]) -> Void = { _ in }   // push (applies live, no restart)
+    var onRevertComps: () -> Void = {}                // discard staged edits, back to what the device runs
     var onApplyTickerEdit: ([TickerRow]) -> Void = { _ in }   // issue #92: B4 editor commits the desired list
     var onOpenTickerEditor: () -> Void = {}                    // issue #92: open the dedicated editor window
     // issue #92: editor calls this with a query; AppDelegate runs Binance(local) + Yahoo(live) and delivers

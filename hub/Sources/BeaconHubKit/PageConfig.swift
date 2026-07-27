@@ -34,6 +34,7 @@ public enum PageCatalog {
         .init(id: "chart",    title: "Chart",    detail: "One symbol with an intraday graph"),
         .init(id: "ice",      title: "ICE RINs", detail: "D4 RIN contracts"),
         .init(id: "agents",   title: "Agents",   detail: "Claude sessions and permission prompts"),
+        .init(id: "sonos",    title: "Sonos",    detail: "Now playing: room, track, artist, album"),
         .init(id: "settings", title: "Settings", detail: "On-device settings", removable: false),
     ]
     public static func entry(_ id: String) -> PageCatalogEntry? { all.first { $0.id == id } }

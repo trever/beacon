@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "core/records.h"        // usage_rec_t, buddy_rec_t, *_LEN capacities
 #include "core/page_config.h"    // page_list_t
+#include "core/complications.h"   // comp_list_t
 #include "core/screen_state.h"     // data_err_t
 #include "config/ticker_table.h"   // ticker_runtime_t, MAX_TICKERS bounds
 
@@ -64,6 +65,16 @@ bool hub_parse_sessions(const char* json, size_t len, buddy_rec_t* buddy, bool* 
 // sessions frame stays the authority on which sessions exist). Fields are sticky per row: an omitted
 // field leaves the current value. Returns false for non-JSON / wrong v / no sdetail array.
 bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* had_sdetail);
+
+// --- Inbound: hub -> device Sonos now-playing frame (phase 1, text only) ---
+// {"v":1,"sonos":{"room":"Kitchen","track":"...","artist":"...","album":"...","playing":true}}
+// A standalone frame, like "sessions" -- NOT joined/sticky like "sdetail": every call fills *out fresh
+// (a full snapshot), so an absent field clears to its default (empty string / playing=false) rather
+// than preserving whatever the caller passed in. Strings truncate to their *_LEN caps regardless of the
+// hub's documented wire limits (defensive against an oversize/malformed frame); unknown keys inside the
+// "sonos" object are ignored. Sets *had_sonos true only when a "sonos" object is present. Returns false
+// on invalid JSON, wrong v, or no "sonos" object (leaves *out untouched on a false return).
+bool hub_parse_sonos(const char* json, size_t len, sonos_rec_t* out, bool* had_sonos);
 
 // --- Outbound: device -> hub command builders ---
 // Write a newline-terminated command frame into buf. Returns bytes written (incl. the '\n', excl. the
@@ -146,6 +157,44 @@ data_err_t hub_parse_pages(const char* json, size_t len, uint32_t* rev, page_lis
 // ok  => {"v":1,"cmd":"pages_ack","rev":R,"ok":true,"count":N}\n
 // err => {"v":1,"cmd":"pages_ack","rev":R,"ok":false,"err":"E"}\n
 size_t hub_build_pages_ack(char* buf, size_t cap, uint32_t rev, bool ok, const char* err, int count);
+
+// --- Inbound: hub -> device complication config (which renderers occupy Home's six slots) ---
+// {"v":1,"comps":{"rev":R,"slots":{"home":["clock","fin.sp500","ice","agents"]}}}
+//
+// Standalone frame (design §6.1), NOT riding `pages`' `opts`: PAGE_OPTS_LEN is 48 bytes and a real
+// assignment needs ~140, and page_list_equal comparing opts would turn a complication drag into a
+// device restart (the single worst outcome available). `slots` is keyed by face id so a second host
+// face is additive with no wire break; only "home" exists today.
+//
+// Fills *out with face `face_id`'s resolved-from-wire entries (id/arg split, NOT yet validated against
+// this firmware's renderer set -- that is comp_list_resolve's job) and *explicit_empty with whether the
+// wire array for that face was literally `[]` (see comp_list_resolve rule 5 -- this is NOT the same as
+// *out ending up with 0 entries, which also happens when every entry was unparseable).
+//
+// Returns ERR_NONE and fills *rev on ANY structurally valid frame (v==1, a "comps" object, integer rev,
+// a "slots" object), regardless of whether `face_id` is present in it. Three outcomes on success:
+//   - `face_id` absent from "slots"            => *out zeroed, *explicit_empty=false. THE CALLER DOES
+//     NOTHING (no ack) -- this frame simply does not carry this face; unlike hub_parse_pages, an absent
+//     list here is not an error. (The one place the pages analogy breaks.)
+//   - `slots[face_id]` present but not an array => ERR_PARSE / "malformed" (this face's shape is broken).
+//   - `slots[face_id]` is an array              => *out filled (entries that fail to split structurally
+//     are silently dropped, not counted -- charset validity is comp_list_resolve's job, not this
+//     parser's); *explicit_empty = (the array's length was 0).
+// Returns ERR_PARSE and sets *err_out to "malformed" on bad JSON / v != 1 / missing "comps" object or
+// "rev" / missing "slots" object / a non-array face value. There is deliberately no `too_many_slots`
+// error: over capacity truncates (comp_list_resolve rule 4), and `comp_list_t`'s fixed-size arrays cap
+// storage at COMP_SLOTS_MAX regardless. err_out may be NULL.
+//
+// MUST be dispatched before the loc/status fall-through in on_frame (hub_task.cpp), alongside "pages" --
+// on_frame's fall-through swallows any frame it doesn't recognize into hub_parse_status.
+data_err_t hub_parse_comps(const char* json, size_t len, uint32_t* rev,
+                           const char* face_id, comp_list_t* out, bool* explicit_empty,
+                           const char** err_out);
+
+// ok  => {"v":1,"cmd":"comps_ack","rev":R,"ok":true,"count":N}\n
+// err => {"v":1,"cmd":"comps_ack","rev":R,"ok":false,"err":"malformed"}\n
+// `count` is placements APPLIED, not slot units -- 4 placements can occupy 5 slots when one is the clock.
+size_t hub_build_comps_ack(char* buf, size_t cap, uint32_t rev, bool ok, const char* err, int count);
 
 // --- Outbound: device -> hub config ack (uses the cmd channel, NOT the ack field) ---
 // ok  => {"v":1,"cmd":"config_ack","rev":R,"ok":true,"count":N}\n

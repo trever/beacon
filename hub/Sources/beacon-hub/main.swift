@@ -30,6 +30,38 @@ if CommandLine.arguments.dropFirst().first == "set-claude-token" {
     exit(0)
 }
 
+// `set-sonos-secret`: park the Sonos OAuth client secret in Beacon's own Keychain item (design
+// 2026-07-26-sonos-now-playing-plan step 1). Mirrors set-claude-token exactly -- stdin only (never argv:
+// an argument would land in shell history), and only a character count is ever echoed back. This
+// repository is public; the secret must never be logged, committed, or typed by anything other than the
+// user themselves. Handled before NSApplication exists, same reasoning as set-claude-token above.
+if CommandLine.arguments.dropFirst().first == "set-sonos-secret" {
+    FileHandle.standardError.write(Data("Paste the Sonos client secret, then press Return and Ctrl-D:\n".utf8))
+    let raw = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let secret = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Shared with the Settings UI (design 2026-07-26-sonos-setup-ui) via SonosSecretValidation, so the
+    // CLI guard and the UI's inline refusal enforce and describe the exact same rule.
+    guard SonosSecretValidation.isValid(secret) else {
+        FileHandle.standardError.write(Data("refused: \(SonosSecretValidation.refusalMessage)\n".utf8))
+        exit(2)
+    }
+    guard SonosKeychain.writeSecret(secret) else {
+        FileHandle.standardError.write(Data("failed: could not write the Keychain item\n".utf8))
+        exit(1)
+    }
+    FileHandle.standardError.write(Data("stored \(secret.count) chars in the Beacon Keychain item. Run `beacon-hub sonos-authorize` next.\n".utf8))
+    exit(0)
+}
+
+// `sonos-authorize`: one-time OAuth authorize + token exchange for the Sonos Control API (design
+// 2026-07-26-sonos-now-playing-plan step 2). Requires the client secret to already be stored via
+// set-sonos-secret. Opens the default browser to the Sonos consent screen, listens on a fixed loopback
+// port for the redirect, exchanges the code for tokens, and stores the result in Beacon's Keychain item.
+// Never touches CoreBluetooth, so handled before NSApplication exists just like the other CLI subcommands.
+if CommandLine.arguments.dropFirst().first == "sonos-authorize" {
+    SonosAuthorizerCLI.run()   // never returns; exits via exit(0)/exit(1)/exit(2)
+}
+
 // Menubar agent entry point. .accessory => no Dock icon / app bundle needed for development.
 // AppKit + AppDelegate are main-actor isolated; the bootstrap runs there explicitly.
 MainActor.assumeIsolated {

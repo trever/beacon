@@ -100,13 +100,49 @@ Optional `sdetail` block (additive `v:1` extension). A **standalone** frame, joi
 - Old firmware ignores the unknown frame; new firmware treats absent detail as "no content yet" and
   falls back to the `sessions` `label`. No version bump.
 
+Optional `sonos` block (additive `v:1` extension, design
+`docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md` §3). A **standalone** frame, like
+`sdetail` -- not a field on the status frame or on `pages`. Carries the Sonos now-playing state the hub
+has already resolved (room, track, artist, album, play state); the device never talks to Sonos and never
+holds a token, per the credentials-never-reach-the-device rule (`AGENTS.md`, `docs/tech.md`) -- the same
+reason AI usage was normalized to percentages instead of shipping a token.
+
+```json
+{"v":1,"sonos":{"room":"Kitchen","track":"Black Hole Sun","artist":"Soundgarden","album":"Superunknown","playing":true}}
+```
+
+- Sent on change and on (re)connect, exactly like `sessions`/`sdetail`.
+- Caps: `room` ≤ **20** chars; `track` ≤ **40**; `artist` ≤ **32**; `album` ≤ **32**. `playing` is a bool.
+- Absent fields are omitted, not null, matching `sdetail`'s rule; a missing `playing` reads as false on
+  the device -- there is no separate wire state for "unknown".
+- **Char caps do not bound bytes** (same reasoning as `sdetail`, worse in practice): `track`/`artist`/
+  `album` are free-form text off the Sonos API, where one `"` costs two bytes escaped, an emoji four, and
+  a control character six as `\uXXXX`. Worse than `sdetail`'s case: a single Swift `Character` can be an
+  *extended grapheme cluster* -- e.g. a ZWJ-joined emoji sequence -- that alone runs to dozens of bytes,
+  so counting characters against the cap is not enough even before escaping is considered. The hub
+  (`BeaconHubKit/Protocol.swift SonosFrame`) reuses `SessionDetailsFrame`'s encode-measure-shrink loop
+  rather than a second implementation of it: it encodes, measures, and while over `HUB_FRAME_MAX` trims
+  the longest of `album`, then `artist`, then `track`, then `room` last, one Character at a time (never a
+  byte or a Unicode scalar, so a multi-byte/multi-scalar grapheme cluster is never split into invalid
+  UTF-8). `room` is trimmed last because it is what tells a multi-speaker household's pages apart.
+  Measured worst case: every field filled to its cap with a ZWJ family-emoji grapheme cluster
+  (`"👨‍👩‍👧‍👦"`, 1 Character / 25 UTF-8 bytes) encodes to 3177 B pre-shrink; the loop trims it to
+  1002 B, under the 1024 B ceiling.
+- `room` here is the room actually playing, distinct from the page's own `opts["room"]` below (the room
+  the user asked this page to follow) -- normally the same value, but they can disagree briefly, e.g. the
+  configured room just went offline and the hub is still resolving the next poll.
+- The room to follow is carried as a per-page option, `opts["room"]`, on the `sonos` entry in the `pages`
+  list (§A2) -- the same mechanism `chart.sym` already uses. The `opts` plumbing is generic and already
+  end to end; only the Sonos room-picker UI is new.
+- Old firmware ignores the unknown frame (additive, no version bump).
+
 ## A2. Hub -> device page config (additive, design `docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md`)
 
 Which screens the device shows, and in what order. Persisted in NVS and applied by the device; the page
 set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHubKit/PageConfig.swift`.
 
 ```json
-{"v":1,"pages":{"rev":3,"list":[{"id":"home"},{"id":"chart","opts":{"symbol":"sp500"}},{"id":"agents"}]}}
+{"v":1,"pages":{"rev":3,"list":[{"id":"home"},{"id":"chart","opts":{"sym":"sp500"}},{"id":"agents"}]}}
 {"v":1,"cmd":"pages_ack","rev":3,"ok":true,"count":4}
 {"v":1,"cmd":"pages_ack","rev":3,"ok":false,"err":"too_many_pages"}
 ```
@@ -135,6 +171,82 @@ set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHub
   ack — an ack lost to the reset is normal. Rebuilding the pager's children live would mean tearing down
   LVGL objects under a running render loop, and a page-set change is rare enough that ~5 s of reboot is
   the safer trade. The hub therefore never pushes while pristine (`rev` 0), or for a no-op edit.
+
+## A3. Hub -> device complication config (additive, design `docs/specs/2026-07-27-hub-app-and-home-complications-design.md` §4/§6)
+
+Which small renderers ("complications") occupy a face's slot grid, and in what order. Home is the only
+face today: six slots on a 62 px pitch, the clock spanning two. Persisted in NVS (`c_home`) and applied
+by the device **live, with no restart** — the load-bearing difference from §A2. Parsed by
+`hub_parse_comps`, encoded by `BeaconHubKit/Complications.swift`.
+
+```json
+{"v":1,"comps":{"rev":1,"slots":{"home":["clock","fin.sp500","ice","agents"]}}}
+{"v":1,"cmd":"comps_ack","rev":1,"ok":true,"count":4}
+{"v":1,"cmd":"comps_ack","rev":1,"ok":false,"err":"malformed"}
+```
+
+- **Single frame, not chunked.** The worst case (2 faces × 6 one-slot entries at max length) is 437 B
+  against `HUB_FRAME_MAX` (1024) — 42.7%. If `comps` ever outgrows the ceiling it chunks exactly like §B2;
+  nothing here forecloses that.
+- Caps: `slots` carries at most **2** faces (`COMP_FACES_MAX`; only `"home"` exists); per face, up to
+  **6** entries (`COMP_SLOTS_MAX`) — but capacity is in **slot units**, not entry count, since the clock
+  costs 2. Each entry is `id` (≤ **11** chars) or `id.arg` (`arg` ≤ **15** chars); `.` is the only
+  separator. Charset for both `id` and `arg`: `[a-z0-9_-]` — no character in it is JSON-escapable, so
+  character caps bound bytes exactly (unlike `SessionDetailsFrame`'s free-form text fields, this frame
+  needs no encode-measure-shrink loop). `rev` is a monotonic hub counter, echoed in the ack; a stale ack
+  (for a rev the user has since edited past) is ignored, exactly as `pagesAck`/`configAck` already are.
+- `count` in the ack is **placements applied, not slot units** — 4 placements can occupy 5 slots when one
+  of them is the clock.
+- The catalog (`COMP_CATALOG` in `core/complications.cpp`, mirrored by `ComplicationCatalog` in
+  `BeaconHubKit`) is the **single** home of each id's `size` (1 or 2 slot units) and `takesArg`. Neither
+  lives on the device's LVGL-coupled renderer registry (`ui/comps/comp_registry.h`) nor is re-derived by
+  the hub UI — a fact duplicated in a second place is a fact that drifts.
+
+  | id | size | takes arg | owning page |
+  |---|---|---|---|
+  | `clock` | 2 | no | *(core)* |
+  | `fin` | 1 | yes (ticker id) | `markets` |
+  | `ice` | 1 | no | `ice` |
+  | `agents` | 1 | no | `agents` |
+  | `usage` | 1 | yes (provider id) | `agents` |
+  | `weather` | 1 | no | *(core)* |
+  | `sonos` | 1 | no | `sonos` |
+  | `chart` | 2 | yes (ticker id) | `chart` — **Phase 2**: no Phase 1 firmware answers a renderer for it |
+
+- **Resolution rules** (device `comp_list_resolve`, pure + host-tested): an unknown id is dropped and the
+  remaining entries compact upward; duplicate ids collapse to the **first** occurrence regardless of arg
+  (one instance per id — Home can show exactly one ticker, one usage provider, one sparkline); an entry
+  that does not fit the remaining slot units is dropped and the walk **continues** (a later 1-slot entry
+  may still place where an earlier 2-slot one did not — never degraded to a smaller size); over capacity
+  the tail truncates (`err` has no `too_many_slots` — over-cap is not an error). `owner` above is **hub
+  metadata only** — the device never consults it, so a complication survives its owning page being
+  hidden or disabled. The general rule: **a complication may only read a record the device already
+  maintains for reasons independent of the page list; a complication must never be the thing that causes
+  a fetch.**
+- **Explicitly empty vs. everything-unknown** (rule the pages frame does not need): an explicitly empty
+  request (`"home":[]` on the wire) is honoured and resolves to zero placements — a legitimate, if
+  austere, blank face (the hub warns before sending it). A **non-empty** request that resolves to zero
+  (every entry was unknown/invalid/didn't fit) falls back to the compiled default instead. The device
+  distinguishes these by whether the wire array itself was empty, not by the resolved count — a request
+  of several unknown ids also resolves to zero and must behave differently.
+- **A face this frame does not carry is not an error** — the one place this parser's shape diverges from
+  `hub_parse_pages`: an absent `"list"` there is malformed, but an absent face key here means the frame
+  simply has nothing to say about that face, and the device does nothing (no ack). An unknown **face**
+  key (a second host face a newer hub knows and this firmware does not) is dropped the same way an
+  unknown page id is; other faces still apply.
+- `err` ∈ {`malformed`}. There is deliberately no `too_many_slots`.
+- **Does not restart.** `carousel_apply_comps` persists NVS then hands the resolved list to a
+  mutex-guarded pending holder; the next LVGL tick (Core 1, gated on the carousel not mid-scroll) tears
+  down and rebuilds only the Home complication stack's children — never the page objects `carousel_apply_pages`
+  restarts for. The ack is therefore reliable (the link never drops), unlike `pagesAck`. Idempotent on
+  every reconnect exactly like pages: an identical re-push no-ops (no rebuild, no flicker).
+- Push order on `central.onReady`: **tickers → comps → pages**. Comps before pages so that if the page
+  push restarts the device, the complication blob is already persisted and the device boots correct.
+- Migration: NVS `c_home` absent ⇒ the compiled default `clock,fin.sp500,ice,agents`, reproducing today's
+  Home exactly. `ComplicationStore` starts pristine (`BeaconCompRev` 0) and never pushes until the first
+  edit — an untouched hub changes nothing. Old firmware + new hub: `on_frame()` finds no known key and
+  drops the `comps` frame exactly as it drops `sdetail`/`sessions` on older builds; Home renders its
+  compiled layout. No version bump either direction.
 
 ## B. Device -> hub commands + hub acks (FROZEN, `tech.md` §7.1)
 
