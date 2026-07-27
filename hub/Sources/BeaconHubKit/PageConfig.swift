@@ -89,3 +89,29 @@ public struct PagesFrame: Codable {
         ((try? encoded().count) ?? .max) < PageLimits.frameMaxBytes
     }
 }
+
+/// One row of the page editor, derived from the list currently on the device.
+public struct PageEditorRow: Equatable, Sendable {
+    public let entry: PageCatalogEntry
+    public let enabled: Bool
+    public init(entry: PageCatalogEntry, enabled: Bool) { self.entry = entry; self.enabled = enabled }
+}
+
+extension PageCatalog {
+    /// Build the editor's rows: the applied pages first, in their device order, then everything else in
+    /// catalog order as unchecked options. Ids this hub build does not know are skipped -- they would be
+    /// rows the user could neither name nor meaningfully reorder. Non-removable pages are always enabled.
+    public static func editorRows(applied: [String]) -> [PageEditorRow] {
+        var rows: [PageEditorRow] = []
+        var placed = Set<String>()
+        for id in applied {
+            guard let e = entry(id), !placed.contains(id) else { continue }
+            placed.insert(id)
+            rows.append(PageEditorRow(entry: e, enabled: true))
+        }
+        for e in all where !placed.contains(e.id) {
+            rows.append(PageEditorRow(entry: e, enabled: !e.removable))
+        }
+        return rows
+    }
+}

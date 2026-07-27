@@ -174,6 +174,19 @@ final class MenubarController: NSObject {
     func setPairedCheck(_ s: CheckState) { model.setupPaired = s }
 
     func setTickerSync(_ status: TickerSyncStatus) { model.tickerSync = status }
+
+    /// Seed the page editor: `ids` is the list currently on the device, ordered. Enabled pages come
+    /// first in that order, then the rest of the catalog as unchecked options.
+    func setPages(ids: [String]) {
+        let rows = PageCatalog.editorRows(applied: ids).map {
+            PageRow(id: $0.entry.id, title: $0.entry.title, detail: $0.entry.detail,
+                    pinned: !$0.entry.removable, enabled: $0.enabled)
+        }
+        model.pageRows = rows
+        model.appliedPageIDs = rows.filter(\.enabled).map(\.id)
+    }
+
+    func setPageSync(_ text: String?) { model.pageSync = text }
     func setTickerRows(_ rows: [TickerRow]) { model.tickerRows = rows }   // issue #92: seed the editor with the persisted list
     func setTickerSearch(_ search: @escaping (String, @escaping ([TickerCandidate]) -> Void) -> Void) {
         model.onSearchTickers = search

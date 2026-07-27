@@ -72,4 +72,37 @@ final class PageConfigTests: XCTestCase {
         }
         XCTAssertLessThanOrEqual(PageCatalog.all.count, PageLimits.maxCount)
     }
+
+    // --- editor rows ---
+
+    func testEditorRowsPutAppliedFirstInDeviceOrder() {
+        let rows = PageCatalog.editorRows(applied: ["agents", "home"])
+        XCTAssertEqual(rows.prefix(2).map(\.entry.id), ["agents", "home"])
+        XCTAssertTrue(rows.prefix(2).allSatisfy(\.enabled))
+        XCTAssertEqual(Set(rows.map(\.entry.id)), Set(PageCatalog.all.map(\.id)), "every page is offered")
+    }
+
+    func testEditorRowsMarkUnappliedAsDisabled() {
+        let rows = PageCatalog.editorRows(applied: ["home"])
+        XCTAssertEqual(rows.first { $0.entry.id == "markets" }?.enabled, false)
+    }
+
+    // settings is force-appended by the device regardless, so the editor must never show it unchecked.
+    func testEditorRowsAlwaysEnableNonRemovablePages() {
+        let rows = PageCatalog.editorRows(applied: ["home"])
+        XCTAssertEqual(rows.first { $0.entry.id == "settings" }?.enabled, true)
+    }
+
+    // A device configured by a newer hub can report a page this build has no name for; skip it rather
+    // than render a row the user can neither identify nor reorder.
+    func testEditorRowsSkipUnknownIDs() {
+        let rows = PageCatalog.editorRows(applied: ["sonos", "home"])
+        XCTAssertFalse(rows.contains { $0.entry.id == "sonos" })
+        XCTAssertEqual(rows.first?.entry.id, "home")
+    }
+
+    func testEditorRowsIgnoreDuplicateApplied() {
+        let rows = PageCatalog.editorRows(applied: ["home", "home"])
+        XCTAssertEqual(rows.filter { $0.entry.id == "home" }.count, 1)
+    }
 }
