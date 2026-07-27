@@ -217,7 +217,25 @@ data_err_t hub_parse_pages(const char* json, size_t len, uint32_t* rev, page_lis
   for (JsonVariantConst e : arr) {
     const char* id = e["id"].as<const char*>();
     if (!id || !*id)                                   { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
-    page_list_add(&tmp, id);   // duplicates collapse; unknown ids are the resolve step's problem, not ours
+    if (!page_list_add(&tmp, id)) continue;   // duplicates collapse; unknown ids are resolve's problem
+    // Flatten {"opts":{"k":"v"}} into the device's compact "k:v;k:v". Only scalars are taken -- a
+    // nested object or array has no representation here and is skipped rather than half-encoded.
+    JsonVariantConst opts = e["opts"];
+    if (opts.is<JsonObjectConst>()) {
+      char flat[PAGE_OPTS_LEN]; size_t n = 0; flat[0] = '\0';
+      for (JsonPairConst kv : opts.as<JsonObjectConst>()) {
+        char val[PAGE_OPTS_LEN];
+        if (kv.value().is<const char*>())      snprintf(val, sizeof(val), "%s", kv.value().as<const char*>());
+        else if (kv.value().is<int>())         snprintf(val, sizeof(val), "%d", kv.value().as<int>());
+        else if (kv.value().is<bool>())        snprintf(val, sizeof(val), "%d", kv.value().as<bool>() ? 1 : 0);
+        else continue;
+        if (!val[0]) continue;
+        int w = snprintf(flat + n, sizeof(flat) - n, "%s%s:%s", n ? ";" : "", kv.key().c_str(), val);
+        if (w < 0 || (size_t)w >= sizeof(flat) - n) { flat[n] = '\0'; break; }   // full: keep what fits
+        n += (size_t)w;
+      }
+      if (flat[0]) page_list_set_opts(&tmp, id, flat);
+    }
   }
   if (tmp.count == 0)                                  { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
   if (rev) *rev = (uint32_t)(p["rev"] | 0);

@@ -41,6 +41,7 @@ static const char* DEFAULT_PAGES = "home,chart,ice,agents,settings";
 // The resolved, active page set. MODULES/COUNT are now runtime state, not compile-time constants.
 static const screen_module_t* MODULES[PAGES_MAX];
 static char  s_active_ids[PAGES_MAX][PAGE_ID_LEN];
+static char  s_active_opts[PAGES_MAX][PAGE_OPTS_LEN];
 static int   COUNT = 0;
 
 static const screen_module_t* registry_lookup(const char* id) {
@@ -71,6 +72,7 @@ static void load_active_pages(void) {
     if (!m) continue;                      // resolve already filtered, belt and braces
     MODULES[COUNT] = m;
     snprintf(s_active_ids[COUNT], PAGE_ID_LEN, "%s", resolved.ids[i]);
+    snprintf(s_active_opts[COUNT], PAGE_OPTS_LEN, "%s", resolved.opts[i]);
     COUNT++;
   }
 }
@@ -290,6 +292,15 @@ static int active_index_of(const char* id) {
   for (int i = 0; i < COUNT; i++)
     if (strcmp(s_active_ids[i], id) == 0) return i;
   return -1;
+}
+
+bool carousel_page_opt(const char* page_id, const char* key, char* out, size_t cap) {
+  if (out && cap) out[0] = '\0';
+  if (!page_id || !key) return false;
+  for (int i = 0; i < COUNT; i++)
+    if (strcmp(s_active_ids[i], page_id) == 0)
+      return page_opts_get(s_active_opts[i], key, out, cap);
+  return false;
 }
 
 void carousel_goto_buddy(void) {

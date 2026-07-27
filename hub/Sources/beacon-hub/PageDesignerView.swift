@@ -87,7 +87,7 @@ struct PageDesignerView: View {
             if model.pagesDirty {
                 DeckButton(title: "Revert") { model.onRevertPages() }
             }
-            DeckButton(title: "Save & push") { model.onApplyPages(model.enabledPageIDs) }
+            DeckButton(title: "Save & push") { model.onApplyPages(model.enabledPageIDs, model.enabledPageOpts) }
                 .disabled(!model.pagesDirty)
                 .opacity(model.pagesDirty ? 1 : 0.4)
         }
@@ -148,6 +148,9 @@ private struct PageCard: View {
                 .multilineTextAlignment(.center).lineLimit(2)
                 .frame(height: 26, alignment: .top)
 
+            PageOptions(model: model, row: row)
+                .padding(.horizontal, 10)
+
             HStack(spacing: 8) {
                 arrow("chevron.left", enabled: index > 0) { move(-1) }
                 Toggle("", isOn: Binding(
@@ -188,5 +191,52 @@ private struct PageCard: View {
         guard model.pageRows.indices.contains(index), model.pageRows.indices.contains(to) else { return }
         withAnimation(.easeInOut(duration: 0.18)) { model.pageRows.swapAt(index, to) }
         model.pageSync = nil
+    }
+}
+
+// Per-page settings. Only the chart has any today; the rest say so plainly rather than showing an empty
+// well that reads like something failed to load.
+private struct PageOptions: View {
+    @ObservedObject var model: HubViewModel
+    let row: PageRow
+
+    var body: some View {
+        Group {
+            if row.id == "chart" { chartPicker } else { none }
+        }
+        .frame(height: 24)
+    }
+
+    private var none: some View {
+        Text("No options").font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
+    }
+
+    // The chart follows a TICKER ID from the configured list, not a typed symbol: the device resolves
+    // the Yahoo symbol and display name from that row, so there is nothing free-form to mistype.
+    // Binance rows are excluded -- the chart fetch speaks the Yahoo API only.
+    private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
+
+    @ViewBuilder private var chartPicker: some View {
+        if eligible.isEmpty {
+            Text("No Yahoo tickers configured").font(.system(size: 10)).foregroundStyle(.secondary)
+        } else {
+            Picker("", selection: Binding(
+                get: { row.opts["sym"] ?? defaultSym },
+                set: { newValue in
+                    guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
+                    model.pageRows[i].opts["sym"] = newValue
+                    model.pageSync = nil
+                })) {
+                    ForEach(eligible, id: \.id) { t in
+                        Text(t.name.isEmpty ? t.sym : t.name).tag(t.id)
+                    }
+                }
+                .labelsHidden().controlSize(.small).disabled(!row.enabled)
+        }
+    }
+
+    /// Matches CHART_TICKER_ID in the firmware: what the device falls back to when no option is set.
+    private var defaultSym: String {
+        eligible.contains { $0.id == "sp500" } ? "sp500" : (eligible.first?.id ?? "")
     }
 }

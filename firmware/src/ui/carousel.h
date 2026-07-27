@@ -16,7 +16,11 @@ void carousel_goto_buddy(void);              // navigate to the CLAUDE/buddy scr
 
 // Apply a hub-supplied page list: resolve against the registry, persist to NVS, and report the resolved
 // count (0 => rejected, nothing written). The caller acks, then restarts to pick it up.
-uint8_t carousel_apply_pages(const page_list_t* want);              // navigate to the CLAUDE/buddy screen (auto-wake, no animation)
+uint8_t carousel_apply_pages(const page_list_t* want);
+
+// Read one option of an ACTIVE page ("chart", "sym", ...). False (and empty `out`) when the page is not
+// in the active set or carries no such option. Screens call this instead of reading NVS themselves.
+bool carousel_page_opt(const char* page_id, const char* key, char* out, size_t cap);
 void carousel_advance(int dir);              // +1 next / -1 prev page, animated (physical buttons)
 #if BEACON_CAPTURE
 int  carousel_count(void);                   // number of screens (screenshot sweep)

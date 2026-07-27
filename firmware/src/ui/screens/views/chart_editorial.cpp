@@ -10,6 +10,8 @@
 #include "ui/screens/screen_common.h"
 #include "ui/screens/views/view_common.h"
 #include "config/chart.h"
+#include "config/ticker_table.h"
+#include "fetch/series.h"
 #include "core/datastore.h"
 #include <math.h>
 
@@ -21,7 +23,10 @@ static tick_flash_t s_flash;
 
 static void build(lv_obj_t* page) {
   const beacon_theme_t* t = theme_active();
-  s_slot = build_header(page, CHART_LABEL);
+  // The instrument is configurable per page, so the header follows the resolved row, not CHART_LABEL.
+  char label[TKR_NAME_LEN];
+  chart_display_label(label, sizeof(label));
+  s_slot = build_header(page, label);
 
   // Currency mark in a full-ASCII face: the hero subset has no '$' (fonts/MANIFEST.md), so putting it
   // in the hero string draws a missing-glyph box.

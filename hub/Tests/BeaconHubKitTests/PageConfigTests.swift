@@ -105,4 +105,33 @@ final class PageConfigTests: XCTestCase {
         let rows = PageCatalog.editorRows(applied: ["home", "home"])
         XCTAssertEqual(rows.filter { $0.entry.id == "home" }.count, 1)
     }
+
+    // --- options ---
+
+    func testOptsEncodeOnTheWire() throws {
+        let f = PagesFrame(rev: 2, [PageSpec(id: "chart", opts: ["sym": "btc"])])
+        let s = String(decoding: try f.encoded(), as: UTF8.self)
+        XCTAssertTrue(s.contains("\"opts\""))
+        XCTAssertTrue(s.contains("\"sym\":\"btc\""))
+    }
+
+    func testEmptyOptsAreOmitted() throws {
+        let f = PagesFrame(rev: 2, [PageSpec(id: "chart")])
+        XCTAssertFalse(String(decoding: try f.encoded(), as: UTF8.self).contains("opts"))
+    }
+
+    // Options must survive the normalizing initializer, which rebuilds every spec.
+    func testOptsSurviveNormalization() {
+        let f = PagesFrame(rev: 1, [PageSpec(id: "chart", opts: ["sym": "eth"]),
+                                    PageSpec(id: "chart", opts: ["sym": "dup"])])
+        XCTAssertEqual(f.pages.list.first { $0.id == "chart" }?.opts?["sym"], "eth", "first wins")
+    }
+
+    // A page carrying options still has to fit the device's frame ceiling.
+    func testWorstCaseWithOptsFitsFrame() throws {
+        let specs = PageCatalog.all.map {
+            PageSpec(id: $0.id, opts: ["sym": String(repeating: "x", count: 15)])
+        }
+        XCTAssertTrue(PagesFrame(rev: 999_999, specs).fitsFrame())
+    }
 }

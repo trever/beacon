@@ -18,6 +18,54 @@ bool page_list_add(page_list_t* l, const char* id) {
   return true;
 }
 
+bool page_opts_get(const char* opts, const char* key, char* out, size_t cap) {
+  if (out && cap) out[0] = '\0';
+  if (!opts || !key || !*key || !out || cap == 0) return false;
+  size_t klen = strlen(key);
+  const char* p = opts;
+  while (*p) {
+    const char* semi = strchr(p, ';');
+    size_t rec = semi ? (size_t)(semi - p) : strlen(p);
+    const char* colon = (const char*)memchr(p, ':', rec);
+    if (colon) {
+      size_t this_klen = (size_t)(colon - p);
+      if (this_klen == klen && strncmp(p, key, klen) == 0) {
+        size_t vlen = rec - this_klen - 1;
+        if (vlen > cap - 1) vlen = cap - 1;
+        memcpy(out, colon + 1, vlen);
+        out[vlen] = '\0';
+        return vlen > 0;
+      }
+    }
+    if (!semi) break;
+    p = semi + 1;
+  }
+  return false;
+}
+
+const char* page_list_opts(const page_list_t* l, const char* id) {
+  if (!l || !id) return "";
+  for (uint8_t i = 0; i < l->count && i < PAGES_MAX; i++)
+    if (strncmp(l->ids[i], id, PAGE_ID_LEN) == 0) return l->opts[i];
+  return "";
+}
+
+void page_list_set_opts(page_list_t* l, const char* id, const char* opts) {
+  if (!l || !id) return;
+  for (uint8_t i = 0; i < l->count && i < PAGES_MAX; i++) {
+    if (strncmp(l->ids[i], id, PAGE_ID_LEN) != 0) continue;
+    if (!opts) { l->opts[i][0] = '\0'; return; }
+    // ':' and ';' are this string's OWN structure, so they survive; the record separators do not.
+    size_t n = 0;
+    for (const char* p = opts; *p && n + 1 < PAGE_OPTS_LEN; p++) {
+      if (*p == '|' || *p == '=' || *p == ',') continue;
+      l->opts[i][n++] = *p;
+    }
+    l->opts[i][n] = '\0';
+    return;
+  }
+}
+
 static bool known_has(const char* const* known, uint8_t n, const char* id) {
   for (uint8_t i = 0; i < n; i++)
     if (known[i] && strncmp(known[i], id, PAGE_ID_LEN) == 0) return true;
@@ -37,7 +85,8 @@ uint8_t page_list_resolve(const page_list_t* requested,
       const char* id = requested->ids[i];
       if (!*id) continue;
       if (!known_has(known, known_count, id)) continue;   // newer hub named a page we don't carry
-      page_list_add(out, id);                             // add() already collapses duplicates
+      if (page_list_add(out, id))                         // add() already collapses duplicates
+        page_list_set_opts(out, id, requested->opts[i]);  // options ride along with their page
     }
   }
 
@@ -58,13 +107,17 @@ uint8_t page_list_resolve(const page_list_t* requested,
   return out->count;
 }
 
+// "home|chart=sym:sp500|ice". Records are '|'-joined so a legacy comma-joined blob (ids only, written
+// before options existed) still parses -- see page_list_deserialize.
 size_t page_list_serialize(const page_list_t* l, char* buf, size_t cap) {
   if (!l || !buf || cap == 0) return 0;
   size_t n = 0;
   buf[0] = '\0';
   for (uint8_t i = 0; i < l->count && i < PAGES_MAX; i++) {
     if (!l->ids[i][0]) continue;
-    int w = snprintf(buf + n, cap - n, "%s%s", n ? "," : "", l->ids[i]);
+    int w = l->opts[i][0]
+          ? snprintf(buf + n, cap - n, "%s%s=%s", n ? "|" : "", l->ids[i], l->opts[i])
+          : snprintf(buf + n, cap - n, "%s%s",    n ? "|" : "", l->ids[i]);
     if (w < 0 || (size_t)w >= cap - n) { buf[n] = '\0'; break; }   // truncate cleanly, never overrun
     n += (size_t)w;
   }
@@ -75,18 +128,30 @@ void page_list_deserialize(const char* s, page_list_t* out) {
   if (!out) return;
   memset(out, 0, sizeof(*out));
   if (!s) return;
+  // Pre-options blobs are comma-joined ids with no '|'; reading them keeps a device's page set across
+  // the firmware update that introduced options, instead of silently resetting it to the default.
+  const char sep = strchr(s, '|') ? '|' : ',';
   const char* p = s;
   while (*p && out->count < PAGES_MAX) {
-    const char* comma = strchr(p, ',');
-    size_t len = comma ? (size_t)(comma - p) : strlen(p);
+    const char* next = strchr(p, sep);
+    size_t len = next ? (size_t)(next - p) : strlen(p);
     if (len > 0) {
+      const char* eq = (const char*)memchr(p, '=', len);
+      size_t idlen = eq ? (size_t)(eq - p) : len;
       char id[PAGE_ID_LEN];
-      size_t copy = len < PAGE_ID_LEN - 1 ? len : PAGE_ID_LEN - 1;
+      size_t copy = idlen < PAGE_ID_LEN - 1 ? idlen : PAGE_ID_LEN - 1;
       memcpy(id, p, copy);
       id[copy] = '\0';
-      page_list_add(out, id);
+      if (page_list_add(out, id) && eq) {
+        char opts[PAGE_OPTS_LEN];
+        size_t olen = len - idlen - 1;
+        if (olen > PAGE_OPTS_LEN - 1) olen = PAGE_OPTS_LEN - 1;
+        memcpy(opts, eq + 1, olen);
+        opts[olen] = '\0';
+        page_list_set_opts(out, id, opts);
+      }
     }
-    if (!comma) break;
-    p = comma + 1;
+    if (!next) break;
+    p = next + 1;
   }
 }

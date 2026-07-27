@@ -25,6 +25,7 @@ struct PageRow: Identifiable, Equatable {
     let detail: String
     let pinned: Bool
     var enabled: Bool
+    var opts: [String: String] = [:]
 }
 
 struct ProviderToggle: Identifiable, Equatable {
@@ -70,7 +71,12 @@ final class HubViewModel: ObservableObject {
     @Published var pageSync: String?          // transient status under the Apply button
 
     var enabledPageIDs: [String] { pageRows.filter(\.enabled).map(\.id) }
-    var pagesDirty: Bool { enabledPageIDs != appliedPageIDs }
+    var enabledPageOpts: [String: [String: String]] {
+        Dictionary(uniqueKeysWithValues: pageRows.filter { $0.enabled && !$0.opts.isEmpty }
+                                                 .map { ($0.id, $0.opts) })
+    }
+    @Published var appliedPageOpts: [String: [String: String]] = [:]
+    var pagesDirty: Bool { enabledPageIDs != appliedPageIDs || enabledPageOpts != appliedPageOpts }
 
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}
@@ -81,7 +87,7 @@ final class HubViewModel: ObservableObject {
     var onInstallProviderHooks: (String) -> Void = { _ in }   // install the named provider's hooks
     var onToggleDontShow: (Bool) -> Void = { _ in }           // persist first-run auto-open suppression
     var onRetryPairing: () -> Void = {}
-    var onApplyPages: ([String]) -> Void = { _ in }   // push the edited page list (restarts the device)
+    var onApplyPages: ([String], [String: [String: String]]) -> Void = { _, _ in }   // push (restarts device)
     var onRevertPages: () -> Void = {}                // discard staged edits, back to what the device runs
     var onOpenPages: () -> Void = {}                  // open the page designer window
     var onApplyTickerEdit: ([TickerRow]) -> Void = { _ in }   // issue #92: B4 editor commits the desired list

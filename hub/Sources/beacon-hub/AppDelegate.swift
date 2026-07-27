@@ -85,7 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startLoginItem()
         startLocation()
         startTickerEditor()
-        menubar.setPages(ids: pageStore.current.ids)
+        menubar.setPages(ids: pageStore.current.ids, opts: pageStore.current.opts)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
         // and on-change frames only, never the 30s heartbeat.
@@ -371,12 +371,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.handle(cmd) }
         }
         menubar.onRetryPairing = { [weak self] in self?.central.retryPairing() }
-        menubar.viewModel.onApplyPages = { [weak self] ids in self?.applyPageEdit(ids: ids) }
+        menubar.viewModel.onApplyPages = { [weak self] ids, opts in self?.applyPageEdit(ids: ids, opts: opts) }
         menubar.viewModel.onOpenPages = { [weak self] in self?.pageDesigner.show() }
         // Revert re-seeds the editor from the store, which is the list the device is running.
         menubar.viewModel.onRevertPages = { [weak self] in
             guard let self else { return }
-            self.menubar.setPages(ids: self.pageStore.current.ids)
+            self.menubar.setPages(ids: self.pageStore.current.ids, opts: self.pageStore.current.opts)
             self.menubar.setPageSync(nil)
         }
         menubar.onApplyTickerEdit = { [weak self] rows in self?.applyTickerEdit(rows) }
@@ -650,11 +650,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Apply a new page order/selection from the UI: persist, bump the rev, push.
-    func applyPageEdit(ids: [String]) {
+    func applyPageEdit(ids: [String], opts: [String: [String: String]] = [:]) {
         let before = pageStore.current
-        let after = pageStore.set(ids: ids)
+        let after = pageStore.set(ids: ids, opts: opts)
         guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
-        menubar.setPages(ids: after.ids)                // the edit is now the applied baseline
+        menubar.setPages(ids: after.ids, opts: after.opts)   // the edit is now the applied baseline
         guard central.isConnected else {
             menubar.setPageSync("Saved. The Beacon picks this up next time it connects.")
             return
