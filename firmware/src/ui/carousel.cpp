@@ -315,7 +315,8 @@ void carousel_goto_buddy(void) {
 // fails, then restarts: rebuilding the pager's children live would have to tear down and recreate LVGL
 // objects underneath a running render loop, and a page-set change is rare enough that ~5 s of reboot is
 // the cheaper, safer trade. Returns the resolved page count (0 => nothing applied).
-uint8_t carousel_apply_pages(const page_list_t* want) {
+uint8_t carousel_apply_pages(const page_list_t* want, bool* changed) {
+  if (changed) *changed = false;
   if (!want) return 0;
   const char* known[REGISTRY_N];
   for (uint8_t i = 0; i < REGISTRY_N; i++) known[i] = REGISTRY[i].id;
@@ -325,11 +326,22 @@ uint8_t carousel_apply_pages(const page_list_t* want) {
   uint8_t n = page_list_resolve(want, known, REGISTRY_N, PAGE_ALWAYS_ID, &fallback, &resolved);
   if (n == 0) return 0;
 
-  char buf[PAGES_MAX * PAGE_ID_LEN];
+  // Idempotence: the hub re-pushes the current config on every reconnect, so applying an identical list
+  // must be a no-op. Without this the restart below reconnects, which re-pushes, which restarts again.
+  page_list_t active; memset(&active, 0, sizeof(active));
+  active.count = (uint8_t)COUNT;
+  for (int i = 0; i < COUNT; i++) {
+    snprintf(active.ids[i],  PAGE_ID_LEN,   "%s", s_active_ids[i]);
+    snprintf(active.opts[i], PAGE_OPTS_LEN, "%s", s_active_opts[i]);
+  }
+  if (page_list_equal(&resolved, &active)) return n;   // changed stays false => caller must not restart
+
+  char buf[PAGES_MAX * (PAGE_ID_LEN + PAGE_OPTS_LEN)];
   size_t len = page_list_serialize(&resolved, buf, sizeof(buf));
   if (len == 0) return 0;
   nvs_set_bytes(NVS_PAGES_KEY, buf, len);
   nvs_set_screen(0);   // the old index may not exist in the new list
+  if (changed) *changed = true;
   return n;
 }
 

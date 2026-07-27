@@ -60,8 +60,17 @@ static void on_pages(const char* json, size_t len) {
     send_pages_ack(rev, false, err ? err : "malformed", 0);
     return;
   }
-  uint8_t n = carousel_apply_pages(&want);
+  bool changed = false;
+  uint8_t n = carousel_apply_pages(&want, &changed);
   if (n == 0) { send_pages_ack(rev, false, "empty", 0); return; }
+
+  // Already running this list (the hub re-pushes on every reconnect): ack and stay up. Restarting here
+  // would reconnect, be re-pushed, and restart again -- a boot loop.
+  if (!changed) {
+    send_pages_ack(rev, true, nullptr, (int)n);
+    LOGI("hub: pages rev=%u already active (%u pages); no restart", (unsigned)rev, (unsigned)n);
+    return;
+  }
 
   // Ack BEFORE restarting: the hub must learn the rev landed, and the reboot drops the link.
   send_pages_ack(rev, true, nullptr, (int)n);

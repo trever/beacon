@@ -15,8 +15,10 @@ void carousel_apply_rotate(void);
 void carousel_goto_buddy(void);              // navigate to the CLAUDE/buddy screen (auto-wake, no animation)
 
 // Apply a hub-supplied page list: resolve against the registry, persist to NVS, and report the resolved
-// count (0 => rejected, nothing written). The caller acks, then restarts to pick it up.
-uint8_t carousel_apply_pages(const page_list_t* want);
+// count (0 => rejected, nothing written). `changed` is false when the list already matches what is
+// running -- the hub re-pushes on every reconnect, and restarting for an identical list would loop
+// forever. Restart only when `changed`.
+uint8_t carousel_apply_pages(const page_list_t* want, bool* changed);
 
 // Read one option of an ACTIVE page ("chart", "sym", ...). False (and empty `out`) when the page is not
 // in the active set or carries no such option. Screens call this instead of reading NVS themselves.

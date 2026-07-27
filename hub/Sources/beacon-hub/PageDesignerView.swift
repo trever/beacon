@@ -216,6 +216,15 @@ private struct PageOptions: View {
     // Binance rows are excluded -- the chart fetch speaks the Yahoo API only.
     private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
 
+    /// The stored instrument, when it is no longer in the ticker list. Offered as its own (marked) entry
+    /// so it round-trips: silently resolving it to a DIFFERENT instrument would make the picker read as
+    /// though the user had chosen that one, and one Save & push later it would be true.
+    private var orphan: String? {
+        guard let sym = row.opts["sym"], !sym.isEmpty,
+              !eligible.contains(where: { $0.id == sym }) else { return nil }
+        return sym
+    }
+
     @ViewBuilder private var chartPicker: some View {
         if eligible.isEmpty {
             Text("No Yahoo tickers configured").font(.system(size: 10)).foregroundStyle(.secondary)
@@ -227,6 +236,9 @@ private struct PageOptions: View {
                     model.pageRows[i].opts["sym"] = newValue
                     model.pageSync = nil
                 })) {
+                    if let orphan {
+                        Text("\(orphan) (not in ticker list)").tag(orphan)
+                    }
                     ForEach(eligible, id: \.id) { t in
                         Text(t.name.isEmpty ? t.sym : t.name).tag(t.id)
                     }
