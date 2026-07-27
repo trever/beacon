@@ -573,6 +573,136 @@ void test_parse_sessions_agent(void) {
   TEST_ASSERT_EQUAL_size_t(USAGE_ID_LEN - 1, strlen(b.sessions[2].agent));   // oversize truncated
 }
 
+// ===== comps frame (hub_parse_comps / hub_build_comps_ack) =====
+
+static void test_comps_parse_happy_path(void) {
+  const char* j = "{\"v\":1,\"comps\":{\"rev\":5,\"slots\":{\"home\":[\"clock\",\"fin.sp500\",\"ice\",\"agents\"]}}}";
+  uint32_t rev = 0; comp_list_t l; bool explicit_empty = true; const char* err = "unset";
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(j, strlen(j), &rev, "home", &l, &explicit_empty, &err));
+  TEST_ASSERT_EQUAL_UINT32(5, rev);
+  TEST_ASSERT_FALSE(explicit_empty);
+  TEST_ASSERT_EQUAL_UINT8(4, l.count);
+  TEST_ASSERT_EQUAL_STRING("clock", l.ids[0]);
+  TEST_ASSERT_EQUAL_STRING("fin",   l.ids[1]);
+  TEST_ASSERT_EQUAL_STRING("sp500", l.args[1]);
+  TEST_ASSERT_EQUAL_STRING("ice",    l.ids[2]);
+  TEST_ASSERT_EQUAL_STRING("agents", l.ids[3]);
+}
+
+// A frame this frame simply does not carry `face_id` for: ERR_NONE, *out empty, *explicit_empty=false,
+// and the caller does nothing (no ack) -- the one place the pages analogy breaks (a missing "list" is
+// malformed for pages; a missing face here is just "nothing to say about this face").
+static void test_comps_parse_absent_face_is_not_an_error(void) {
+  const char* j = "{\"v\":1,\"comps\":{\"rev\":2,\"slots\":{\"watch\":[\"clock\"]}}}";
+  uint32_t rev = 0; comp_list_t l; bool explicit_empty = true; const char* err = "unset";
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(j, strlen(j), &rev, "home", &l, &explicit_empty, &err));
+  TEST_ASSERT_EQUAL_UINT8(0, l.count);
+  TEST_ASSERT_FALSE(explicit_empty);
+}
+
+static void test_comps_parse_explicit_empty_array(void) {
+  const char* j = "{\"v\":1,\"comps\":{\"rev\":9,\"slots\":{\"home\":[]}}}";
+  uint32_t rev = 0; comp_list_t l; bool explicit_empty = false; const char* err = "unset";
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(j, strlen(j), &rev, "home", &l, &explicit_empty, &err));
+  TEST_ASSERT_EQUAL_UINT8(0, l.count);
+  TEST_ASSERT_TRUE(explicit_empty);
+}
+
+static void test_comps_parse_rejects_malformed(void) {
+  uint32_t rev = 0; comp_list_t l; bool ee = false; const char* err = NULL;
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps("nope", 4, &rev, "home", &l, &ee, &err));
+  TEST_ASSERT_EQUAL_STRING("malformed", err);
+
+  const char* v2 = "{\"v\":2,\"comps\":{\"rev\":1,\"slots\":{\"home\":[]}}}";
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps(v2, strlen(v2), &rev, "home", &l, &ee, &err));
+
+  const char* norev = "{\"v\":1,\"comps\":{\"slots\":{\"home\":[]}}}";
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps(norev, strlen(norev), &rev, "home", &l, &ee, &err));
+
+  const char* noslots = "{\"v\":1,\"comps\":{\"rev\":1}}";
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps(noslots, strlen(noslots), &rev, "home", &l, &ee, &err));
+
+  const char* notarr = "{\"v\":1,\"comps\":{\"rev\":1,\"slots\":{\"home\":\"nope\"}}}";
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps(notarr, strlen(notarr), &rev, "home", &l, &ee, &err));
+
+  // A pages frame is not a comps frame.
+  const char* pages = "{\"v\":1,\"pages\":{\"rev\":1,\"list\":[{\"id\":\"home\"}]}}";
+  TEST_ASSERT_EQUAL_INT(ERR_PARSE, hub_parse_comps(pages, strlen(pages), &rev, "home", &l, &ee, &err));
+}
+
+// An unknown FACE key is simply not read (this test asks for "home" while the frame carries only
+// "watch" -- see test_comps_parse_absent_face_is_not_an_error). Here we confirm the converse: a frame
+// naming both an unknown face and "home" still parses "home" correctly.
+static void test_comps_parse_ignores_other_faces(void) {
+  const char* j = "{\"v\":1,\"comps\":{\"rev\":3,\"slots\":{\"watch\":[\"clock\"],\"home\":[\"ice\"]}}}";
+  uint32_t rev = 0; comp_list_t l; bool ee = true; const char* err = NULL;
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(j, strlen(j), &rev, "home", &l, &ee, &err));
+  TEST_ASSERT_EQUAL_UINT8(1, l.count);
+  TEST_ASSERT_EQUAL_STRING("ice", l.ids[0]);
+  TEST_ASSERT_FALSE(ee);
+}
+
+// Charset validity is NOT the parser's job (comp_list_resolve rule 7 owns it) -- but a non-string / an
+// unsplittable wire entry ("FIN!" survives structurally; a bare non-string element does not) must not
+// crash or fail the whole frame. Out-of-alphabet ids parse through and are dropped downstream by resolve
+// (test_comp_list covers that); this test pins the parser's tolerant half of that contract.
+static void test_comps_parse_tolerates_bad_entries_without_failing_frame(void) {
+  const char* j = "{\"v\":1,\"comps\":{\"rev\":1,\"slots\":{\"home\":[\"FIN!\",42,\"ice.\",\"agents\"]}}}";
+  uint32_t rev = 0; comp_list_t l; bool ee = true; const char* err = NULL;
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(j, strlen(j), &rev, "home", &l, &ee, &err));
+  TEST_ASSERT_FALSE(ee);            // the wire array was non-empty (4 elements), even though most drop
+  // "FIN!" splits fine structurally (no dot) so it survives to *out; 42 (non-string) and "ice." (trailing
+  // dot) are dropped by the parser itself; "agents" survives.
+  TEST_ASSERT_EQUAL_UINT8(2, l.count);
+  TEST_ASSERT_EQUAL_STRING("FIN!",   l.ids[0]);
+  TEST_ASSERT_EQUAL_STRING("agents", l.ids[1]);
+}
+
+static void test_comps_build_ack(void) {
+  char buf[96];
+  size_t n = hub_build_comps_ack(buf, sizeof(buf), 5, true, NULL, 4);
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_EQUAL('\n', buf[n - 1]);
+  TEST_ASSERT_NOT_NULL(strstr(buf, "\"cmd\":\"comps_ack\""));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "\"rev\":5"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "\"count\":4"));
+
+  n = hub_build_comps_ack(buf, sizeof(buf), 5, false, "malformed", 0);
+  TEST_ASSERT_TRUE(n > 0);
+  TEST_ASSERT_NOT_NULL(strstr(buf, "\"ok\":false"));
+  TEST_ASSERT_NOT_NULL(strstr(buf, "\"err\":\"malformed\""));
+  TEST_ASSERT_NULL(strstr(buf, "\"count\""));
+  TEST_ASSERT_EQUAL_size_t(0, hub_build_comps_ack(buf, 4, 5, true, NULL, 1));   // overflow => 0
+}
+
+// The synthetic worst case (design §6.2): 2 faces x 6 one-slot entries, each entry the maximum
+// "id.arg" = 11 + 1 + 15 chars, face id 11 chars, rev at uint32 max. Must stay comfortably under
+// HUB_FRAME_MAX (1024) with no chunking -- 437 B by the design's derivation.
+static void test_comps_worst_case_frame_fits_under_ceiling(void) {
+  char entry[COMP_ENTRY_LEN];
+  snprintf(entry, sizeof(entry), "%s.%s", "abcdefghijk" /*11*/, "abcdefghijklmno" /*15*/);
+  char face1[16], face2[16];
+  snprintf(face1, sizeof(face1), "%.11s", "aaaaaaaaaaa");
+  snprintf(face2, sizeof(face2), "%.11s", "bbbbbbbbbbb");
+
+  char json[HUB_FRAME_MAX];
+  int n = snprintf(json, sizeof(json),
+    "{\"v\":1,\"comps\":{\"rev\":4294967295,\"slots\":{"
+    "\"%s\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"],"
+    "\"%s\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}}}",
+    face1, entry, entry, entry, entry, entry, entry,
+    face2, entry, entry, entry, entry, entry, entry);
+  TEST_ASSERT_TRUE(n > 0 && (size_t)n < HUB_FRAME_MAX);
+  TEST_ASSERT_LESS_THAN(1024, n);
+
+  // And it still parses cleanly for one of the two faces (duplicate ids across the two faces are legal
+  // -- each face resolves independently).
+  uint32_t rev = 0; comp_list_t l; bool ee = false; const char* err = NULL;
+  TEST_ASSERT_EQUAL_INT(ERR_NONE, hub_parse_comps(json, (size_t)n, &rev, face1, &l, &ee, &err));
+  TEST_ASSERT_EQUAL_UINT32(4294967295u, rev);
+  TEST_ASSERT_EQUAL_UINT8(COMP_SLOTS_MAX, l.count);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_reassemble_single_frame);
@@ -620,5 +750,13 @@ int main(int, char**) {
   RUN_TEST(test_parse_sessions_rejects_bad_version);
   RUN_TEST(test_parse_sessions_question_state);
   RUN_TEST(test_parse_sessions_agent);
+  RUN_TEST(test_comps_parse_happy_path);
+  RUN_TEST(test_comps_parse_absent_face_is_not_an_error);
+  RUN_TEST(test_comps_parse_explicit_empty_array);
+  RUN_TEST(test_comps_parse_rejects_malformed);
+  RUN_TEST(test_comps_parse_ignores_other_faces);
+  RUN_TEST(test_comps_parse_tolerates_bad_entries_without_failing_frame);
+  RUN_TEST(test_comps_build_ack);
+  RUN_TEST(test_comps_worst_case_frame_fits_under_ceiling);
   return UNITY_END();
 }

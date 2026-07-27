@@ -4,6 +4,15 @@ import CryptoKit
 import ServiceManagement
 import BeaconHubKit
 
+// The first-run Settings auto-open gate (design §2.3, plan §3 item 10), extracted as a pure function so
+// it is host-testable without AppKit. `BeaconFirstRunComplete` (SettingsWindowController) stops driving
+// window presentation and becomes a latch used only by the menubar setup hint; this key drives
+// presentation instead, and unlike that one it is set unconditionally the first time -- there is no
+// "don't show again" opt-out any more (the checkbox that wrote it is deleted, WS-2).
+enum SettingsLaunch {
+    static func shouldAutoOpen(didAutoOpen: Bool) -> Bool { !didAutoOpen }
+}
+
 // Wires the subsystems together (design 2026-07-19): a shared LocalIngestServer + registered
 // AgentProviders (Claude, Codex, omp) feed a ProviderMux, which merges per-provider usage/sessions/prompts
 // into a single Usage + BuddyState + [Session]. We serialize those to StatusFrame/SessionsFrame and push
@@ -11,6 +20,10 @@ import BeaconHubKit
 // poller iterates usage-enabled providers; per-provider toggles (ProviderSettings) drive live setEnabled.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Set once, forever, the first time Settings auto-opens post-install (SettingsLaunch.shouldAutoOpen).
+    /// Distinct from SettingsWindowController.completeKey ("BeaconFirstRunComplete"): that key still
+    /// exists and is still written by maybeMarkComplete(), but only the menubar hint reads it now.
+    static let didAutoOpenSettingsKey = "BeaconDidAutoOpenSettings"
     private let menubar = MenubarController()
     private let central = BeaconCentral()
     private let mux = ProviderMux()
@@ -55,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let location = LocationProvider()
     private let tickerStore = TickerConfigStore()   // desired ticker list + monotonic rev (issue #92)
     private let pageStore = PageConfigStore()      // which device pages, in what order (+ monotonic rev)
+    private let compStore = ComplicationStore()    // Home's six-slot complication assignment (+ monotonic rev)
     private var reportAssembler = ReportAssembler()   // reassembles device->hub ticker report chunks (#105)
     private let tickerSearch = TickerSearch()        // Binance(cached) + Yahoo(live) discovery (issue #92 B4)
     private lazy var tickerEditor = TickerEditorWindowController(model: menubar.viewModel)
@@ -133,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startLocation()
         startTickerEditor()
         menubar.setPages(ids: pageStore.current.ids, opts: pageStore.current.opts)
+        menubar.setComps(compStore.current.slots)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
         // and on-change frames only, never the 30s heartbeat.
@@ -186,7 +201,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menubar.onInstallProviderHooks = { [weak self] id in self?.installHooks(for: id) }
         menubar.onOpenBluetooth = { SettingsLinks.open(SettingsLinks.bluetooth) }
         refreshProviderHooks()
-        settingsWindow.showIfNeeded()
+        // Design §2.3: open once per install, forever -- not "until every check passes" (the old
+        // showIfNeeded()/BeaconFirstRunComplete gate WS-2 is replacing). BeaconFirstRunComplete keeps
+        // existing solely as the menubar hint's latch; it no longer drives window presentation.
+        let didAutoOpen = UserDefaults.standard.bool(forKey: Self.didAutoOpenSettingsKey)
+        if SettingsLaunch.shouldAutoOpen(didAutoOpen: didAutoOpen) {
+            UserDefaults.standard.set(true, forKey: Self.didAutoOpenSettingsKey)
+            settingsWindow.show()
+        }
     }
 
     // Re-read every provider's hooks state off the main thread (sync file IO + parse), then apply on main
@@ -539,8 +561,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         central.onReady = { [weak self] in
             // Link state is refreshed by the isConnected didSet's onPhaseChange (fires just before
             // this); onReady only resends the full frame to a freshly-(re)subscribed device. The
-            // (re)connect frame carries the cached location fix (issue #54). Push the ticker config after
-            // the full frame so a rebooted/re-bonded device re-syncs its list (issue #92).
+            // (re)connect frame carries the cached location fix (issue #54). Push order: tickers -> comps
+            // -> pages (design §7) -- comps before pages so that if the page push restarts the device,
+            // the complication blob is already persisted and the device boots correct.
             Task { @MainActor in
                 self?.reportAssembler.reset()   // discard any partial device report from a prior connection (#105)
                 self?.sendFullFrame(includeLocation: true)
@@ -548,6 +571,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Without this the device redraws its rows on reconnect with no project/title/message.
                 if let data = try? SessionDetailsFrame(self?.sessionDetails ?? []).encoded() { self?.central.send(data) }
                 self?.pushTickerConfig()
+                self?.pushCompConfig()
                 self?.pushPageConfig()
                 self?.pushSonosFrame()   // resend the latest Sonos now-playing on (re)connect, same as sessions/sdetail above
             }
@@ -563,6 +587,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.menubar.setPages(ids: self.pageStore.current.ids, opts: self.pageStore.current.opts)
             self.menubar.setPageSync(nil)
+        }
+        menubar.viewModel.onApplyComps = { [weak self] slots in self?.applyCompEdit(slots) }
+        menubar.viewModel.onRevertComps = { [weak self] in
+            guard let self else { return }
+            self.menubar.setComps(self.compStore.current.slots)
+            self.menubar.setCompSync(nil)
         }
         menubar.onApplyTickerEdit = { [weak self] rows in self?.applyTickerEdit(rows) }
         central.start()
@@ -628,6 +658,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard rev == tickerStore.current.rev else { break }
             menubar.setTickerSync(ok ? .synced(count ?? tickerStore.current.rows.count)
                                      : .error(err ?? "rejected"))
+        case .compsAck(let rev, let ok, let count, let err):
+            // Same stale-ack discipline as pagesAck/configAck. Unlike pagesAck, the device does NOT
+            // restart -- the link stays up and this ack is reliable.
+            guard rev == UInt32(compStore.current.rev) else { break }
+            menubar.setCompSync(ok ? "Updated \(count ?? 0) complications."
+                                   : "The Beacon rejected the assignment: \(err ?? "unknown")")
         case .open(let id):
             // Route to the owning provider by short id; the provider focuses its own native session.
             guard let (pid, nativeKey) = mux.sessionRoute(shortId: id),
@@ -860,6 +896,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // central.onReady, which is what actually guarantees convergence if the device reboots mid-sync.
         pushTickerConfig()
         pushPageConfig()
+    }
+
+    // --- complications (design §4, plan §3) ---
+
+    // Push the current Home assignment. No-ops while pristine (rev 0): an untouched hub must never push
+    // just for connecting, same promise as pushPageConfig -- except a comps push never restarts the
+    // device, so this is the cheap half of the two.
+    private func pushCompConfig() {
+        guard central.isConnected, let frame = compStore.frame() else { return }
+        guard frame.fitsFrame() else {
+            FileHandle.standardError.write(Data("[beacon-hub] comps config exceeds HUB_FRAME_MAX; not sent\n".utf8))
+            return
+        }
+        do { central.send(try frame.encoded()) }
+        catch {
+            FileHandle.standardError.write(Data("[beacon-hub] comps config encode failed: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    /// Apply a new Home complication assignment from the UI: persist, bump the rev, push. Unlike
+    /// applyPageEdit this must NOT print restart wording -- the device applies it live, no reboot.
+    func applyCompEdit(_ slots: [String: [String]]) {
+        let before = compStore.current
+        let after = compStore.set(slots: slots)
+        guard after.rev != before.rev else { return }   // no-op edit
+        menubar.setComps(after.slots)   // the edit is now the applied baseline
+        guard central.isConnected else {
+            menubar.setCompSync("Saved. The Beacon picks this up next time it connects.")
+            return
+        }
+        menubar.setCompSync("Sent…")
+        pushCompConfig()
     }
 
     private func sendFrame(_ frame: StatusFrame) {
