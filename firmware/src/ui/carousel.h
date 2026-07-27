@@ -1,5 +1,6 @@
 #pragma once
 #include "core/page_config.h"
+#include "core/complications.h"
 #include <lvgl.h>
 
 // Builds the swipe carousel from the five screen modules + the dot indicator, applies the initial
@@ -19,6 +20,15 @@ void carousel_goto_buddy(void);              // navigate to the CLAUDE/buddy scr
 // running -- the hub re-pushes on every reconnect, and restarting for an identical list would loop
 // forever. Restart only when `changed`.
 uint8_t carousel_apply_pages(const page_list_t* want, bool* changed);
+
+// Apply a hub-supplied complication assignment for the "home" face: resolve against the renderers this
+// firmware actually has (comp_find()), persist to NVS, queue it for the LVGL tick to pick up, and report
+// the resolved PLACEMENT count (0 is legitimate for an explicit-empty request; see comp_list_resolve rule
+// 5). `changed` is false when the resolved list already matches the active one -- the hub re-pushes on
+// every reconnect, and queuing an identical rebuild would flicker Home for nothing. Unlike pages, this
+// never restarts: the caller (hub_task.cpp's on_comps) applies live via comp_stack_apply() on the next
+// tick (plan §4/§8).
+uint8_t carousel_apply_comps(const comp_list_t* want, bool explicit_empty, bool* changed);
 
 // Read one option of an ACTIVE page ("chart", "sym", ...). False (and empty `out`) when the page is not
 // in the active set or carries no such option. Screens call this instead of reading NVS themselves.

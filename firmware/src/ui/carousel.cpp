@@ -9,6 +9,10 @@
 #include "ui/idle_glue.h"
 #include "core/nvs.h"
 #include "core/page_config.h"
+#include "core/complications.h"
+#include "core/comp_state.h"
+#include "ui/comps/comp_registry.h"
+#include "ui/comps/comp_stack.h"
 #include <string.h>
 #include "util/log.h"
 #include "config/layout.h"
@@ -79,6 +83,58 @@ static void load_active_pages(void) {
   }
 }
 
+// Headroom above COMP_CATALOG_N (8 today: clock/fin/ice/agents/usage/weather/sonos/chart) -- generous
+// enough that a future catalog addition does not need this bumped, but COMP_CATALOG_N is an extern
+// runtime value (defined in complications.cpp) so it cannot size a compile-time array itself here.
+#define COMP_KNOWN_CAP 16
+
+// Build the "this firmware can actually render" arrays comp_list_resolve needs: walk COMP_CATALOG (the
+// ONE home of size/takes_arg -- plan §13 item 1) and keep only the ids this build has a renderer for
+// (comp_find() non-NULL). "chart" is in the catalog with no renderer yet (Phase 2), so it is correctly
+// absent from `known` and any placement naming it is dropped by comp_list_resolve's rule 1.
+static uint8_t known_comps(const char* known[COMP_KNOWN_CAP], uint8_t known_size[COMP_KNOWN_CAP]) {
+  uint8_t n = 0;
+  for (uint8_t i = 0; i < COMP_CATALOG_N && n < COMP_KNOWN_CAP; i++) {
+    if (!comp_find(COMP_CATALOG[i].id)) continue;
+    known[n] = COMP_CATALOG[i].id;
+    known_size[n] = COMP_CATALOG[i].size;
+    n++;
+  }
+  return n;
+}
+
+// Only "home" exists today (comp_state.cpp's COMP_FACES has one entry) -- looked up by id rather than
+// assumed at index 0 so a second face slots in later with no change here.
+static const comp_face_t* home_face(void) {
+  for (uint8_t i = 0; i < COMP_FACES_N; i++)
+    if (strcmp(COMP_FACES[i].id, "home") == 0) return &COMP_FACES[i];
+  return nullptr;
+}
+
+// Resolve the persisted (or compiled-default) complication assignment into comp_state's ACTIVE list.
+// Must run before any page is built (mirrors load_active_pages() -- home_editorial.cpp's build() reads
+// comp_state_active() via comp_stack_build()).
+static void load_active_comps(void) {
+  const comp_face_t* face = home_face();
+  if (!face) return;   // no "home" face compiled in; should not happen
+
+  const char* known[COMP_KNOWN_CAP]; uint8_t known_size[COMP_KNOWN_CAP];
+  uint8_t known_n = known_comps(known, known_size);
+
+  char stored[COMP_SLOTS_MAX * COMP_ENTRY_LEN] = {0};
+  size_t n = nvs_get_bytes(face->nvs_key, stored, sizeof(stored) - 1);
+  stored[n < sizeof(stored) ? n : sizeof(stored) - 1] = '\0';
+  if (n == 0) snprintf(stored, sizeof(stored), "%s", face->default_slots);
+
+  comp_list_t want, fallback, resolved;
+  comp_list_deserialize(stored, &want);
+  comp_list_deserialize(face->default_slots, &fallback);
+  // Boot never carries an explicit-empty signal (that only arrives on the wire): an NVS blob that
+  // resolves to nothing falls back to the compiled default, same as an all-unknown wire request would.
+  comp_list_resolve(&want, known, known_size, known_n, face->slots, false, &fallback, &resolved);
+  comp_state_set_active(&resolved);
+}
+
 static lv_obj_t* s_pager = nullptr;
 static lv_obj_t* s_pages[8];
 static lv_obj_t* s_dots[8];
@@ -138,6 +194,11 @@ static void scrollend_cb(lv_event_t*) {
 }
 
 static void tick_cb(lv_timer_t*) {
+  // Live complication rebuild (plan §4/§8): LVGL-thread only, gated on !s_settling, no-op on an
+  // identical list -- the three guards that make lv_obj_clean-from-a-timer safe. Runs regardless of
+  // which page is current: Home's stack objects persist as carousel siblings even when scrolled away,
+  // so applying while Home isn't visible is not merely safe but the common case.
+  if (!s_settling) comp_stack_apply();
   if (MODULES[s_current]->update) MODULES[s_current]->update();
   set_dots(s_current);
 }
@@ -209,6 +270,7 @@ static void autoswipe_cb(lv_timer_t*) {
 
 void carousel_init(void) {
   load_active_pages();   // MODULES/COUNT are runtime state now; resolve before any page is created.
+  load_active_comps();   // comp_state's active list; resolve before Home's build() reads it.
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
 
@@ -309,8 +371,9 @@ bool carousel_page_opt(const char* page_id, const char* key, char* out, size_t c
 
 void carousel_goto_buddy(void) {
   int idx = active_index_of("agents");
-  if (idx < 0) return;                    // the user removed the agents page: nothing to wake to
-  if (s_current == idx) return;           // already there; no scroll churn
+  if (idx < 0) idx = active_index_of("home");   // Agents hidden: Home's prompt takeover covers it
+  if (idx < 0) return;                          // neither exists: nothing to wake to
+  if (s_current == idx) return;                 // already there; no scroll churn
   show(idx);
   recenter();
 }
@@ -345,6 +408,45 @@ uint8_t carousel_apply_pages(const page_list_t* want, bool* changed) {
   if (len == 0) return 0;
   nvs_set_bytes(NVS_PAGES_KEY, buf, len);
   nvs_set_screen(0);   // the old index may not exist in the new list
+  if (changed) *changed = true;
+  return n;
+}
+
+// Apply a hub-supplied complication assignment for the "home" face. Unlike carousel_apply_pages, this
+// never restarts: comp_state_set_pending() only queues the change, and comp_stack_apply() (called from
+// tick_cb, LVGL thread, gated on !s_settling) rebuilds Home live within one 500 ms tick (plan §4/§8).
+// Persist BEFORE queuing, so the choice survives NVS-adjacent even if the live-apply path somehow never
+// runs (e.g. Home is never built this boot).
+uint8_t carousel_apply_comps(const comp_list_t* want, bool explicit_empty, bool* changed) {
+  if (changed) *changed = false;
+  if (!want) return 0;
+
+  const comp_face_t* face = home_face();
+  if (!face) return 0;
+
+  const char* known[COMP_KNOWN_CAP]; uint8_t known_size[COMP_KNOWN_CAP];
+  uint8_t known_n = known_comps(known, known_size);
+
+  comp_list_t fallback, resolved;
+  comp_list_deserialize(face->default_slots, &fallback);
+  uint8_t n = comp_list_resolve(want, known, known_size, known_n, face->slots,
+                                explicit_empty, &fallback, &resolved);
+
+  // Idempotence: the hub re-pushes the current assignment on every reconnect (design §7); applying an
+  // identical list must be a no-op so a live rebuild never fires needlessly.
+  comp_list_t active;
+  comp_state_active(&active);
+  if (comp_list_equal(&resolved, &active)) return n;   // changed stays false => caller must not queue
+
+  char buf[COMP_SLOTS_MAX * COMP_ENTRY_LEN];
+  size_t len = comp_list_serialize(&resolved, buf, sizeof(buf));
+  // Persist BEFORE applying: the choice survives even if the rebuild path fails (plan §4 item 6).
+  // nvs_set_bytes returns false on write failure and callers MUST check it (unlike the byte setters).
+  if (!nvs_set_bytes(face->nvs_key, buf, len)) {
+    LOGW("hub: comps nvs_set_bytes failed for key=%s", face->nvs_key);
+    return n;   // resolved count still reported; nothing queued, so the old assignment keeps rendering
+  }
+  comp_state_set_pending(&resolved);
   if (changed) *changed = true;
   return n;
 }
