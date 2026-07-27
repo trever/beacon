@@ -35,6 +35,16 @@ enum SonosKeychain {
         write(service: oauthService, account: oauthAccount, data: blob)
     }
 
+    // Disconnect (design 2026-07-26-sonos-setup-ui): clears the OAuth cache only, leaving the client
+    // secret alone -- reconnecting needs the secret again but not a fresh Client ID/secret round trip.
+    @discardableResult
+    static func deleteOAuthBlob() -> Bool { delete(service: oauthService, account: oauthAccount) }
+
+    // Separate control the UI offers alongside Disconnect, per the plan ("add a separate control to clear
+    // [the secret] if it is cheap") -- it is: same SecItemDelete plumbing as the OAuth cache.
+    @discardableResult
+    static func deleteSecret() -> Bool { delete(service: secretService, account: secretAccount) }
+
     // --- shared SecItem plumbing (mirrors ClaudeKeychain) ---
 
     private static func write(service: String, account: String, data: Data) -> Bool {
@@ -68,5 +78,17 @@ enum SonosKeychain {
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data
         else { return nil }
         return data
+    }
+
+    // errSecItemNotFound counts as success -- deleting something already absent is the state the caller
+    // wanted, not a failure.
+    private static func delete(service: String, account: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }

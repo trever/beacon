@@ -107,84 +107,160 @@ final class SonosLoopbackServer {
     }
 }
 
-// Synchronous CLI orchestration for `beacon-hub sonos-authorize` (design 2026-07-26-sonos-now-playing-plan
-// step 2). This invocation IS the whole program -- there is no app run loop to hand async work back to --
-// so it blocks on semaphores the same way a shell script would, unlike the menubar app's callback style.
-// Never runs inside the long-lived beacon-hub process. Handled before NSApplication exists (main.swift),
-// same as set-claude-token/set-sonos-secret, so it never touches CoreBluetooth.
-enum SonosAuthorizerCLI {
-    static func run() -> Never {
-        guard let secret = SonosKeychain.readSecret() else {
-            FileHandle.standardError.write(Data("refused: no Sonos client secret stored -- run `beacon-hub set-sonos-secret` first\n".utf8))
-            exit(2)
-        }
-        if SonosOAuth.clientID == "REPLACE_WITH_SONOS_CLIENT_ID" {
-            FileHandle.standardError.write(Data(
-                "refused: SonosOAuth.clientID is still the placeholder -- set SONOS_CLIENT_ID or edit SonosOAuth.swift with your integration's Client ID from https://integration.sonos.com/\n".utf8))
-            exit(2)
-        }
+// Reusable, non-blocking Sonos OAuth orchestration (design 2026-07-26-sonos-setup-ui: give the CLI-only
+// `sonos-authorize` flow a real UI). This is the ONE implementation of "open the browser, wait for the
+// loopback redirect, exchange the code, persist the result" -- both `sonos-authorize` (SonosAuthorizerCLI
+// below) and the Settings UI drive it. Every path calls `completion` exactly once. Nothing here blocks any
+// thread: SonosLoopbackServer and SonosOAuth.exchange are already callback-based, so a UI caller can
+// invoke this straight from the main actor without hopping off it first -- only the CLI (a short-lived,
+// otherwise-idle process with no run loop to hand work back to) still blocks its OWN thread afterward, via
+// its own semaphore, purely to stay alive until `completion` fires.
+enum SonosAuthorizer {
+    // Coarse progress the UI renders as the flow proceeds. The CLI ignores this -- it already prints its
+    // own fixed messages at the start and the end.
+    enum Stage: Equatable {
+        case openingBrowser
+        case waitingForRedirect
+        case exchangingToken
+    }
+
+    // The two guard clauses the CLI used to check before ever starting the flow, now shared so the UI can
+    // disable its Authorize button (with the same reason) without spinning up a listener first.
+    static func preflight() -> SonosAuthError? {
+        guard SonosKeychain.readSecret() != nil else { return .noClientSecret }
+        guard SonosOAuth.clientID != SonosClientID.placeholder else { return .placeholderClientID }
+        return nil
+    }
+
+    // `openURL` defaults to actually shelling out to `/usr/bin/open`; the CLI overrides it to ALSO print
+    // the URL first (so "if it does not open, visit: <url>" keeps working), and a test could override it
+    // to a no-op. `progress`/`completion` are `@escaping`: they outlive this call, carried into
+    // SonosLoopbackServer's and SonosOAuth's own escaping completion handlers.
+    static func authorize(timeout: TimeInterval = 180,
+                          openURL: (URL) -> Void = defaultOpenURL,
+                          progress: @escaping (Stage) -> Void = { _ in },
+                          completion: @escaping (Result<Void, SonosAuthError>) -> Void) {
+        if let refusal = preflight() { completion(.failure(refusal)); return }
+        guard let secret = SonosKeychain.readSecret() else { completion(.failure(.noClientSecret)); return }
 
         let state = UUID().uuidString
         let url = SonosOAuth.authorizeURL(state: state)
 
-        let waitSem = DispatchSemaphore(value: 0)
-        var callbackOutcome: Result<(code: String, state: String), SonosAuthError>?
         let server = SonosLoopbackServer()
-        server.start { result in callbackOutcome = result; waitSem.signal() }
+        server.start(timeout: timeout) { result in
+            switch result {
+            case .failure(let e):
+                completion(.failure(e))
+            case .success(let callback):
+                guard callback.state == state else { completion(.failure(.stateMismatch)); return }
+                progress(.exchangingToken)
+                SonosOAuth.exchange(code: callback.code, secret: secret) { exResult in
+                    switch exResult {
+                    case .failure(let e):
+                        completion(.failure(e))
+                    case .success(let cred):
+                        guard let blob = ProviderCredentials.sonosBlob(accessToken: cred.accessToken,
+                                                                       expiresAt: cred.expiresAt,
+                                                                       refreshToken: cred.refreshToken),
+                              SonosKeychain.writeOAuthBlob(blob)
+                        else { completion(.failure(.keychainWriteFailed)); return }
+                        completion(.success(()))
+                    }
+                }
+            }
+        }
+        // The listener is already bound (NWListener.start queues its bring-up but SonosLoopbackServer's
+        // newConnectionHandler is wired before this returns), so opening the browser now cannot race a
+        // redirect that arrives before anyone is listening.
+        progress(.openingBrowser)
+        openURL(url)
+        progress(.waitingForRedirect)
+    }
 
-        FileHandle.standardError.write(Data(
-            "Opening your browser to authorize Beacon Hub with Sonos...\nIf it does not open, visit:\n\(url.absoluteString)\n".utf8))
+    static func defaultOpenURL(_ url: URL) {
         let open = Process()
         open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         open.arguments = [url.absoluteString]
         try? open.run()
+    }
 
-        _ = waitSem.wait(timeout: .now() + 185)
-        guard let callbackOutcome else {
+    static func describe(_ e: SonosAuthError) -> String {
+        switch e {
+        case .noClientSecret:
+            return "no Sonos client secret stored -- run `beacon-hub set-sonos-secret` first"
+        case .placeholderClientID:
+            return "the Client ID is still the placeholder -- set it in Settings (or SONOS_CLIENT_ID) with your integration's Client ID from https://integration.sonos.com/"
+        case .loopbackBindFailed:
+            return "could not open a local listener on 127.0.0.1:\(SonosLoopbackServer.port)"
+        case .timedOut:
+            return "no redirect received in time"
+        case .malformedCallback:
+            return "redirect did not include code/state"
+        case .stateMismatch:
+            return "state mismatch"
+        case .exchangeFailed(let m):
+            return m
+        case .keychainWriteFailed:
+            return "could not write the Keychain item"
+        }
+    }
+}
+
+// CLI wrapper for `beacon-hub sonos-authorize` (design 2026-07-26-sonos-now-playing-plan step 2;
+// refactored 2026-07-26-sonos-setup-ui so the Settings UI can drive the exact same flow instead of a
+// second implementation). This invocation IS the whole program -- there is no app run loop to hand async
+// work back to -- so it blocks its own main thread on a semaphore the same way a shell script would;
+// SonosAuthorizer.authorize itself never blocks anything, and the UI calls it directly with no semaphore
+// at all. Never runs inside the long-lived beacon-hub process. Handled before NSApplication exists
+// (main.swift), same as set-claude-token/set-sonos-secret, so it never touches CoreBluetooth.
+enum SonosAuthorizerCLI {
+    static func run() -> Never {
+        let waitSem = DispatchSemaphore(value: 0)
+        var outcome: Result<Void, SonosAuthError>?
+
+        SonosAuthorizer.authorize(openURL: { url in
+            FileHandle.standardError.write(Data(
+                "Opening your browser to authorize Beacon Hub with Sonos...\nIf it does not open, visit:\n\(url.absoluteString)\n".utf8))
+            SonosAuthorizer.defaultOpenURL(url)
+        }) { result in
+            outcome = result
+            waitSem.signal()
+        }
+
+        // One combined backstop covering the whole flow (loopback wait + token exchange). The prior code
+        // split this into two separate semaphore waits (185s then 15s); merging them removes the risk of
+        // the old fixed 15s exchange window firing "no response" while a slower-but-healthy exchange was
+        // still legitimately in flight, while keeping the same worst-case ceiling (loopback default 180s
+        // + a network round trip + margin).
+        _ = waitSem.wait(timeout: .now() + 245)
+        guard let outcome else {
             FileHandle.standardError.write(Data("timed out waiting for the Sonos redirect\n".utf8))
             exit(1)
         }
-        let callback: (code: String, state: String)
-        switch callbackOutcome {
-        case .success(let v): callback = v
+
+        switch outcome {
+        case .success:
+            FileHandle.standardError.write(Data(
+                "Sonos connected. Restart Beacon Hub (or it will pick this up on its next poll).\n".utf8))
+            exit(0)
         case .failure(let e):
-            FileHandle.standardError.write(Data("authorize failed: \(describe(e))\n".utf8))
-            exit(1)
-        }
-        guard callback.state == state else {
-            FileHandle.standardError.write(Data("refused: redirect state mismatch (possible CSRF) -- try again\n".utf8))
-            exit(1)
-        }
-
-        let exchangeSem = DispatchSemaphore(value: 0)
-        var exchangeOutcome: Result<SonosCredential, SonosAuthError>?
-        SonosOAuth.exchange(code: callback.code, secret: secret) { result in exchangeOutcome = result; exchangeSem.signal() }
-        _ = exchangeSem.wait(timeout: .now() + 15)
-        guard case .success(let cred) = exchangeOutcome else {
-            let reason: String
-            if case .failure(let e) = exchangeOutcome { reason = describe(e) } else { reason = "no response" }
-            FileHandle.standardError.write(Data("token exchange failed: \(reason)\n".utf8))
-            exit(1)
-        }
-
-        guard let blob = ProviderCredentials.sonosBlob(accessToken: cred.accessToken, expiresAt: cred.expiresAt,
-                                                       refreshToken: cred.refreshToken),
-              SonosKeychain.writeOAuthBlob(blob)
-        else {
-            FileHandle.standardError.write(Data("failed: could not write the Keychain item\n".utf8))
-            exit(1)
-        }
-        FileHandle.standardError.write(Data("Sonos connected. Restart Beacon Hub (or it will pick this up on its next poll).\n".utf8))
-        exit(0)
-    }
-
-    private static func describe(_ e: SonosAuthError) -> String {
-        switch e {
-        case .loopbackBindFailed: return "could not open a local listener on 127.0.0.1:\(SonosLoopbackServer.port)"
-        case .timedOut: return "no redirect received in time"
-        case .malformedCallback: return "redirect did not include code/state"
-        case .stateMismatch: return "state mismatch"
-        case .exchangeFailed(let m): return m
+            switch e {
+            case .noClientSecret, .placeholderClientID:
+                FileHandle.standardError.write(Data("refused: \(SonosAuthorizer.describe(e))\n".utf8))
+                exit(2)
+            case .stateMismatch:
+                FileHandle.standardError.write(Data("refused: redirect state mismatch (possible CSRF) -- try again\n".utf8))
+                exit(1)
+            case .loopbackBindFailed, .timedOut, .malformedCallback:
+                FileHandle.standardError.write(Data("authorize failed: \(SonosAuthorizer.describe(e))\n".utf8))
+                exit(1)
+            case .exchangeFailed:
+                FileHandle.standardError.write(Data("token exchange failed: \(SonosAuthorizer.describe(e))\n".utf8))
+                exit(1)
+            case .keychainWriteFailed:
+                FileHandle.standardError.write(Data("failed: \(SonosAuthorizer.describe(e))\n".utf8))
+                exit(1)
+            }
         }
     }
 }

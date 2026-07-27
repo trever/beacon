@@ -32,6 +32,13 @@ struct SonosNowPlaying: Equatable {
 // integration point where the two meet.
 final class SonosProvider {
     var onUpdate: ((_ room: String, _ track: String?, _ artist: String?, _ album: String?, _ playing: Bool) -> Void)?
+    // Additive observation hook (design 2026-07-26-sonos-setup-ui): fires with every classified outcome
+    // alongside noteOutcome's own gate bookkeeping below, unchanged. Lets the Settings UI surface the SAME
+    // live failure reason (401/403/network/etc., already classified by SonosOutcomeClassifier) the poll
+    // gate computed, instead of a second guess at the same condition -- see SonosSetupState.derive. Does
+    // not participate in fails/backoffUntil and cannot affect SonosGateTests, which never sets it (nil by
+    // default, so the extra call below is a no-op there).
+    var onOutcome: ((ProviderOutcome) -> Void)?
 
     private let session: URLSession
     private let queue = DispatchQueue(label: "beacon.sonos")
@@ -94,6 +101,7 @@ final class SonosProvider {
     // Internal (not private) so SonosGateTests exercises the gating contract directly, the same way
     // ClaudeUsageGateTests exercises ClaudeCodeProvider.noteUsageOutcome/shouldPollUsage.
     func noteOutcome(_ outcome: ProviderOutcome) {
+        onOutcome?(outcome)
         gateLock.lock(); defer { gateLock.unlock() }
         switch outcome {
         case .live:

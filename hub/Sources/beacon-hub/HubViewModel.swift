@@ -78,6 +78,23 @@ final class HubViewModel: ObservableObject {
     @Published var appliedPageOpts: [String: [String: String]] = [:]
     var pagesDirty: Bool { enabledPageIDs != appliedPageIDs || enabledPageOpts != appliedPageOpts }
 
+    // --- Sonos setup (design 2026-07-26-sonos-setup-ui) ---
+    // Keychain/UserDefaults are cheap local reads with no live-push channel of their own (unlike the
+    // BLE-driven state above), so this is pull-based: SonosSettingsView calls onLoadSonosSetup after
+    // every action rather than the model continuously publishing it.
+    var onLoadSonosSetup: () -> SonosSetupSnapshot = { .empty }
+    var onSaveSonosClientID: (String) -> Void = { _ in }
+    var onSaveSonosSecret: (String) -> SonosSecretSaveResult = { _ in .refused("not wired") }
+    // `progress` fires 0+ times as the loopback/exchange flow proceeds; `completion` fires exactly once.
+    // Both arrive on the main actor -- AppDelegate hops back before calling either (SonosAuthorizer.authorize
+    // itself never blocks, so there is nothing to hop OFF of on this side).
+    var onAuthorizeSonos: (@escaping (SonosAuthorizer.Stage) -> Void,
+                           @escaping (Result<Void, SonosAuthError>) -> Void) -> Void = { _, done in
+        done(.failure(.noClientSecret))
+    }
+    var onDisconnectSonos: () -> Void = {}
+    var onClearSonosSecret: () -> Void = {}
+
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}
     var onRequestLoginItem: (Bool) -> Void = { _ in }   // desired on/off; truth re-read async

@@ -47,6 +47,8 @@ struct SettingsPanel: View {
                 }
             }
 
+            SonosSettingsSection(model: model)
+
             SectionHeader(title: "Connection", subtitle: "Bluetooth link to this Beacon")
             Module(padding: 0) {
                 VStack(spacing: 0) {
@@ -96,7 +98,8 @@ struct SettingsPanel: View {
     }
 }
 
-private struct SectionHeader: View {
+// Not private: reused by SonosSettingsView so its section header matches every other Settings section.
+struct SectionHeader: View {
     let title: String
     let subtitle: String
     var body: some View {

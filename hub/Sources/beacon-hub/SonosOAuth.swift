@@ -8,16 +8,15 @@ import BeaconHubKit
 // a form-urlencoded parser), and build the Basic-auth header by hand so the secret only ever exists as a
 // request header, never logged.
 enum SonosOAuth {
-    // Not secret (per the plan: "The client ID is not secret and may live in source or config"), but this
-    // fork has not registered a real Sonos Control integration yet, so this is a placeholder. Before
-    // running `sonos-authorize`, either replace the fallback string below with the Client ID from
-    // https://integration.sonos.com/ (a "Control" integration, redirect URI = SonosOAuth.redirectURI), or
-    // export SONOS_CLIENT_ID in the shell that runs `sonos-authorize` (env wins when set). The launched
-    // menubar app itself only needs the ID for a token *refresh*, which reuses whatever was compiled in --
-    // so for anything beyond a one-off local test, editing the source constant is the real answer.
+    // Not secret (per the plan: "The client ID is not secret and may live in source or config"). Resolved
+    // via SonosClientID.resolve's precedence (design 2026-07-26-sonos-setup-ui): the value saved in
+    // Settings (SonosSetupStore, UserDefaults) wins; SONOS_CLIENT_ID keeps working as a fallback for
+    // anyone who set it before the Settings UI existed; SonosClientID.placeholder is the last resort. Get
+    // a real Client ID from a "Control" integration at https://integration.sonos.com/ (redirect URI =
+    // SonosOAuth.redirectURI) -- Settings is the intended place to put it now.
     static var clientID: String {
         let env = ProcessInfo.processInfo.environment["SONOS_CLIENT_ID"]
-        return (env?.isEmpty == false) ? env! : "REPLACE_WITH_SONOS_CLIENT_ID"
+        return SonosClientID.resolve(stored: SonosSetupStore().storedClientID, env: env)
     }
 
     static let authorizeEndpoint = "https://api.sonos.com/login/v3/oauth"
@@ -111,9 +110,14 @@ enum SonosOAuth {
 }
 
 enum SonosAuthError: Error, Equatable {
+    // Preflight refusals (design 2026-07-26-sonos-setup-ui): checked before the flow ever starts a
+    // listener, so both the CLI's up-front guard and the UI's disabled-button reason share one vocabulary.
+    case noClientSecret
+    case placeholderClientID
     case loopbackBindFailed
     case timedOut
     case malformedCallback
     case stateMismatch
     case exchangeFailed(String)
+    case keychainWriteFailed
 }

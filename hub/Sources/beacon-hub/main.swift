@@ -39,8 +39,10 @@ if CommandLine.arguments.dropFirst().first == "set-sonos-secret" {
     FileHandle.standardError.write(Data("Paste the Sonos client secret, then press Return and Ctrl-D:\n".utf8))
     let raw = String(data: FileHandle.standardInput.readDataToEndOfFile(), encoding: .utf8) ?? ""
     let secret = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard secret.count >= 16, !secret.contains(" ") else {
-        FileHandle.standardError.write(Data("refused: that does not look like a client secret (>=16 chars, no spaces)\n".utf8))
+    // Shared with the Settings UI (design 2026-07-26-sonos-setup-ui) via SonosSecretValidation, so the
+    // CLI guard and the UI's inline refusal enforce and describe the exact same rule.
+    guard SonosSecretValidation.isValid(secret) else {
+        FileHandle.standardError.write(Data("refused: \(SonosSecretValidation.refusalMessage)\n".utf8))
         exit(2)
     }
     guard SonosKeychain.writeSecret(secret) else {

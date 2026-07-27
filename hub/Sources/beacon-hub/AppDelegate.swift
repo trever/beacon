@@ -21,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var omp: HookBuddyProvider?                // typed ref for drain + device-connected
     private var poller: UsagePoller!                   // built once providers exist
     private var sonos: SonosProvider?                   // Sonos OAuth + polling (design 2026-07-26-sonos-now-playing-plan)
+    private let sonosSetupStore = SonosSetupStore()     // persisted Client ID (design 2026-07-26-sonos-setup-ui)
+    // Most recent classified outcome SonosProvider observed, fed by its onOutcome hook -- purely for the
+    // Settings status line (SonosSetupState.derive); never read by the poll gate itself.
+    private var sonosLastOutcome: ProviderOutcome?
     private let location = LocationProvider()
     private let tickerStore = TickerConfigStore()   // desired ticker list + monotonic rev (issue #92)
     private let pageStore = PageConfigStore()      // which device pages, in what order (+ monotonic rev)
@@ -90,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startLocation()
         startTickerEditor()
         startSonos()
+        startSonosSettings()
         menubar.setPages(ids: pageStore.current.ids, opts: pageStore.current.opts)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
@@ -354,15 +359,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // --- sonos (OAuth + polling provider; the BLE frame encoder is owned by a separate agent) ---
 
     private func startSonos() {
-        let sonos = SonosProvider(session: usageSession)
-        sonos.onUpdate = { [weak self] room, track, artist, album, playing in
+        rebuildSonosProvider()
+    }
+
+    // Tear down and reconstruct the provider (design 2026-07-26-sonos-setup-ui): also called by
+    // Disconnect/Clear-secret so a credential change from the UI is not still served out of
+    // SonosProvider's in-memory cachedCredential/groupCache -- rebuilding forces a fresh Keychain read on
+    // the very next poll tick, without touching SonosProvider's own logic at all. The room selection
+    // survives (SonosRoomStore reads the same UserDefaults key regardless of which SonosProvider instance
+    // owns it).
+    private func rebuildSonosProvider() {
+        sonos?.stop()
+        let provider = SonosProvider(session: usageSession)
+        provider.onUpdate = { [weak self] room, track, artist, album, playing in
             Task { @MainActor in
                 self?.sonosNowPlaying = (room, track, artist, album, playing)
                 self?.pushSonosFrame()
             }
         }
-        self.sonos = sonos
-        sonos.start()
+        provider.onOutcome = { [weak self] outcome in
+            Task { @MainActor in self?.sonosLastOutcome = outcome }
+        }
+        sonos = provider
+        provider.start()
+    }
+
+    // --- sonos setup UI (design 2026-07-26-sonos-setup-ui) ---
+
+    private func startSonosSettings() {
+        menubar.viewModel.onLoadSonosSetup = { [weak self] in self?.sonosSnapshot() ?? .empty }
+        menubar.viewModel.onSaveSonosClientID = { [weak self] value in
+            self?.sonosSetupStore.storedClientID = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        menubar.viewModel.onSaveSonosSecret = { secret in
+            guard SonosSecretValidation.isValid(secret) else { return .refused(SonosSecretValidation.refusalMessage) }
+            guard SonosKeychain.writeSecret(secret) else { return .keychainWriteFailed }
+            return .saved(charCount: secret.count)
+        }
+        menubar.viewModel.onAuthorizeSonos = { progress, completion in
+            // SonosAuthorizer.authorize never blocks; its own completion already lands on an unspecified
+            // background queue (URLSession/NWListener callback queues), so hop to the main actor before
+            // touching AppDelegate/HubViewModel state rather than assume the caller already did.
+            SonosAuthorizer.authorize(progress: { stage in
+                Task { @MainActor in progress(stage) }
+            }, completion: { result in
+                Task { @MainActor in completion(result) }
+            })
+        }
+        menubar.viewModel.onDisconnectSonos = { [weak self] in
+            guard let self else { return }
+            SonosKeychain.deleteOAuthBlob()
+            self.sonosNowPlaying = nil
+            self.sonosLastOutcome = nil
+            self.rebuildSonosProvider()
+        }
+        menubar.viewModel.onClearSonosSecret = { [weak self] in
+            guard let self else { return }
+            SonosKeychain.deleteSecret()
+            self.sonosNowPlaying = nil
+            self.sonosLastOutcome = nil
+            self.rebuildSonosProvider()   // the stored secret is gone too -- stop polling with it
+        }
+    }
+
+    // Everything the Settings UI needs to render the Sonos section, assembled fresh on every call
+    // (Keychain + UserDefaults reads are cheap and local -- see HubViewModel.onLoadSonosSetup).
+    private func sonosSnapshot() -> SonosSetupSnapshot {
+        let stored = sonosSetupStore.storedClientID
+        let env = ProcessInfo.processInfo.environment["SONOS_CLIENT_ID"]
+        let effective = SonosClientID.resolve(stored: stored, env: env)
+        let secret = SonosKeychain.readSecret()
+        let credential = SonosKeychain.readOAuthBlob().flatMap { ProviderCredentials.parseSonos($0) }
+        let status = SonosSetupState.derive(secretStored: secret != nil, credential: credential,
+                                            lastOutcome: sonosLastOutcome, now: Date())
+        return SonosSetupSnapshot(storedClientID: stored, effectiveClientID: effective,
+                                  usingEnvOverride: stored.isEmpty && !(env ?? "").isEmpty,
+                                  secretStored: secret != nil, secretCharCount: secret?.count ?? 0,
+                                  status: status)
     }
 
     private func pushSonosFrame() {
