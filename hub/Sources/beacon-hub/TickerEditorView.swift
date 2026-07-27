@@ -13,9 +13,10 @@ import BeaconHubKit
 // directly in this file's own row builders -- there is no single shared "row" shape that fits an
 // Add-with-validation row and a reorder-with-trash row, so those two stay bespoke compositions built
 // from shared tokens/leaf views rather than a hand-rolled duplicate abstraction (design SS9.2's private-
-// helper allowance). `SyncBadge` keeps its own compact layout (no shared component covers an inline
-// icon+text status badge outside a full-width `StatusRow`) but now sources its glyph/tint from the one
-// `HubState` vocabulary instead of an independent switch-based colour mapping (design SS3.3).
+// helper allowance). `SyncBadge` now builds on `StatusLine` (HubRows.swift) in its `.compact` style --
+// the shared component this workstream had to report as a gap when this file was converted -- instead of
+// its own hand-rolled icon+text HStack, while still sourcing its glyph/tint from the one `HubState`
+// vocabulary (design SS3.3).
 
 struct TickerEditorView: View {
     @ObservedObject var model: HubViewModel
@@ -72,12 +73,7 @@ struct TickerEditorView: View {
     }
 
     private var syncBadge: some View {
-        let state = model.tickerSync.hubState
-        return HStack(spacing: HubSpace.xs) {
-            Image(systemName: state.glyph).foregroundStyle(state.tint)
-            Text(model.tickerSync.hubLabel).foregroundStyle(HubColor.inkSecondary)
-        }
-        .font(HubType.secondary)
+        StatusLine(state: model.tickerSync.hubState, title: model.tickerSync.hubLabel, style: .compact)
     }
 
     // MARK: - Search

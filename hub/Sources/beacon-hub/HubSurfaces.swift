@@ -211,16 +211,21 @@ struct HubButton: View {
 /// design SS3: a 28x28 hit target regardless of the icon's own visual size, and `label` is a
 /// non-optional parameter that becomes the button's accessibility label. This is what makes the design's
 /// eleven unlabelled icon buttons impossible to reintroduce -- there is no initializer that lets a caller
-/// skip it.
+/// skip it. `tint` defaults to `ink.secondary`, today's fixed behaviour, so every existing call site is
+/// source-compatible; a caller that needs emphasis (`HubPanel`'s destructive "Quit Beacon") now has a
+/// real way to reach the icon itself instead of only the caption text beside it.
 struct IconButton: View {
     let systemImage: String
     let label: String
+    let tint: Color
     let isEnabled: Bool
     let action: () -> Void
 
-    init(systemImage: String, label: String, isEnabled: Bool = true, action: @escaping () -> Void) {
+    init(systemImage: String, label: String, tint: Color = HubColor.inkSecondary, isEnabled: Bool = true,
+         action: @escaping () -> Void) {
         self.systemImage = systemImage
         self.label = label
+        self.tint = tint
         self.isEnabled = isEnabled
         self.action = action
     }
@@ -232,7 +237,7 @@ struct IconButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(HubColor.inkSecondary)
+        .foregroundStyle(tint)
         .disabled(!isEnabled)
         .accessibilityLabel(label)
     }

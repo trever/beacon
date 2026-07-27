@@ -2,8 +2,11 @@ import XCTest
 import SwiftUI
 @testable import beacon_hub
 
-// HubRows.swift / HubSurfaces.swift / DeviceGlass.swift (design SS3, plan SS3 "WS-0 -- the substrate").
-// Two jobs:
+// HubRows.swift / HubSurfaces.swift / DeviceGlass.swift (design SS3, plan SS3 "WS-0 -- the substrate"),
+// plus `SourcesTab.swift`'s `ProviderRowGroup` -- the one cross-file-shared type the six-workstream
+// conversion added outside HubStyle/HubRows/HubSurfaces itself (it is domain-specific, bound to
+// `HubViewModel`/`ProviderToggle`, so it does not belong in the generic component layer, but it is reached
+// from two different view files exactly the way everything else in this test is). Two jobs:
 //
 // 1. `HubState`'s glyph/tint mapping and its `CheckState` bridge, and `RowSeparator`'s derived inset --
 //    the few genuinely pure-value facts this layer has.
@@ -63,8 +66,8 @@ final class HubComponentTests: XCTestCase {
              HubType.control, HubType.secondary, HubType.caption, HubType.eyebrow)
         _ = (HubColor.surfaceWindow, HubColor.surfaceContent, HubColor.fillCard, HubColor.fillControl,
              HubColor.fillControlPressed, HubColor.fillSelected, HubColor.inkPrimary, HubColor.inkSecondary,
-             HubColor.inkTertiary, HubColor.lineHairline, HubColor.accent, HubColor.stateOk,
-             HubColor.stateWarn, HubColor.stateError, HubColor.statePending)
+             HubColor.inkTertiary, HubColor.inkOnAccent, HubColor.lineHairline, HubColor.accent,
+             HubColor.stateOk, HubColor.stateWarn, HubColor.stateError, HubColor.statePending)
         _ = HubDynamic.color(light: .black, dark: .white)
         _ = (HubRadius.control, HubRadius.card)
         _ = (HubShape.control, HubShape.card, HubShape.pill)
@@ -80,6 +83,8 @@ final class HubComponentTests: XCTestCase {
         let settingsRow = SettingsRow(icon: "gear", title: "Row", subtitle: "Detail") { EmptyView() }
         let statusRowHub = StatusRow(state: HubState.ok, title: "Status") { EmptyView() }
         let statusRowCheck = StatusRow(state: CheckState.bad, title: "Status") { EmptyView() }
+        let statusLineDetail = StatusLine(state: .ok, title: "Connected", detail: "Access token refreshes automatically.")
+        let statusLineCompact = StatusLine(state: .checking, title: "Syncing\u{2026}", style: .compact)
         let listRow = ListRow(primary: "Primary", secondary: "Secondary", isCurrent: true) {}
         let separator = RowSeparator(hasLeadingIcon: true)
 
@@ -92,6 +97,10 @@ final class HubComponentTests: XCTestCase {
         let buttonPrimary = HubButton(title: "Save & push", kind: .primary, prominent: true) {}
         let buttonSecondary = HubButton(title: "Cancel", kind: .secondary) {}
         let iconButton = IconButton(systemImage: "xmark", label: "Remove") {}
+        // `tint` (shared-layer gap #2): defaults to `ink.secondary` (unchanged existing behaviour, the
+        // construction above), and is independently reachable with an override -- this is what makes
+        // "Quit Beacon" tintable at the type level, not just by convention.
+        let iconButtonTinted = IconButton(systemImage: "power", label: "Quit Beacon", tint: HubColor.stateError) {}
         let badge = HubBadge("3 of 6", tint: HubColor.stateOk)
         let footer = FooterBar(channels: [FooterBar<EmptyView>.Channel("pages", text: "Pages changed",
                                                                         isDirty: true)]) { EmptyView() }
@@ -100,6 +109,17 @@ final class HubComponentTests: XCTestCase {
         _ = (GlassMetric.bezel, GlassMetric.cornerRatio, GlassMetric.safeInsetRatio)
         _ = GlassColor.bezel
         let glassPanel = DeviceGlassPanel(size: 160, isSelected: true) { Color.black }
+
+        // `ProviderRowGroup` (SourcesTab.swift) -- not part of HubStyle/HubRows/HubSurfaces (it is
+        // domain-specific: it binds directly to `HubViewModel`/`ProviderToggle`, not a generic design-
+        // system primitive), but it is exactly the kind of cross-file shared type this test exists to
+        // guard: `SourcesTab.swift` and `PageDesignerInspector.swift` both construct it from a different
+        // file than the one that declares it, which would fail to COMPILE (not fail to pass) if it were
+        // ever made `private` or `fileprivate` -- the same disease `PageDesignerView.swift:740` names.
+        let providerRowGroup = ProviderRowGroup(
+            model: HubViewModel(),
+            provider: ProviderToggle(id: "claude", label: "Claude", supportsUsage: true, supportsBuddy: true,
+                                      usageOn: true, buddyOn: true))
 
         // Deprecated compat layer (DeckUI.swift) -- must still be constructible; the deprecation is a
         // warning, not a compile failure, and the plan requires every existing call site to keep working.
@@ -117,6 +137,9 @@ final class HubComponentTests: XCTestCase {
         XCTAssertEqual(settingsRow.title, "Row")
         XCTAssertEqual(statusRowHub.state, .ok)
         XCTAssertEqual(statusRowCheck.state, .notSetUp)
+        XCTAssertEqual(statusLineDetail.state, .ok)
+        XCTAssertEqual(statusLineDetail.style, .detail)
+        XCTAssertEqual(statusLineCompact.style, .compact)
         XCTAssertEqual(listRow.primary, "Primary")
         XCTAssertTrue(separator.hasLeadingIcon)
         _ = card
@@ -126,9 +149,11 @@ final class HubComponentTests: XCTestCase {
         XCTAssertEqual(buttonPrimary.kind, .primary)
         XCTAssertEqual(buttonSecondary.kind, .secondary)
         XCTAssertEqual(iconButton.label, "Remove")
+        XCTAssertEqual(iconButtonTinted.label, "Quit Beacon")
         XCTAssertEqual(badge.text, "3 of 6")
         XCTAssertEqual(footer.channels.first?.id, "pages")
         XCTAssertEqual(glassPanel.size, 160)
+        XCTAssertEqual(providerRowGroup.provider.id, "claude")
         XCTAssertEqual(module.padding, 0)
         XCTAssertEqual(deckButton.kind, .primary)
         XCTAssertEqual(toggleRow.title, "Legacy toggle")

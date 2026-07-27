@@ -72,13 +72,14 @@ private struct HeaderModule: View {
             VStack(alignment: .leading, spacing: HubSpace.s) {
                 HStack(spacing: HubSpace.m) {
                     ZStack {
-                        // No `Color.blue` / `Color.white` (design SS7): an accent-tinted fill with the
-                        // glyph in the accent colour itself, rather than a white-on-solid-accent badge --
-                        // there is no "on-accent foreground" token in HubStyle, and the fixed-white glyph
-                        // the old badge used is exactly the "wrong for a yellow or graphite accent" case
-                        // design SS7 calls out.
-                        Circle().fill(HubColor.fillSelected).frame(width: 30, height: 30)
-                        Image(systemName: "wave.3.right").font(HubType.section).foregroundStyle(HubColor.accent)
+                        // No `Color.blue` / `Color.white` (design SS7): a solid `accent` fill with the
+                        // glyph in `HubColor.inkOnAccent` -- the on-accent foreground token this workstream
+                        // added to close the shared-layer gap the old badge worked around by using a soft
+                        // `fillSelected` tint plus an accent-coloured glyph instead of a real filled badge.
+                        // `inkOnAccent` resolves per-accent and per-appearance itself, so this is not the
+                        // fixed-white glyph design SS7 flags as wrong for a yellow or graphite accent.
+                        Circle().fill(HubColor.accent).frame(width: 30, height: 30)
+                        Image(systemName: "wave.3.right").font(HubType.section).foregroundStyle(HubColor.inkOnAccent)
                     }
                     VStack(alignment: .leading, spacing: HubSpace.hair) {
                         Text(deviceName).font(HubType.section).foregroundStyle(HubColor.inkPrimary)
@@ -100,6 +101,9 @@ private struct HeaderModule: View {
                 // `LinkButton` -> `HubButton` (plan WS-6): the icon is dropped -- `HubButton` has no icon
                 // slot, matching the shared vocabulary's "button titles are text" rule (design SS2.2) --
                 // but the description stays fully legible as button text rather than a bare tinted link.
+                // Shared-layer gap #3 considered adding an icon+text `HubButton` mode for this, but this is
+                // the ONLY call site in the product that ever had an icon here, so a mode nobody else needs
+                // stays out (see this workstream's final report).
                 if let fix = fixLabel {
                     HubButton(title: fix, kind: .secondary) { closeAndRun(model.onOpenFixURL) }
                 }
@@ -318,12 +322,18 @@ private struct ActionBar: View {
     // is what makes "the button is labelled" structural rather than something a call site can skip. The
     // caption below is additive -- it keeps the row's three actions visually named, exactly as they are
     // today -- and is hidden from the accessibility tree so VoiceOver reads `IconButton`'s own label once,
-    // not the icon and the caption both. `IconButton` has no tint/state parameter, so `tint` here only
-    // reaches the caption text -- the icon itself is always `ink.secondary` (see report: shared-layer gap).
+    // not the icon and the caption both. `IconButton` now takes `tint` (shared-layer gap #2, closed), so
+    // `tint` here reaches the icon itself as well as the caption -- "Quit Beacon" is `state.error` red on
+    // both, not just the caption underneath it.
+    //
+    // This vertical icon-above-caption composition itself stays a local helper rather than a shared
+    // component: it has exactly one file's worth of call sites (the three below), already built from
+    // shared leaf pieces (`IconButton` + `Text`), and a shared type with one consumer is the thing design
+    // SS0 warns against adding (shared-layer gap #3 -- see this workstream's final report).
     private func actionItem(icon: String, label: String, tint: Color = HubColor.inkSecondary,
                              action: @escaping () -> Void) -> some View {
         VStack(spacing: HubSpace.xs) {
-            IconButton(systemImage: icon, label: label, action: action)
+            IconButton(systemImage: icon, label: label, tint: tint, action: action)
             Text(label).font(HubType.caption).foregroundStyle(tint).lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .accessibilityHidden(true)

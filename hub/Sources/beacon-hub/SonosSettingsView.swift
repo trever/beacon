@@ -97,23 +97,14 @@ struct SonosSettingsSection: View {
         }
     }
 
-    // Not the `StatusRow` component itself: that component's own `space.m` horizontal inset assumes a
-    // zero-padding row-stack card (design §3.2), and this card holds a mixed form (fields, buttons, a
-    // status line), not a stack of rows -- wrapping it in `StatusRow` here would double the inset against
-    // the card's own `space.l` content padding. Consuming `HubState`'s glyph/tint directly still lands the
-    // one shared vocabulary; only the layout differs from the row-stack case.
+    // `StatusLine` (HubRows.swift), not `StatusRow`: that component's own `space.m` horizontal inset
+    // assumes a zero-padding row-stack card (design §3.2), and this card holds a mixed form (fields,
+    // buttons, a status line), not a stack of rows -- wrapping it in `StatusRow` here would double the
+    // inset against the card's own `space.l` content padding. `StatusLine` is the compact/bare sibling
+    // built for exactly this.
     @ViewBuilder private var statusRow: some View {
-        HStack(alignment: .top, spacing: HubSpace.m) {
-            Image(systemName: sonosState.glyph)
-                .foregroundStyle(sonosState.tint)
-                .frame(width: HubControlMetrics.iconColumn)
-            VStack(alignment: .leading, spacing: HubSpace.xs) {
-                Text(statusTitle).font(HubType.body).foregroundStyle(HubColor.inkPrimary)
-                if let statusDetail {
-                    Text(statusDetail).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+        HStack(alignment: .top, spacing: 0) {
+            StatusLine(state: sonosState, title: statusTitle, detail: statusDetail)
             Spacer(minLength: HubSpace.s)
         }
     }
