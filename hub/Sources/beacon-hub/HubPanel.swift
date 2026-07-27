@@ -5,32 +5,49 @@ import BeaconHubKit
 // Pure presentation over HubViewModel -- it maps link/usage state to native controls and calls the
 // view model's intent closures. Semantic decisions (level, fill fraction, reset form) come from
 // BeaconHubKit; this view only turns them into colors, localized strings, and layout.
+//
+// WS-6 (2026-07-27-hub-visual-system-plan.md SS"WS-6", design SS2/SS3/SS9): re-tokenised, not
+// redesigned -- the same card stack, in the same order, now built from HubStyle/HubRows/HubSurfaces.
+// `ProviderCard`'s `.accessibilityElement(children: .combine)` is the VoiceOver template the plan names
+// explicitly; it is kept and its pattern is propagated, never deleted. This is the one surface rendered
+// inside an `NSPopover`'s vibrancy material rather than an opaque window (design SS9.3), which is exactly
+// why every fill below goes through `HubColor`'s `NSColor`-backed dynamic providers instead of a raw
+// opacity or an `@Environment(\.colorScheme)` branch -- that is what composites correctly over vibrancy.
+// The popover root below declares the one permitted fixed width (340) and nothing beneath it declares
+// `.infinity` width or a fixed height, per the `sizingOptions = [.preferredContentSize]` contract in
+// MenubarController.swift (untouched by this file).
 struct HubPanel: View {
     @ObservedObject var model: HubViewModel
     var closeAndRun: (@escaping () -> Void) -> Void   // dismiss the popover, then run the action
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: HubSpace.m) {
             if let banner = model.bridgeAlert ?? model.alert.map({ "\($0) — couldn't show prompt" }) {
-                Banner(text: banner)
+                Card(padding: .rows) {
+                    StatusRow(state: .error, title: banner) { EmptyView() }
+                }
             }
             HeaderModule(model: model, closeAndRun: closeAndRun)
             if !model.notes.isEmpty {
-                Module {
-                    VStack(alignment: .leading, spacing: 4) {
+                Card {
+                    VStack(alignment: .leading, spacing: HubSpace.xs) {
                         ForEach(model.notes, id: \.text) { note in
-                            Label(note.text,
-                                  systemImage: note.severity == .error
-                                      ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
-                                .foregroundStyle(note.severity == .error ? Color.red : Color.secondary)
+                            // The glyph carries the state colour; the word stays `ink.primary` -- design
+                            // SS2.3's "state is never colour alone", same rule `StatusRow` enforces.
+                            HStack(spacing: HubSpace.s) {
+                                Image(systemName: note.severity == .error
+                                          ? "exclamationmark.triangle.fill" : "clock.arrow.circlepath")
+                                    .foregroundStyle(note.severity == .error ? HubColor.stateError : HubColor.inkSecondary)
+                                Text(note.text).foregroundStyle(HubColor.inkPrimary)
+                            }
+                            .font(HubType.secondary)
                         }
                     }
-                    .font(.system(size: 11))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             if !model.usage.providers.isEmpty {
-                HStack(spacing: 10) {
+                HStack(spacing: HubSpace.l) {
                     ForEach(model.usage.providers, id: \.id) { entry in
                         ProviderCard(entry: entry, now: model.now)
                     }
@@ -39,7 +56,7 @@ struct HubPanel: View {
             TogglesModule(model: model)
             ActionBar(model: model, closeAndRun: closeAndRun)
         }
-        .padding(12)
+        .padding(HubSpace.m)
         .frame(width: 340)
     }
 }
@@ -51,32 +68,43 @@ private struct HeaderModule: View {
     var closeAndRun: (@escaping () -> Void) -> Void
 
     var body: some View {
-        Module {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
+        Card {
+            VStack(alignment: .leading, spacing: HubSpace.s) {
+                HStack(spacing: HubSpace.m) {
                     ZStack {
-                        Circle().fill(.blue).frame(width: 30, height: 30)
-                        Image(systemName: "wave.3.right").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
+                        // No `Color.blue` / `Color.white` (design SS7): an accent-tinted fill with the
+                        // glyph in the accent colour itself, rather than a white-on-solid-accent badge --
+                        // there is no "on-accent foreground" token in HubStyle, and the fixed-white glyph
+                        // the old badge used is exactly the "wrong for a yellow or graphite accent" case
+                        // design SS7 calls out.
+                        Circle().fill(HubColor.fillSelected).frame(width: 30, height: 30)
+                        Image(systemName: "wave.3.right").font(HubType.section).foregroundStyle(HubColor.accent)
                     }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(deviceName).font(.system(size: 13, weight: .semibold))
-                        Text(statusText).font(.system(size: 11)).foregroundStyle(.secondary)
-                        Text(syncText).font(.system(size: 11)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: HubSpace.hair) {
+                        Text(deviceName).font(HubType.section).foregroundStyle(HubColor.inkPrimary)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                        Text(statusText).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                            .lineLimit(1)
+                        Text(syncText).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                            .lineLimit(1)
                     }
                     Spacer()
                     if isConnected {
-                        Circle().fill(.green).frame(width: 8, height: 8)
+                        Circle().fill(HubColor.stateOk).frame(width: 8, height: 8)
                     }
                 }
                 if showPairingHint {
                     Text("Pair: enter the code shown on the device")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
                 }
+                // `LinkButton` -> `HubButton` (plan WS-6): the icon is dropped -- `HubButton` has no icon
+                // slot, matching the shared vocabulary's "button titles are text" rule (design SS2.2) --
+                // but the description stays fully legible as button text rather than a bare tinted link.
                 if let fix = fixLabel {
-                    LinkButton(fix, systemImage: "gearshape") { closeAndRun(model.onOpenFixURL) }
+                    HubButton(title: fix, kind: .secondary) { closeAndRun(model.onOpenFixURL) }
                 }
                 if case .pairingFailed = model.link {
-                    LinkButton("Try pairing again", systemImage: "arrow.clockwise") { closeAndRun(model.onRetryPairing) }
+                    HubButton(title: "Try pairing again", kind: .secondary) { closeAndRun(model.onRetryPairing) }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -130,13 +158,14 @@ private struct ProviderCard: View {
     let now: Date
 
     var body: some View {
-        Module {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 4) {
-                    Text(entry.label).font(.system(size: 12, weight: .semibold))
+        Card {
+            VStack(alignment: .leading, spacing: HubSpace.s) {
+                HStack(spacing: HubSpace.xs) {
+                    Text(entry.label).font(HubType.section).foregroundStyle(HubColor.inkPrimary)
+                        .lineLimit(1)
                     if entry.stale == true {
                         Image(systemName: "clock.arrow.circlepath")
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                            .font(HubType.caption).foregroundStyle(HubColor.inkSecondary)
                     }
                 }
                 WindowRow(label: "5h", window: entry.h5, now: now)
@@ -144,6 +173,9 @@ private struct ProviderCard: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // The VoiceOver template the plan names explicitly (design SS8) -- kept verbatim, and the pattern
+        // (one accessibility element, a label, a composed value) is what `TogglesModule`/`ActionBar` below
+        // follow too rather than reinventing their own.
         .accessibilityElement(children: .combine)
         .accessibilityLabel(entry.label)
         .accessibilityValue(summary)
@@ -159,21 +191,32 @@ private struct ProviderCard: View {
     }
 }
 
+// `WindowRow` isn't one of the ten settings-style rows the shared `SettingsRow`/`StatusRow`/`ListRow`
+// triad replaces (plan SS7.3) -- it is a usage-figure-plus-progress-bar visualisation, a different kind
+// of content entirely, so it stays a local type. What DOES change is its typography: the big percentage
+// now reads through `HubType.figure` (plan WS-6 trap 2) and everything else through the shared roles.
 private struct WindowRow: View {
     let label: String
     let window: UsageWindow
     let now: Date
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: HubSpace.xs) {
             HStack {
-                Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                Text(label).font(HubType.caption).foregroundStyle(HubColor.inkSecondary).lineLimit(1)
                 Spacer()
-                Text(Self.resetText(window.reset, now: now)).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(Self.resetText(window.reset, now: now))
+                    .font(HubType.caption).foregroundStyle(HubColor.inkSecondary).lineLimit(1)
             }
+            // `type.figure` is a `.title` text style, so it scales with the system text-size setting
+            // inside a fixed 340 pt popover holding two `ProviderCard`s side by side (plan WS-6 trap 2).
+            // `lineLimit(1)` + `minimumScaleFactor(0.7)` keep "100%" from clipping at the largest text
+            // size rather than exempting this site from the token.
             Text(pctText)
-                .font(.system(size: 21, weight: .bold)).monospacedDigit()
-                .foregroundStyle(color ?? .secondary)
+                .font(HubType.figure)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .foregroundStyle(color ?? HubColor.inkSecondary)
             LevelBar(fraction: usageFillFraction(window.pct), color: color)
         }
     }
@@ -184,9 +227,9 @@ private struct WindowRow: View {
     static func color(_ level: UsageLevel) -> Color? {
         switch level {
         case .unavailable: return nil
-        case .normal:      return .green
-        case .elevated:    return .orange
-        case .critical:    return .red
+        case .normal:      return HubColor.stateOk
+        case .elevated:    return HubColor.stateWarn
+        case .critical:    return HubColor.stateError
         }
     }
 
@@ -209,7 +252,7 @@ private struct LevelBar: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(.primary.opacity(0.14))
+                Capsule().fill(HubColor.fillControl)
                 if fraction > 0, let color {
                     Capsule().fill(color).frame(width: max(2, geo.size.width * fraction))
                 }
@@ -225,13 +268,18 @@ private struct TogglesModule: View {
     @ObservedObject var model: HubViewModel
 
     var body: some View {
-        Module(padding: 0) {
+        Card(padding: .rows) {
             VStack(spacing: 0) {
-                ToggleRow(icon: "speaker.slash.fill", title: "Mute prompt sound", isOn: muteBinding)
-                Divider().padding(.leading, 12)
-                ToggleRow(icon: "person.fill", title: "Start at login",
-                          subtitle: model.loginItem == .requiresApproval ? "Approve in Login Items" : nil,
-                          isOn: loginBinding)
+                SettingsRow(icon: "speaker.slash.fill", title: "Mute prompt sound") {
+                    Toggle("", isOn: muteBinding).labelsHidden().toggleStyle(.switch)
+                }
+                // The derived separator rule (design SS2.4): both rows have a leading icon column, so the
+                // inset is `space.m + iconColumn + space.m` = 44, not the ad-hoc 12 the old literal used.
+                RowSeparator(hasLeadingIcon: true)
+                SettingsRow(icon: "person.fill", title: "Start at login",
+                            subtitle: model.loginItem == .requiresApproval ? "Approve in Login Items" : nil) {
+                    Toggle("", isOn: loginBinding).labelsHidden().toggleStyle(.switch)
+                }
             }
         }
     }
@@ -253,63 +301,34 @@ private struct ActionBar: View {
     var closeAndRun: (@escaping () -> Void) -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
-            ActionButton("Tickers…", systemImage: "chart.line.uptrend.xyaxis") { closeAndRun(model.onOpenTickerEditor) }
-            ActionButton("Settings…", systemImage: "gearshape") { closeAndRun(model.onOpenSettings) }
-            ActionButton("Quit Beacon", systemImage: "power", tint: .red) { closeAndRun(model.onQuit) }
-        }
-    }
-}
-
-// MARK: - Shared chrome
-
-private struct Banner: View {
-    let text: String
-    var body: some View {
-        Label(text, systemImage: "exclamationmark.triangle.fill")
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(11)
-            .background(.red, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-}
-
-private struct LinkButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-    init(_ title: String, systemImage: String, action: @escaping () -> Void) {
-        self.title = title; self.systemImage = systemImage; self.action = action
-    }
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage).font(.system(size: 11, weight: .medium))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.blue)
-    }
-}
-
-private struct ActionButton: View {
-    let title: String
-    let systemImage: String
-    var tint: Color = .primary
-    let action: () -> Void
-    init(_ title: String, systemImage: String, tint: Color = .primary, action: @escaping () -> Void) {
-        self.title = title; self.systemImage = systemImage; self.tint = tint; self.action = action
-    }
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: systemImage).font(.system(size: 16)).foregroundStyle(tint)
-                Text(title).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+        HStack(spacing: HubSpace.s) {
+            actionItem(icon: "chart.line.uptrend.xyaxis", label: "Tickers…") {
+                closeAndRun(model.onOpenTickerEditor)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 11)
-            .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            actionItem(icon: "gearshape", label: "Settings…") {
+                closeAndRun(model.onOpenSettings)
+            }
+            actionItem(icon: "power", label: "Quit Beacon", tint: HubColor.stateError) {
+                closeAndRun(model.onQuit)
+            }
         }
-        .buttonStyle(.plain)
+    }
+
+    // `ActionButton` -> `IconButton` (plan WS-6): `IconButton`'s `label` parameter is non-optional, which
+    // is what makes "the button is labelled" structural rather than something a call site can skip. The
+    // caption below is additive -- it keeps the row's three actions visually named, exactly as they are
+    // today -- and is hidden from the accessibility tree so VoiceOver reads `IconButton`'s own label once,
+    // not the icon and the caption both. `IconButton` has no tint/state parameter, so `tint` here only
+    // reaches the caption text -- the icon itself is always `ink.secondary` (see report: shared-layer gap).
+    private func actionItem(icon: String, label: String, tint: Color = HubColor.inkSecondary,
+                             action: @escaping () -> Void) -> some View {
+        VStack(spacing: HubSpace.xs) {
+            IconButton(systemImage: icon, label: label, action: action)
+            Text(label).font(HubType.caption).foregroundStyle(tint).lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -331,5 +350,25 @@ private struct ActionButton: View {
         ProviderToggle(id: "codex", label: "Codex", supportsUsage: true, supportsBuddy: false, usageOn: true, buddyOn: true),
     ]
     return HubPanel(model: m, closeAndRun: { $0() })
+}
+
+#Preview("Dark") {
+    let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
+    m.link = .connected("Beacon-8428")
+    m.lastSync = Date(timeIntervalSince1970: 1_733_800_000)
+    m.usage = Usage(providers: [
+        UsageEntry(id: "claude", label: "CLAUDE",
+                   h5: UsageWindow(pct: 2, reset: 1_733_820_000),
+                   d7: UsageWindow(pct: 0, reset: 1_734_200_000)),
+        UsageEntry(id: "codex", label: "CODEX",
+                   h5: UsageWindow(pct: 1, reset: 1_733_821_000),
+                   d7: UsageWindow(pct: 93, reset: 1_734_300_000), stale: true),
+    ])
+    m.providers = [
+        ProviderToggle(id: "claude", label: "Claude", supportsUsage: true, supportsBuddy: true, usageOn: true, buddyOn: true),
+        ProviderToggle(id: "codex", label: "Codex", supportsUsage: true, supportsBuddy: false, usageOn: true, buddyOn: true),
+    ]
+    return HubPanel(model: m, closeAndRun: { $0() })
+        .preferredColorScheme(.dark)
 }
 #endif
