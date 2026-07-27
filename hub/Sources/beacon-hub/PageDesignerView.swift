@@ -2,29 +2,42 @@ import SwiftUI
 import AppKit
 import BeaconHubKit
 
-// The device's page set, laid out the way the device lays it out: a horizontal run of panels you scroll
-// through, each one enable/disable-able and reorderable in place. Replaces the checkbox list that lived
-// in Settings.
+// The device's page set, laid out as composition (design §3.2, plan §6): an ordered carousel of what's
+// ON the Beacon up top, the full catalog as a grid below it, a right-hand inspector for the selected
+// page's own options -- and, when Home is selected, the six-slot complication editor.
 //
-// Editing STAGES. Applying restarts the Beacon (~5 s), so "Save & push" is one deliberate action rather
-// than a push per checkbox; the button is live only when the list actually differs from what the device
-// is running.
+// Editing STAGES for pages (applying restarts the Beacon, ~5 s) and for complications (applying is live,
+// no restart) independently, but one "Save & push" button commits both: complications first, pages
+// second (design §7's push order -- so if the page push restarts the device, the complication blob is
+// already persisted and the device boots correct). The footer shows a line per dirty channel so neither
+// verb is silently folded into the other (design §10.3).
 struct PageDesignerView: View {
     @ObservedObject var model: HubViewModel
     @State private var selection: String?
+    @State private var targetedCardIndex: Int?
 
-    private let cardW: CGFloat = 250
+    private let cardW: CGFloat = 150
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            carousel
+            enabledCarousel
+            Divider()
+            HStack(spacing: 0) {
+                availableGrid
+                Divider()
+                inspector
+            }
             Divider()
             footer
         }
-        .frame(minWidth: 720, minHeight: 560)
-        .onAppear { if selection == nil { selection = model.pageRows.first?.id } }
+        .frame(minWidth: 780, minHeight: 620)
+        .onAppear {
+            if selection == nil {
+                selection = model.pageRows.first(where: \.enabled)?.id ?? model.pageRows.first?.id
+            }
+        }
     }
 
     // --- header ---
@@ -32,12 +45,12 @@ struct PageDesignerView: View {
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Device pages").font(.system(size: 15, weight: .semibold))
-                Text("Scroll the pages as they appear on the Beacon. Toggle what shows, drag the arrows to reorder.")
+                Text("On the Beacon").font(.system(size: 15, weight: .semibold))
+                Text("Drag to reorder or add pages. Select a page to edit its options on the right.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
-            Text("\(model.enabledPageIDs.count) of \(model.pageRows.count)")
+            Text("\(model.enabledPageIDs.count) of \(model.pageRows.count) enabled")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .padding(.horizontal, 7).padding(.vertical, 3)
                 .background(Color.secondary.opacity(0.12), in: Capsule())
@@ -45,139 +58,304 @@ struct PageDesignerView: View {
         .padding(.horizontal, 18).padding(.vertical, 14)
     }
 
-    // --- carousel ---
+    // --- the enabled carousel: device order, draggable, reorderable ---
 
-    private var carousel: some View {
+    private var enabledRows: [PageRow] { model.pageRows.filter(\.enabled) }
+
+    private var enabledCarousel: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                cards
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 20)
+                HStack(spacing: 16) {
+                    ForEach(Array(enabledRows.enumerated()), id: \.element.id) { pair in
+                        carouselCard(index: pair.offset, row: pair.element)
+                    }
+                    appendDropZone
+                }
+                .padding(.horizontal, 18).padding(.vertical, 18)
             }
             // Single-parameter onChange: the package deploys to macOS 13, where the two-parameter
-            // overload does not exist. Keeps the moved card in view when reordering pushes it past the fold.
-            .onChange(of: model.pageRows.map(\.id)) { _ in
+            // overload does not exist.
+            .onChange(of: enabledRows.map(\.id)) { _ in
                 if let sel = selection { withAnimation { proxy.scrollTo(sel, anchor: .center) } }
             }
         }
+        .frame(height: 230)
         .background(Color(nsColor: .underPageBackgroundColor))
     }
 
-    private var cards: some View {
-        HStack(spacing: 18) {
-            ForEach(Array(model.pageRows.enumerated()), id: \.element.id) { pair in
-                card(index: pair.offset, row: pair.element)
+    private func carouselCard(index: Int, row: PageRow) -> some View {
+        CarouselCard(model: model, row: row, index: index, width: cardW, isSelected: selection == row.id,
+                     isTargeted: targetedCardIndex == index,
+                     onSelect: { selection = row.id },
+                     onMove: { delta in moveEnabled(id: row.id, delta: delta) },
+                     onDisable: { disablePage(row.id) })
+            .id(row.id)
+            .draggable(row.id)
+            .dropDestination(for: String.self) { items, _ in
+                guard let id = items.first else { return false }
+                placeOnCarousel(id: id, atEnabledIndex: index)
+                return true
+            } isTargeted: { targeted in
+                targetedCardIndex = targeted ? index : (targetedCardIndex == index ? nil : targetedCardIndex)
             }
+    }
+
+    private var appendDropZone: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .strokeBorder(Color.secondary.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+            .frame(width: 60, height: 150)
+            .overlay(Image(systemName: "plus").font(.system(size: 14)).foregroundStyle(.secondary))
+            .dropDestination(for: String.self) { items, _ in
+                guard let id = items.first else { return false }
+                placeOnCarousel(id: id, atEnabledIndex: nil)
+                return true
+            }
+    }
+
+    // --- the available grid: the full catalog, greyed where already enabled ---
+
+    private var availableGrid: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("AVAILABLE").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 10)], spacing: 10) {
+                    ForEach(model.pageRows) { row in
+                        availableTile(row)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(width: 300)
+        .dropDestination(for: String.self) { items, _ in
+            guard let id = items.first else { return false }
+            disablePage(id)
+            return true
         }
     }
 
-    private func card(index: Int, row: PageRow) -> some View {
-        PageCard(model: model, row: row, index: index, width: cardW, isSelected: selection == row.id)
-            .id(row.id)
-            .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { selection = row.id } }
+    private func availableTile(_ row: PageRow) -> some View {
+        AvailableTile(row: row, isSelected: selection == row.id)
+            .onTapGesture {
+                selection = row.id
+                if !row.enabled { placeOnCarousel(id: row.id, atEnabledIndex: nil) }
+            }
+            .draggable(row.id)
     }
 
-    // --- footer ---
+    // --- inspector ---
+
+    @ViewBuilder private var inspector: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if let id = selection, let row = model.pageRows.first(where: { $0.id == id }) {
+                inspectorHeader(row)
+                Divider()
+                if row.id == CompLimits.homeFace {
+                    ComplicationEditorView(model: model)
+                } else {
+                    PageOptions(model: model, row: row)
+                }
+                Spacer(minLength: 0)
+            } else {
+                Spacer()
+                Text("Select a page").font(.system(size: 12)).foregroundStyle(.secondary)
+                Spacer()
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func inspectorHeader(_ row: PageRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(row.title).font(.system(size: 13, weight: .semibold))
+                if row.pinned {
+                    Text("always on").font(.system(size: 9)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                }
+                if !row.enabled {
+                    Text("hidden").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Color.black.opacity(0.55), in: Capsule())
+                }
+            }
+            Text(row.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
+
+    // --- footer: two independent staging channels, one commit button (design §10.3, plan §13 item 4) ---
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            statusIcon
-            Text(statusText).font(.system(size: 11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) { footerLines }
             Spacer()
-            if model.pagesDirty {
-                DeckButton(title: "Revert") { model.onRevertPages() }
+            if model.pagesDirty || model.compsDirty {
+                DeckButton(title: "Revert") { revertAll() }
             }
-            DeckButton(title: "Save & push") { model.onApplyPages(model.enabledPageIDs, model.enabledPageOpts) }
-                .disabled(!model.pagesDirty)
-                .opacity(model.pagesDirty ? 1 : 0.4)
+            DeckButton(title: "Save & push") { saveAll() }
+                .disabled(!(model.pagesDirty || model.compsDirty))
+                .opacity((model.pagesDirty || model.compsDirty) ? 1 : 0.4)
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
     }
 
-    @ViewBuilder private var statusIcon: some View {
-        if model.pageSync != nil {
-            Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11)).foregroundStyle(.secondary)
-        } else if model.pagesDirty {
-            Circle().fill(Color.orange).frame(width: 6, height: 6)
-        } else {
-            Image(systemName: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(.green)
+    @ViewBuilder private var footerLines: some View {
+        if pagesLine == nil && compsLine == nil {
+            statusLine("The Beacon is running this configuration.", dirty: false)
+        }
+        if let pagesLine { statusLine(pagesLine, dirty: model.pagesDirty && model.pageSync == nil) }
+        if let compsLine { statusLine(compsLine, dirty: model.compsDirty && model.compSync == nil) }
+    }
+
+    // A live sync message (post-action confirmation, e.g. "Sent…"/"Saved…") always wins over the dirty
+    // preview text for its own channel -- mirrors the single-channel footer this replaces.
+    private var pagesLine: String? {
+        if let s = model.pageSync { return s }
+        if model.pagesDirty { return "Pages changed \u{00B7} the Beacon restarts (~5 s)." }
+        return nil
+    }
+    private var compsLine: String? {
+        if let s = model.compSync { return s }
+        if model.compsDirty { return "Complications updated \u{00B7} applies immediately." }
+        return nil
+    }
+
+    private func statusLine(_ text: String, dirty: Bool) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(dirty ? Color.orange : Color.clear).frame(width: 6, height: 6)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var statusText: String {
-        if let s = model.pageSync { return s }
-        if model.pagesDirty { return "Unsaved changes. The Beacon restarts when you push (about 5 seconds)." }
-        return "The Beacon is running this page set."
+    // Comps first, pages second (design §7 / plan §13 item 4): the cheap non-restarting push lands
+    // before the one that restarts the device, so if the page push reboots it, the complication blob is
+    // already persisted and the device boots showing the right assignment.
+    private func saveAll() {
+        if model.compsDirty { model.onApplyComps(model.compSlots) }
+        if model.pagesDirty { model.onApplyPages(model.enabledPageIDs, model.enabledPageOpts) }
+    }
+
+    private func revertAll() {
+        model.onRevertComps()
+        model.onRevertPages()
+    }
+
+    // --- page mutations (mirrors the array-level move(_:) the old carousel used; not pure-kit material --
+    // BeaconHubKit.ComplicationEditor owns the RULES that actually need host-testing, per the brief) ---
+
+    /// Enable `id` (if it wasn't already) and move it to `targetIndex` among the ENABLED subset (nil =
+    /// append at the end). `targetIndex` is a position in the enabled list AS CURRENTLY DISPLAYED -- i.e.
+    /// it may still include the dragged row itself, when this is a reorder rather than a fresh enable.
+    /// Resolving it to a stable id BEFORE removing anything avoids an off-by-one: removing the dragged
+    /// row first would shift every subsequent index down by one, corrupting a numeric target index.
+    /// Disabled rows elsewhere in `model.pageRows` keep their relative position -- they don't appear in
+    /// the enabled-filtered carousel, so where they sit in the backing array doesn't matter beyond
+    /// preserving `enabledPageIDs`'s order for the rows that DO show.
+    private func placeOnCarousel(id: String, atEnabledIndex targetIndex: Int?) {
+        guard let sourceIndex = model.pageRows.firstIndex(where: { $0.id == id }) else { return }
+        let enabledBefore = model.pageRows.filter(\.enabled)
+        let targetID: String? = targetIndex.flatMap { enabledBefore.indices.contains($0) ? enabledBefore[$0].id : nil }
+
+        var row = model.pageRows[sourceIndex]
+        row.enabled = true
+        model.pageRows.remove(at: sourceIndex)
+
+        let insertion: Int
+        if let targetID, targetID == id {
+            insertion = min(sourceIndex, model.pageRows.count)   // dropped on itself: restore its own spot
+        } else if let targetID, let idx = model.pageRows.firstIndex(where: { $0.id == targetID }) {
+            insertion = idx
+        } else {
+            insertion = model.pageRows.count
+        }
+        model.pageRows.insert(row, at: insertion)
+        model.pageSync = nil
+        selection = id
+    }
+
+    private func disablePage(_ id: String) {
+        guard let i = model.pageRows.firstIndex(where: { $0.id == id }), !model.pageRows[i].pinned else { return }
+        model.pageRows[i].enabled = false
+        model.pageSync = nil
+    }
+
+    /// The chevron buttons' path: swap `id` with its enabled-subset neighbour. Kept as the keyboard/
+    /// accessibility equivalent to dragging (design §3.3) -- drag-and-drop with no non-pointer equivalent
+    /// is a regression.
+    private func moveEnabled(id: String, delta: Int) {
+        let ids = enabledRows.map(\.id)
+        guard let idx = ids.firstIndex(of: id) else { return }
+        let target = idx + delta
+        guard ids.indices.contains(target) else { return }
+        guard let a = model.pageRows.firstIndex(where: { $0.id == id }),
+              let b = model.pageRows.firstIndex(where: { $0.id == ids[target] }) else { return }
+        withAnimation(.easeInOut(duration: 0.18)) { model.pageRows.swapAt(a, b) }
+        model.pageSync = nil
     }
 }
 
-// One page: its panel preview, name, enable switch and reorder arrows.
-private struct PageCard: View {
+// One enabled page: its panel preview, name, and reorder/remove controls. `settings` is pinned (no
+// remove affordance, no drag-out) -- `PageLimits.alwaysID` already encodes this and the device
+// force-appends it regardless, so showing it as removable would be a lie.
+private struct CarouselCard: View {
     @ObservedObject var model: HubViewModel
     let row: PageRow
     let index: Int
     let width: CGFloat
     let isSelected: Bool
+    let isTargeted: Bool
+    let onSelect: () -> Void
+    let onMove: (Int) -> Void
+    let onDisable: () -> Void
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             ZStack(alignment: .topTrailing) {
                 DevicePreview(pageID: row.id, model: model, size: width - 30)
-                    .saturation(row.enabled ? 1 : 0)
-                    .opacity(row.enabled ? 1 : 0.32)
-                if !row.enabled {
-                    Text("hidden").font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.black.opacity(0.65), in: Capsule())
-                        .padding(8)
+                if !row.pinned {
+                    Button(action: onDisable) {
+                        Image(systemName: "xmark.circle.fill").font(.system(size: 15))
+                            .foregroundStyle(.white, Color.black.opacity(0.55))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(6)
+                    .help("Remove from the Beacon")
                 }
             }
             .padding(.top, 4)
 
-            HStack(spacing: 6) {
-                Text(row.title).font(.system(size: 13, weight: .semibold))
+            HStack(spacing: 5) {
+                Text(row.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 if row.pinned {
-                    Text("always on").font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
+                    Text("always on").font(.system(size: 8)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
                         .background(Color.secondary.opacity(0.14), in: Capsule())
                 }
             }
-            Text(row.detail).font(.system(size: 10)).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).lineLimit(2)
-                .frame(height: 26, alignment: .top)
 
-            PageOptions(model: model, row: row)
-                .padding(.horizontal, 10)
-
-            HStack(spacing: 8) {
-                arrow("chevron.left", enabled: index > 0) { move(-1) }
-                Toggle("", isOn: Binding(
-                    get: { row.enabled },
-                    set: { on in
-                        guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
-                        model.pageRows[i].enabled = on
-                        model.pageSync = nil
-                    }))
-                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
-                    .disabled(row.pinned)
-                    .help(row.pinned ? "The Beacon always keeps Settings reachable" : "")
-                arrow("chevron.right", enabled: index < model.pageRows.count - 1) { move(1) }
+            HStack(spacing: 6) {
+                arrow("chevron.left", enabled: index > 0) { onMove(-1) }
+                arrow("chevron.right", enabled: true) { onMove(1) }
             }
             .padding(.bottom, 4)
         }
         .frame(width: width)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.18),
-                              lineWidth: isSelected ? 2 : 1)
+                .strokeBorder(borderColor, lineWidth: (isSelected || isTargeted) ? 2 : 1)
         )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+    }
+
+    private var borderColor: Color {
+        if isTargeted { return Color.accentColor }
+        if isSelected { return Color.accentColor.opacity(0.7) }
+        return Color.secondary.opacity(0.18)
     }
 
     private func arrow(_ name: String, enabled: Bool, action: @escaping () -> Void) -> some View {
@@ -186,17 +364,41 @@ private struct PageCard: View {
         }
         .buttonStyle(.borderless).disabled(!enabled).opacity(enabled ? 0.75 : 0.2)
     }
+}
 
-    private func move(_ delta: Int) {
-        let to = index + delta
-        guard model.pageRows.indices.contains(index), model.pageRows.indices.contains(to) else { return }
-        withAnimation(.easeInOut(duration: 0.18)) { model.pageRows.swapAt(index, to) }
-        model.pageSync = nil
+// One catalog entry in the "AVAILABLE" grid: greyed + marked when already on the Beacon (design §3.2).
+// Tapping a disabled tile enables it (appends to the end of the carousel) -- the accessible/no-drag
+// equivalent of dragging it up. Tapping an already-enabled tile just selects it in the inspector.
+private struct AvailableTile: View {
+    let row: PageRow
+    let isSelected: Bool
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(row.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            Text(row.detail).font(.system(size: 9)).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center).lineLimit(2)
+            if row.enabled {
+                Text("on the Beacon").font(.system(size: 8, weight: .semibold)).foregroundStyle(.green)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10).padding(.horizontal, 6)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(isSelected ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.18),
+                              lineWidth: isSelected ? 2 : 1)
+        )
+        .opacity(row.enabled ? 0.55 : 1)
+        .contentShape(Rectangle())
     }
 }
 
-// Per-page settings. Only the chart has any today; the rest say so plainly rather than showing an empty
-// well that reads like something failed to load.
+// Per-page settings shown in the inspector. Only chart/sonos/agents have anything today; everything else
+// (including pinned `settings`) says so plainly rather than showing an empty well that reads like
+// something failed to load. `home` never reaches this view -- PageDesignerView routes it straight to
+// ComplicationEditorView instead.
 private struct PageOptions: View {
     @ObservedObject var model: HubViewModel
     let row: PageRow
@@ -220,9 +422,9 @@ private struct PageOptions: View {
         Group {
             if row.id == "chart" { chartInstrumentButton }
             else if row.id == "sonos" { sonosRoomButton }
+            else if row.id == "agents" { AgentProviderRows(model: model) }
             else { none }
         }
-        .frame(height: 24)
         .onAppear { if row.id == "sonos" { currentRoom = model.onLoadSonosRoom() ?? "" } }
         // PageDesignerWindowController builds this window once and reuses it across opens (same as
         // SettingsWindowController), so onAppear above only ever fires the first time. Nothing else in
@@ -236,7 +438,7 @@ private struct PageOptions: View {
     }
 
     private var none: some View {
-        Text("No options").font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
+        Text("No options").font(.system(size: 11)).foregroundStyle(.secondary.opacity(0.6))
     }
 
     // --- Sonos room ---
@@ -527,6 +729,86 @@ private struct InstrumentRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// Projected (not copied) provider rows for the Agents inspector (design §3.1): bound to the SAME
+// model.providers / model.onInstallProviderHooks / model.onSetProviderUsage / model.onSetProviderBuddy
+// the Sources tab renders. Coding-buddy-on holds real tool calls on your Mac whether or not any page
+// shows them, so hiding the Agents page must not read as disarming it -- the honesty line below says so.
+// (A visually distinct, file-local rendering of the same store/intents: SettingsPanel.swift's ProviderRow
+// is `private` to that file, and it is off-limits to edit for this workstream.)
+private struct AgentProviderRows: View {
+    @ObservedObject var model: HubViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(model.providers.enumerated()), id: \.element.id) { pair in
+                if pair.offset > 0 { Divider() }
+                AgentProviderRow(model: model, provider: pair.element)
+            }
+            Text("Also applies while this page is hidden.")
+                .font(.system(size: 9)).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AgentProviderRow: View {
+    @ObservedObject var model: HubViewModel
+    let provider: ProviderToggle
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(provider.label).font(.system(size: 11, weight: .medium))
+                Spacer()
+                setupChip
+            }
+            HStack(spacing: 16) {
+                toggleRow("Usage", supported: provider.supportsUsage, isOn: usageBinding)
+                toggleRow("Coding buddy", supported: provider.supportsBuddy, isOn: buddyBinding)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder private var setupChip: some View {
+        switch (provider.installing, provider.hooks) {
+        case (true, _):
+            Text("Setting up\u{2026}").font(.system(size: 10)).foregroundStyle(.secondary)
+        case (false, .ok):
+            Text("Ready").font(.system(size: 10, weight: .medium)).foregroundStyle(.green)
+        case (false, .checking):
+            EmptyView()
+        case (false, .bad):
+            DeckButton(title: "Set up") { model.onInstallProviderHooks(provider.id) }
+        }
+    }
+
+    private func toggleRow(_ label: String, supported: Bool, isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 5) {
+            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
+            if supported {
+                Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.mini)
+            } else {
+                Text("\u{2014}").font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var usageBinding: Binding<Bool> {
+        Binding(get: { model.providers.first { $0.id == provider.id }?.usageOn ?? true },
+                set: { on in
+                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].usageOn = on }
+                    model.onSetProviderUsage(provider.id, on)
+                })
+    }
+    private var buddyBinding: Binding<Bool> {
+        Binding(get: { model.providers.first { $0.id == provider.id }?.buddyOn ?? true },
+                set: { on in
+                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].buddyOn = on }
+                    model.onSetProviderBuddy(provider.id, on)
+                })
     }
 }
 

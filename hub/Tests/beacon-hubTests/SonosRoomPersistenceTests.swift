@@ -64,4 +64,23 @@ final class SonosRoomPersistenceTests: XCTestCase {
         XCTAssertEqual(roomStore.selectedRoom, "Master Bathroom Speaker",
                        "re-enabling must not disturb the room either -- it never lived in PageConfigStore")
     }
+
+    // The two tests above pin the STORAGE-level guarantee by hand-constructing the opts a disabled Sonos
+    // page would produce. This one exercises the real computed property (HubViewModel.enabledPageOpts)
+    // that AppDelegate.applyPageEdit is actually fed from, so WS-3's Pages-tab rework (which now reads
+    // and writes `model.pageRows` directly for drag-and-drop) can't quietly regress the filter itself.
+    // HubViewModel has no CoreBluetooth dependency at init (unlike AppDelegate), so it is safe to
+    // construct directly here.
+    @MainActor
+    func testHubViewModelEnabledPageOptsExcludesADisabledSonosPagesRoom() {
+        let model = HubViewModel()
+        model.pageRows = [
+            PageRow(id: "sonos", title: "Sonos", detail: "", pinned: false, enabled: false,
+                    opts: ["room": "Master Bathroom Speaker"]),
+            PageRow(id: "chart", title: "Chart", detail: "", pinned: false, enabled: true),
+        ]
+        XCTAssertNil(model.enabledPageOpts["sonos"],
+                     "a disabled Sonos page's opts must never reach AppDelegate.applyPageEdit")
+        XCTAssertEqual(model.enabledPageIDs, ["chart"], "sanity: the disabled page is excluded from the id list too")
+    }
 }
