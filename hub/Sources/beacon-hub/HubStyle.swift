@@ -92,10 +92,13 @@ enum HubDynamic {
     }
 }
 
-/// Fifteen colour roles (design SS2.3). System colours wherever one exists; the four `fill.*` roles are
-/// the hub's own dynamic tints, built with `HubDynamic` rather than a fixed opacity applied to both
-/// appearances (a fixed opacity that reads correctly over a light window is nearly invisible over a dark
-/// one -- design SS7 traces this back to the "one opacity for both appearances" bug).
+/// Fifteen colour roles from design SS2.3, plus one the six-workstream conversion found missing:
+/// `inkOnAccent` (below), for content on a FILLED accent surface -- the design document's own count is
+/// documentation of what shipped on 2026-07-27, not a ceiling on the vocabulary. System colours wherever
+/// one exists; the four `fill.*` roles are the hub's own dynamic tints, built with `HubDynamic` rather
+/// than a fixed opacity applied to both appearances (a fixed opacity that reads correctly over a light
+/// window is nearly invisible over a dark one -- design SS7 traces this back to the "one opacity for both
+/// appearances" bug).
 enum HubColor {
     // Backgrounds.
     static let surfaceWindow = Color(nsColor: .windowBackgroundColor)
@@ -120,6 +123,16 @@ enum HubColor {
     /// accessible-contrast floor (design SS2.3, SS8.1; pinned by `HubContrastTests`). Never route content
     /// through this token; use `inkSecondary`.
     static let inkTertiary = Color(nsColor: .tertiaryLabelColor)
+    /// The foreground for a glyph or word drawn on a FILLED (solid, not tinted) `accent` surface -- a
+    /// device badge, a solid-accent pill -- outside a `.borderedProminent` button, which already gets a
+    /// correct on-accent foreground from AppKit itself (design SS7: "use `Color.white` only via
+    /// `.foregroundStyle(.white)` on `.borderedProminent`"). `Color.white` is banned for this anywhere
+    /// else in hub chrome because it is wrong the moment the user's accent is yellow or graphite -- the
+    /// same failure mode design SS7 names. `NSColor.alternateSelectedControlTextColor` is AppKit's own
+    /// system pairing for "content on top of an accent-tinted highlight" (an `NSTableView` selected row is
+    /// the canonical use), so it already resolves per-accent and per-appearance the way every other token
+    /// here does, with no hand-picked white/black branch to keep in sync as accent choices change.
+    static let inkOnAccent = Color(nsColor: .alternateSelectedControlTextColor)
 
     // Lines and accent.
     static let lineHairline = Color(nsColor: .separatorColor)

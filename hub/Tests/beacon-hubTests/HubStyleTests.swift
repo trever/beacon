@@ -110,6 +110,35 @@ final class HubStyleTests: XCTestCase {
         return [("surface.content", contentBG), ("fill.card", cardOverWindow)]
     }
 
+    // `ink.onAccent` (shared-layer gap #4) exists specifically to replace a hardcoded `Color.white` glyph
+    // with something that stays legible against the user's OWN accent colour, in both appearances --
+    // that is the entire justification for adding the token instead of leaving the workaround in place.
+    // `NSColor.controlAccentColor` in a plain test run resolves to whatever accent this machine has
+    // selected (system default: blue), so this measures the real pairing rather than the design
+    // document's own "documentation, not for typing into code" hex column.
+    func testInkOnAccentClearsIconContrastOverAccentInBothAppearances() {
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let accentBG = HubColorTestSupport.resolve(HubColor.accent, appearance: appearance)
+            let onAccent = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.inkOnAccent, appearance: appearance), over: accentBG)
+            // 3:1 is design SS8.1's own floor for "icons that carry meaning" -- the badge glyph this token
+            // was added for is exactly that, not `type.body`-or-smaller text, so 3:1 is the right bar here,
+            // not 4.5:1.
+            XCTAssertGreaterThanOrEqual(HubColorTestSupport.contrastRatio(onAccent, accentBG), 3.0,
+                "ink.onAccent over accent under \(appearance.rawValue)")
+        }
+    }
+
+    // `ink.onAccent` must also be genuinely distinct from the plain ink roles -- a token that just aliases
+    // `ink.primary` would not be testing anything about the accent pairing at all.
+    func testInkOnAccentDiffersFromInkPrimaryAndInkSecondary() {
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let onAccent = HubColorTestSupport.resolve(HubColor.inkOnAccent, appearance: appearance)
+            let primary = HubColorTestSupport.resolve(HubColor.inkPrimary, appearance: appearance)
+            XCTAssertNotEqual(onAccent, primary, "ink.onAccent must not just alias ink.primary")
+        }
+    }
+
     // design SS2.3: ink.tertiary must stay BELOW the accessible floor -- pinning the known-bad value so
     // nobody quietly promotes it to carrying content later (it is decorative-only by contract).
     func testInkTertiaryStaysBelowTheAccessibleContrastFloor() {

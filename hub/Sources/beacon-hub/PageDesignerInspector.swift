@@ -341,75 +341,20 @@ struct PageOptions: View {
     // shows them, so hiding the Agents page must not read as disarming it -- the honesty line below says
     // so. ---
 
+    // `ProviderRowGroup` (SourcesTab.swift): the SAME composition the Sources tab renders off the SAME
+    // `model.providers` store (design SS1.2/SS3.1's "ten ways to draw a row" / "the worst instance is not
+    // drift, it is divergence"). Used to be two verbatim-duplicated private method groups, one per file --
+    // now one internal type both reach.
     @ViewBuilder private var agentsSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(model.providers.enumerated()), id: \.element.id) { pair in
                 if pair.offset > 0 { RowSeparator(hasLeadingIcon: false) }
-                providerRows(pair.element)
+                ProviderRowGroup(model: model, provider: pair.element)
             }
             Text("Also applies while this page is hidden.")
                 .font(HubType.caption).foregroundStyle(HubColor.inkSecondary)
                 .padding(.horizontal, HubSpace.m).padding(.top, HubSpace.xs)
         }
-    }
-
-    /// One provider's status row plus its two independent toggle rows -- `SettingsRow` carries exactly one
-    /// trailing control (design SS3.2: "a row that needs two is two rows"), so Usage and Coding buddy are
-    /// two separate rows rather than one crowded one.
-    @ViewBuilder private func providerRows(_ provider: ProviderToggle) -> some View {
-        StatusRow(state: providerState(provider), title: provider.label, hint: providerHint(provider)) {
-            providerSetupTrailing(provider)
-        }
-        SettingsRow(title: "Usage") {
-            providerToggle(supported: provider.supportsUsage, isOn: usageBinding(provider))
-        }
-        SettingsRow(title: "Coding buddy") {
-            providerToggle(supported: provider.supportsBuddy, isOn: buddyBinding(provider))
-        }
-    }
-
-    private func providerState(_ provider: ProviderToggle) -> HubState {
-        provider.installing ? .checking : HubState(provider.hooks)
-    }
-
-    private func providerHint(_ provider: ProviderToggle) -> String? {
-        if provider.installing { return "Setting up\u{2026}" }
-        switch provider.hooks {
-        case .ok:       return "Ready"
-        case .checking: return nil
-        case .bad:      return "Needs setup"
-        }
-    }
-
-    @ViewBuilder private func providerSetupTrailing(_ provider: ProviderToggle) -> some View {
-        if !provider.installing && provider.hooks == .bad {
-            HubButton(title: "Set up", kind: .secondary) { model.onInstallProviderHooks(provider.id) }
-        }
-    }
-
-    // ink.secondary, not ink.tertiary (design SS2.3: "ink.tertiary may not carry content... the
-    // unsupported — markers... move to ink.secondary").
-    @ViewBuilder private func providerToggle(supported: Bool, isOn: Binding<Bool>) -> some View {
-        if supported {
-            Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch)
-        } else {
-            Text("\u{2014}").font(HubType.body).foregroundStyle(HubColor.inkSecondary)
-        }
-    }
-
-    private func usageBinding(_ provider: ProviderToggle) -> Binding<Bool> {
-        Binding(get: { model.providers.first { $0.id == provider.id }?.usageOn ?? true },
-                set: { on in
-                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].usageOn = on }
-                    model.onSetProviderUsage(provider.id, on)
-                })
-    }
-    private func buddyBinding(_ provider: ProviderToggle) -> Binding<Bool> {
-        Binding(get: { model.providers.first { $0.id == provider.id }?.buddyOn ?? true },
-                set: { on in
-                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].buddyOn = on }
-                    model.onSetProviderBuddy(provider.id, on)
-                })
     }
 }
 

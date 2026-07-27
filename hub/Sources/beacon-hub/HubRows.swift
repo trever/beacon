@@ -158,6 +158,60 @@ struct StatusRow<Trailing: View>: View {
     }
 }
 
+/// The compact/bare sibling of `StatusRow` (shared-layer gap #1): the same `HubState` glyph vocabulary,
+/// with no row chrome -- no `space.m` horizontal inset, no `minHeight`, no trailing slot. `StatusRow`'s
+/// own inset assumes it sits directly in a zero-padding row-stack card (design SS3.2); a status line
+/// embedded in a card that mixes fields, buttons and text (`SonosSettingsView`'s section status) would
+/// double that inset against the card's own `space.l` padding, and a header-level indicator
+/// (`TickerEditorView`'s sync badge) needs no row at all. Two call sites hit this independently and both
+/// worked around it by hand-rolling the same `Image(systemName: state.glyph) + Text` pair straight from
+/// `HubState`, which is the right instinct (design SS3.3's one vocabulary, kept) short of the component
+/// itself existing.
+///
+/// `.detail` is `StatusRow`'s own content verbatim (icon + `type.body` title, optional `type.secondary`
+/// detail line beneath) for a status line that carries real weight in its card. `.compact` is a single
+/// `type.secondary` line throughout -- sized to sit beside a `type.pane` section header without competing
+/// with it, the shape a small trailing sync/connection badge needs.
+struct StatusLine: View {
+    enum Style: Equatable { case detail, compact }
+
+    let state: HubState
+    let title: String
+    let detail: String?
+    let style: Style
+
+    init(state: HubState, title: String, detail: String? = nil, style: Style = .detail) {
+        self.state = state
+        self.title = title
+        self.detail = detail
+        self.style = style
+    }
+
+    var body: some View {
+        switch style {
+        case .detail:
+            HStack(alignment: detail == nil ? .center : .top, spacing: HubSpace.m) {
+                Image(systemName: state.glyph)
+                    .foregroundStyle(state.tint)
+                    .frame(width: HubControlMetrics.iconColumn)
+                VStack(alignment: .leading, spacing: HubSpace.xs) {
+                    Text(title).font(HubType.body).foregroundStyle(HubColor.inkPrimary)
+                    if let detail {
+                        Text(detail).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .compact:
+            HStack(spacing: HubSpace.xs) {
+                Image(systemName: state.glyph).foregroundStyle(state.tint)
+                Text(title).foregroundStyle(HubColor.inkSecondary)
+            }
+            .font(HubType.secondary)
+        }
+    }
+}
+
 /// A pickable row for popovers, menus and search results (design SS3.4). Every list row carries at least
 /// two fields where a second field genuinely exists in the underlying data -- a single-line row must be
 /// a fact about the data, not about who wrote the view.

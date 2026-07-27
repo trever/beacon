@@ -15,6 +15,14 @@ source is a Settings field defaulting to `trever/beacon`; the local-build path i
 `docs/plans/2026-07-27-home-complications-plan.md`, and anything under
 `firmware/src/ui/screens/views/home_editorial.cpp` that the complications track is editing.
 
+**Reordered behind Sonos album art (2026-07-27):** this plan was written when OTA was going to be
+built first. `docs/specs/2026-07-27-sonos-album-art-design.md` §0 now builds ahead of it and absorbs
+two things this plan originally scoped as its own: **`LanAssetServer`** (the plan's WS-2/WS-3 now
+*extend* it rather than create it — see WS-3 §"`LanAssetServer` is one component") and **prerequisite
+P-1** (`NSLocalNetworkUsageDescription`, now on album art's critical path — see Phase 0's P-1
+subsection, which is verification, not authorship). Album art's design is the more current read on
+both; where the two disagree in phrasing, album art wins and this plan has been reworded to match.
+
 ---
 
 ## 0. The ordering constraint that dominates this plan
@@ -43,7 +51,7 @@ Consequences baked into the wave order below:
 
 | Wave | ID | Workstream | Parallel? | Component | Branch |
 |---|---|---|---|---|---|
-| A | **Phase 0** | Prerequisites + shared substrate (P-1, P-2, wire schema, hardware checks, seams) | **No** — single owner, sequential | both | `feat/ota-phase0-substrate` |
+| A | **Phase 0** | Prerequisites + shared substrate (P-1 verify, P-2, wire schema, hardware checks, seams) | **No** — single owner, sequential | both | `feat/ota-phase0-substrate` |
 | B | **WS-1** | GPIO18 recovery hatch + Tier C, flashed and verified over USB | **No** — single owner, sequential | firmware | `feat/ota-recovery-hatch` |
 | C | **WS-2** | Device OTA client: LAN GET, streaming SHA-256, `Update`, Tier A gate, overlay | yes | firmware only | `feat/ota-device-client` |
 | C | **WS-3** | Hub `LanAssetServer` + release/local-build fetch + transfer orchestration | yes | hub (`AppDelegate` owner) | `feat/ota-lan-asset-server` |
@@ -60,9 +68,9 @@ touch the same declaration.
 
 | Path | Owner |
 |---|---|
-| `hub/Info.plist` | Phase 0 |
+| `hub/Info.plist` | Album art (Phase B) creates the `NSLocalNetworkUsageDescription` key; Phase 0 only verifies it landed — see P-1 below |
 | `.github/workflows/release-firmware.yml` | Phase 0 (one line: `FIRMWARE_VERSION`), then WS-5 (`SHA256SUMS`) |
-| `hub/CONTRACT.md` | Phase 0 |
+| `hub/CONTRACT.md` | Phase 0 (new block is **§A4**, not §A3 — §A3 was claimed by the complications track; see Phase 0's wire-layer section) |
 | `firmware/src/core/records.h`, `datastore.{h,cpp}`, `hub_proto.{h,cpp}` | Phase 0 |
 | `firmware/src/core/hub_task.cpp` | Phase 0 (D1 emit), WS-1 (`hatch` flip), WS-2 (`ota` dispatch) — all serialized |
 | `firmware/test/test_ota_proto/` | Phase 0 |
@@ -72,10 +80,11 @@ touch the same declaration.
 | `firmware/src/core/ota.{h,cpp}`, `ota_gate.{h,cpp}`, `ota_offer.{h,cpp}`, `ota_rollback.cpp`, `net_lan.{h,cpp}` | **WS-2** |
 | `firmware/src/ui/ota_overlay.{h,cpp}`, `firmware/test/test_ota_gate/`, `test_ota_offer/` | **WS-2** |
 | `firmware/platformio.ini` | WS-2 (wave C's only firmware workstream) |
-| `hub/Sources/beacon-hub/LanAssetServer.swift`, `FirmwareUpdateService.swift`, `LocalBuildSource.swift`, `AppDelegate.swift` | **WS-3** |
+| `hub/Sources/beacon-hub/LanAssetServer.swift` | Album art creates it; **WS-3 extends it** (do not re-create — see WS-3's `LanAssetServer` section) |
+| `hub/Sources/beacon-hub/FirmwareUpdateService.swift`, `LocalBuildSource.swift`, `AppDelegate.swift` | **WS-3** |
 | `hub/Sources/BeaconHubKit/ReleaseSource.swift` | **WS-3** |
-| `hub/Sources/beacon-hub/FirmwareSettingsView.swift`, `HubViewModel.swift`, `SettingsPanel.swift`, `MenubarController.swift` | Phase 0 creates, **WS-4** extends |
-| `docs/tech.md`, `docs/perf.md`, `docs/codemap.md`, `docs/recipes.md` | **WS-6** (except `recipes.md` §10, which WS-1 adds) |
+| `hub/Sources/beacon-hub/FirmwareSettingsView.swift`, `HubViewModel.swift`, `MenubarController.swift` | Phase 0 creates, **WS-4** extends. **`SettingsPanel.swift` no longer exists** (deleted by the sidebar rework) — see Phase 0's Files-to-touch section for where this actually lands now |
+| `docs/tech.md`, `docs/perf.md`, `docs/codemap.md`, `docs/recipes.md` | **WS-6** (except `recipes.md` §10, which WS-1 adds, and §12, which WS-6 itself adds — §11 is now "Add a Home complication") |
 
 ---
 
@@ -89,9 +98,18 @@ touch the same declaration.
   ```
   **Always pass `-e beacon`.** A bare `pio run` also builds `[env:native]`, which has no `main()` and
   reports `FAILED` — a red build that means nothing.
-  **Current floors: hub 362 tests, firmware 257 tests.** Never go below them. Each workstream states
-  its own new floor below; a workstream that adds tests but leaves the total unchanged has deleted
-  coverage somewhere and must explain it.
+  **Current floors (2026-07-27): hub 460 tests, firmware 295 tests, 0 deprecation warnings on a clean
+  build.** Never go below any of them. Each workstream states its own new floor below, computed as this
+  baseline plus its stated delta; a workstream that adds tests but leaves the total unchanged has
+  deleted coverage somewhere and must explain it, and a workstream that introduces a new deprecation
+  warning must fix it before claiming done, not defer it.
+  **These are today's numbers, and today is before album art has been built.** Because
+  `docs/specs/2026-07-27-sonos-album-art-design.md` now lands first (see the reordering note at the top
+  of this plan) and adds its own tests (`SonosArtRenderer`, the extended `LanAssetServer`, the P-1
+  verification), the actual floor by the time Phase 0 branches will be higher than 460/295. **Re-read
+  the real counts at branch time and use them as the base for the "+N new" deltas below** — the deltas
+  themselves (how many tests each workstream itself adds) are unaffected by the reorder except where a
+  workstream's scope shrank (Phase 0's P-1 piece, WS-3's `LanAssetServer` piece — both noted in place).
 - Run a single firmware suite with `~/.beacon-pio/bin/pio test -e native -f "*test_ota_hatch*"`.
 - **A new non-header firmware `.cpp` that host tests link must be added to `build_src_filter` under
   `[env:native]` in `firmware/platformio.ini`,** or the suite fails with an undefined symbol. This is
@@ -116,36 +134,61 @@ touch the same declaration.
 
 ### Goal
 
-Land the two verified prerequisites that silently break OTA if missed, the complete BLE wire layer
-(D1–D4, H1–H3) on both sides with tests and no behaviour, the seams that let the two hub workstreams
-run in parallel without touching the same file, and the two hardware measurements the design could
-not resolve without a schematic. Phase 0 has standalone value on its own: a "Device firmware
-v0.12.10" row in Settings and a release workflow whose version string is finally correct.
+Land the complete BLE wire layer (D1–D4, H1–H3) on both sides with tests and no behaviour, the seams
+that let the two hub workstreams run in parallel without touching the same file, the two hardware
+measurements the design could not resolve without a schematic, and **P-2** — the one prerequisite that
+is still this phase's to build. **P-1 is verified here, not authored here** (see the P-1 subsection
+below): `docs/specs/2026-07-27-sonos-album-art-design.md` Phase B now owns landing
+`NSLocalNetworkUsageDescription`, the Settings Local Network row, and the denied-path test, because
+album art needs the same TCC grant and gets there first. Phase 0 has standalone value on its own: a
+"Device firmware v0.12.10" row in Settings and a release workflow whose version string is finally
+correct.
 
 ### Files to touch
 
 Hub:
-- `hub/Info.plist` — add `NSLocalNetworkUsageDescription`.
-- `hub/Sources/beacon-hub/DeviceTab.swift` — a **Local Network** `StatusRow` in the existing
-  **Connection** section (`DeviceTab.swift:24`), beside Bluetooth and Device connected.
-  **(Corrected 2026-07-27.** This plan was written against the pre-four-tab layout and said
-  `SettingsPanel.swift:52-64`. The four-tab IA moved Connection to `DeviceTab.swift`; `SettingsPanel.swift`
-  is now 53 lines holding only `SectionHeader` and `StatusRow`, so that reference points past the end of
-  the file. Both of those shared components are further dissolved into the component layer by
-  `docs/specs/2026-07-27-hub-visual-system-design.md` Phase 1 — check which has landed before editing.)
+- `hub/Info.plist` — **verify** `NSLocalNetworkUsageDescription` is present; do not add a second key or
+  a duplicate entry. It is album art Phase B's deliverable (`docs/specs/2026-07-27-sonos-album-art-design.md`
+  §0), and by the time this phase branches, album art should already have merged it. If it is genuinely
+  missing — album art slipped, or shipped a differently-worded string — add it yourself using the
+  wording in the P-1 subsection below and flag the gap in the PR description; do not silently proceed
+  assuming someone else will notice.
+- `hub/Sources/beacon-hub/DeviceTab.swift` — **verify** a **Local Network** `StatusRow` exists in the
+  **Connection** section (`DeviceTab.swift:24`), beside Bluetooth and Device connected; add it only if
+  album art did not. **(Re-corrected 2026-07-27.** The previous correction here said `SettingsPanel.swift`
+  was "now 53 lines holding only `SectionHeader` and `StatusRow`" — that has since gone further:
+  **`SettingsPanel.swift` no longer exists at all** (deleted by the "visual system substrate" work, commit
+  `704d1d4`). `SectionHeader` and `StatusRow` now live in `hub/Sources/beacon-hub/HubRows.swift`; `Card`
+  and `HubButton` live in `hub/Sources/beacon-hub/HubSurfaces.swift`. This is settled, not "check which has
+  landed" — both files exist today and `DeviceTab.swift:24` is confirmed current.)
+  **Also verify, don't assume:** `DeviceTab.swift` already has a stub **Firmware** section (a
+  `firmwareSection` var, `DeviceTab.swift` MARK `// MARK: - Firmware`) showing "Not reported by this
+  firmware build" — landed by the sidebar rework in anticipation of this plan. Populate that existing
+  row from D1 rather than creating a second one.
 - `hub/Sources/beacon-hub/HubViewModel.swift` — `setupLocalNetwork: CheckState`, the
   `firmware: FirmwareUpdateState` published property, and the four closure seams below.
 - `hub/Sources/beacon-hub/FirmwareSettingsView.swift` — **new**. A `FirmwareSettingsSection(model:)`
-  view holding only the read-only **Device firmware** row for now. Model it on the existing
-  `SonosSettingsSection` in `SonosSettingsView.swift`; adding it to `SettingsPanel` costs exactly one
-  line, which is what keeps WS-4 out of `SettingsPanel.swift`.
+  view holding only the read-only **Device firmware** row for now, modeled on the existing
+  `SonosSettingsSection` in `SonosSettingsView.swift` (itself embedded into `SourcesTab.swift`, one
+  line). **Where this actually plugs in is unresolved and this plan does not resolve it — flag it,
+  don't guess:** `SettingsPanel.swift`, which the original text named as the one-line insertion point,
+  is gone. Two live signals point in different directions: `DeviceTab.swift` already carries a stub
+  `firmwareSection` (previous bullet) suggesting Firmware is content *within* the Device destination;
+  but `hub/Sources/beacon-hub/SettingsTabs.swift`'s own comments explicitly anticipate **a fifth sidebar
+  destination** — `SettingsTab` currently has four cases (`pages, sources, device, general`) and its
+  `shortcutKeys` array (`["1","2","3","4"]`) has room left for Cmd-5, captioned *"Firmware's Cmd-5
+  arrives with the OTA workstream."* Decide which shape this is against both files before writing
+  `FirmwareSettingsView.swift`, and say which you picked and why in the PR — this is the one structural
+  call in Phase 0's file list this reconciliation pass could not make for you.
 - `hub/Sources/BeaconHubKit/FirmwareUpdateState.swift` — **new**, pure value type.
 - `hub/Sources/BeaconHubKit/Protocol.swift` — `DeviceCommand` cases + the hub->device `ota` frame encoder.
 - `hub/Sources/beacon-hub/AppDelegate.swift` — route the new `DeviceCommand` cases into
   `model.firmware`. Nothing else.
 - `hub/Tests/BeaconHubKitTests/ProtocolTests.swift`, `hub/Tests/BeaconHubKitTests/FirmwareUpdateStateTests.swift` (**new**).
-- `hub/CONTRACT.md` — new **§A3** (`ota` frame) and additions to **§B** (`ota_ack`, `ota_go`,
-  `ota_stat`) and **§B3** (`report` `what:"device"`, including the `hatch` interlock).
+- `hub/CONTRACT.md` — new **§A4** (`ota` frame — **not §A3**; §A3 is now "Hub -> device complication
+  config", claimed by the complications track since this plan was written) and additions to **§B**
+  (`ota_ack`, `ota_go`, `ota_stat`) and **§B3** (`report` `what:"device"`, including the `hatch`
+  interlock).
 
 Firmware:
 - `firmware/src/core/records.h` — `ota_rec_t` + the frozen caps.
@@ -163,9 +206,9 @@ CI:
 ### Files NOT to touch
 
 `firmware/src/main.cpp` (WS-1 owns the `setup()` edit), anything named `ota_hatch*`, `ota_gate*`,
-`ota.{h,cpp}`, `net_lan*`, `ota_overlay*`, `LanAssetServer.swift`, `FirmwareUpdateService.swift`,
-`docs/tech.md`, `docs/codemap.md`, `docs/perf.md`, `docs/recipes.md`, and the complications-track
-files listed at the top of this plan.
+`ota.{h,cpp}`, `net_lan*`, `ota_overlay*`, `LanAssetServer.swift` (album art's — Phase 0 does not touch
+it; WS-3 later extends it), `FirmwareUpdateService.swift`, `docs/tech.md`, `docs/codemap.md`,
+`docs/perf.md`, `docs/recipes.md`, and the complications-track files listed at the top of this plan.
 
 ### What already exists vs what must be built
 
@@ -174,40 +217,70 @@ Exists:
   may be done**; repartitioning wipes NVS (WiFi creds, tickers, pages, theme, brightness) on exactly
   the devices OTA exists to serve.
 - `cmd:"report"` with `what:"tickers"`, emitted once per connection on the first inbound frame
-  (`hub_task.cpp:150`, `s_reported` latch-only-on-success). D1 rides the same emission point.
+  (`hub_task.cpp:187-189`, `s_reported` latch-only-on-success — **corrected 2026-07-27**, the file has
+  grown since this was written and the emission point has moved from the previously-cited line 150).
+  D1 rides the same emission point.
 - `DeviceCommand.parse` guards `(obj["what"] as? String) == "tickers"` and returns `nil` otherwise
-  (`Protocol.swift:370`), so today's hub already drops a `what:"device"` report harmlessly.
+  (`Protocol.swift:378`, **corrected 2026-07-27** from the previously-cited line 370), so today's hub
+  already drops a `what:"device"` report harmlessly.
+- **By the time this phase branches, `LanAssetServer.swift` and the P-1 pieces above should already
+  exist**, built by album art. Do not budget time to build them; budget time to read them and confirm
+  they do what this plan needs (see WS-3 for `LanAssetServer` and the P-1 subsection below for the
+  Local Network row).
 - The Info.plist is embedded into the binary via a linker `__info_plist` section
   (`hub/Package.swift:28-35`) **and** copied into the bundle (`hub/build-app.sh:127`). Both paths read
   the same file, so one edit covers both — but verify the built `.app` actually carries the key.
 
 Must be built: everything else in this section.
 
-### P-1 — `NSLocalNetworkUsageDescription`
+### P-1 — `NSLocalNetworkUsageDescription` (moved: verify, do not author)
 
-macOS 15+ gates local-network access behind TCC. Without the key the behaviour is a **silent
-denial**: the device's LAN GET presents as a hang with no diagnostic on either end.
+**This prerequisite is no longer Phase 0's to build.** `docs/specs/2026-07-27-sonos-album-art-design.md`
+§0 claims it: album art needs the exact same TCC grant for its own LAN serve, lands first now, and its
+Phase B is specified to deliver the `Info.plist` key, the Settings **Local Network** row, and the
+denied-path test as part of shipping `LanAssetServer`. Phase 0's job is to **verify all three landed**,
+not to write them:
 
-```xml
-<key>NSLocalNetworkUsageDescription</key>
-<string>Beacon Hub serves firmware updates to your Beacon device over your local network. The image
-never leaves your network and no data is sent anywhere else.</string>
-```
+1. `plutil -p .build/Beacon\ Hub.app/Contents/Info.plist | grep LocalNetwork` on a real release build —
+   confirm the key is present with *some* reasonable string. Do not require the exact wording below; it
+   was written before album art existed and album art's copy (about serving album art, not firmware) is
+   equally valid and should not be overwritten to re-center firmware:
+   ```xml
+   <key>NSLocalNetworkUsageDescription</key>
+   <string>Beacon Hub serves firmware updates to your Beacon device over your local network. The image
+   never leaves your network and no data is sent anywhere else.</string>
+   ```
+   If album art's string only mentions art, consider widening it to cover both use cases in the same PR
+   that first makes OTA actually serve a LAN transfer — but that is a WS-3-time decision, not Phase 0's.
+2. The Local Network `StatusRow` renders in the Settings Connection section (`DeviceTab.swift:24`) in
+   both granted and revoked states.
+3. A denied-path test exists somewhere in the hub suite (album art's or a prior one) — if none does,
+   Phase 0 must add it rather than assume it is covered.
 
-Add the Local Network row to the Settings **Connection** section, and **test the denied path, not
-only the granted one** (§0.3, risk 4).
+**If any of the three is missing when this phase actually branches, build the gap yourself** — do not
+block on album art merging; the interlock is `hasHatch`/device-side, not P-1, so nothing here blocks WS-1
+if P-1 truly slipped. Just do not duplicate work that already exists.
 
-> **Settled 2026-07-27 (§9 item 6) — implement exactly this and do not go hunting for an API.** macOS
-> exposes no public way to query Local Network TCC state, so the row cannot be a direct check like
-> Bluetooth's. The row is **outcome-derived** — `.checking` until a LAN transfer has been attempted,
-> `.ok` after any successful connection from the device, `.bad` after a connect that never produces
-> a peer, with the fix button opening
-> `x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork` (the same idiom
-> `SettingsLinks.swift` already uses for Bluetooth). The evidence that drives it arrives for free once
-> WS-2 lands the split `err` vocabulary (§9 item 11): `timeout` at 0% is the TCC-denial shape and
-> `conn_refused` is the firewall shape, so the row does not need its own probe. Denied-path test:
-> revoke Local Network for the hub in System Settings, run a transfer, and confirm the row goes `.bad`
-> with actionable text rather than the transfer hanging.
+> **Settled 2026-07-27 (§9 item 6) — the row's shape, unchanged by the reorder.** macOS exposes no
+> public way to query Local Network TCC state, so the row cannot be a direct check like Bluetooth's. It
+> is **outcome-derived** — `.checking` until a LAN transfer has been attempted, `.ok` after any
+> successful connection from the device, `.bad` after a connect that never produces a peer, with the fix
+> button opening `x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork` (the
+> same idiom `SettingsLinks.swift` already uses for Bluetooth). The evidence that drives it arrives for
+> free once WS-2 lands the split `err` vocabulary (§9 item 11): `timeout` at 0% is the TCC-denial shape
+> and `conn_refused` is the firewall shape, so the row does not need its own probe.
+
+**What changes because album art got here first: the row now has real evidence far more often than this
+plan assumed.** Written against OTA alone, the row is outcome-derived from a transfer that happens
+**roughly monthly** — so `.checking` is the row's normal resting state and `.ok`/`.bad` are rare,
+stale-feeling signals. Album art arms the same server roughly **every few minutes on a listening day**
+(`docs/specs/2026-07-27-sonos-album-art-design.md` §0), so by the time OTA's own transfers start
+happening, the row will already have accumulated fresh evidence continuously rather than once in a blue
+moon. **This means the OTA owner can trust the row's `.ok`/`.bad` state far more than the original design
+assumed** — a `.bad` row spotted before ever attempting an OTA update is a real, currently-true signal,
+not a stale one from last month's install, and a `.ok` row is meaningfully reassuring rather than
+coincidental. Denied-path test either way: revoke Local Network for the hub in System Settings, run a
+transfer, and confirm the row goes `.bad` with actionable text rather than the transfer hanging.
 
 ### P-2 — the `FIRMWARE_VERSION` prefix mismatch
 
@@ -394,19 +467,25 @@ USB CDC has enumerated and neither probe's output is being eaten.
 ### Acceptance gate
 
 ```bash
-cd firmware && ~/.beacon-pio/bin/pio test -e native    # >= 271 cases (257 + >= 14 new), 0 failures
+cd firmware && ~/.beacon-pio/bin/pio test -e native    # >= 309 cases (295 + >= 14 new), 0 failures
 cd firmware && ~/.beacon-pio/bin/pio run   -e beacon   # SUCCESS
-cd hub      && swift build && swift test               # >= 378 cases (362 + >= 16 new), 0 failures
+cd hub      && swift build && swift test               # >= 476 cases (460 + >= 16 new), 0 failures
 ```
+
+**These are 2026-07-27's baseline (295 / 460) plus this phase's own delta.** If album art has merged by
+the time this branches, re-read the real counts first and use those as the base instead — see §2.
 
 Plus, non-automatable and required:
 - HC-1 and HC-2 raw serial lines pasted into the PR body, with the outcome row named.
-- The built `.app` carries `NSLocalNetworkUsageDescription`:
-  `./build-app.sh release && plutil -p .build/Beacon\ Hub.app/Contents/Info.plist | grep LocalNetwork`
+- The built `.app` carries `NSLocalNetworkUsageDescription` — **verification, not authorship** (P-1
+  above): `./build-app.sh release && plutil -p .build/Beacon\ Hub.app/Contents/Info.plist | grep LocalNetwork`
   (adjust the path to whatever `build-app.sh` emits).
-- Settings shows a **Device firmware** row populated from a real device connection, and the Local
-  Network row renders in both the granted and revoked states.
-- `hub/CONTRACT.md` §A3/§B/§B3 written, and every field cap in it matches `records.h` byte for byte.
+- Settings shows a **Device firmware** row populated from a real device connection (the existing
+  `firmwareSection` stub in `DeviceTab.swift`, populated), and the Local Network row renders in both the
+  granted and revoked states — the latter should already pass if album art's Phase B landed cleanly;
+  treat a failure here as a real regression to fix, not an OTA-side bug to route around.
+- `hub/CONTRACT.md` §A4/§B/§B3 written (not §A3 — see Files to touch), and every field cap in it matches
+  `records.h` byte for byte.
 
 ### Traps
 
@@ -416,8 +495,9 @@ Plus, non-automatable and required:
 - **`report` chunk continuity.** D1 rides the same once-per-connection emission point as the ticker
   report but is **not** part of its chunk stream. Emit it as its own complete frame; do not fold it
   into `hub_report_plan`'s part numbering.
-- **`s_reported` latches only on full success** (`hub_task.cpp:151`). Keep that discipline for D1 — a
-  half-sent report must be retried on the next connection, not silently dropped.
+- **`s_reported` latches only on full success** (`hub_task.cpp:187-189`, corrected 2026-07-27 from the
+  previously-cited line 151). Keep that discipline for D1 — a half-sent report must be retried on the
+  next connection, not silently dropped.
 - **Emit-only-when-set on the Swift side is an `Optional`, not a `false`.** Getting this wrong makes
   `hatch:false` appear on the wire, which reads as "the hub has an opinion about the hatch" and will
   confuse the interlock's test matrix.
@@ -430,11 +510,13 @@ Plus, non-automatable and required:
 
 ### Rollback story
 
-Phase 0 is four independent commits: the Info.plist/Settings change, the workflow one-liner, the wire
-layer, and the seams. If any one fails QA, revert that commit alone. The wire layer is inert (nothing
-dispatches `ota` frames yet) and the seams are `nil` closures, so reverting either is a no-op on
-device behaviour. The `FIRMWARE_VERSION` fix is the one piece that must **not** be reverted in
-isolation once a version comparison exists downstream.
+Phase 0 is up to four independent commits: the P-1 verification (likely a no-diff confirmation now,
+possibly a small `DeviceTab.swift` firmware-row populate — no longer the Info.plist/Local-Network-row
+authorship this originally meant), the workflow one-liner, the wire layer, and the seams. If any one
+fails QA, revert that commit alone. The wire layer is inert (nothing dispatches `ota` frames yet) and
+the seams are `nil` closures, so reverting either is a no-op on device behaviour. The `FIRMWARE_VERSION`
+fix is the one piece that must **not** be reverted in isolation once a version comparison exists
+downstream.
 
 ---
 
@@ -553,9 +635,9 @@ exactly the behaviour you want from a safety interlock.
 
 ```bash
 cd firmware && ~/.beacon-pio/bin/pio test -e native -f "*test_ota_hatch*"   # >= 8 cases, 0 failures
-cd firmware && ~/.beacon-pio/bin/pio test -e native                          # >= 279 cases, 0 failures
+cd firmware && ~/.beacon-pio/bin/pio test -e native                          # >= 317 cases (309 + >= 8 new), 0 failures
 cd firmware && ~/.beacon-pio/bin/pio run   -e beacon                         # SUCCESS
-cd hub      && swift build && swift test                                     # >= 378, unchanged
+cd hub      && swift build && swift test                                     # >= 476, unchanged
 ```
 
 On hardware, all four required:
@@ -828,9 +910,9 @@ early. It is never shipped, exactly like `env:capture`.
 ```bash
 cd firmware && ~/.beacon-pio/bin/pio test -e native -f "*test_ota_gate*"    # >= 13 cases
 cd firmware && ~/.beacon-pio/bin/pio test -e native -f "*test_ota_offer*"   # >= 8 cases
-cd firmware && ~/.beacon-pio/bin/pio test -e native                          # >= 300 cases, 0 failures
+cd firmware && ~/.beacon-pio/bin/pio test -e native                          # >= 338 cases (317 + >= 21 new), 0 failures
 cd firmware && ~/.beacon-pio/bin/pio run   -e beacon                         # SUCCESS
-cd hub      && swift build && swift test                                     # >= 378, unchanged
+cd hub      && swift build && swift test                                     # >= 476, unchanged
 ```
 
 Plus, on hardware via `env:otaselftest`, all of which become the numbers WS-6 writes into `docs/perf.md`:
@@ -868,8 +950,11 @@ Plus, on hardware via `env:otaselftest`, all of which become the numbers WS-6 wr
   and buys nothing, because the full hash is verified before the inactive slot is ever made bootable.
 - Time comes from `now_s()` (wall, for staleness) or `uptime_s()` (monotonic, for timeouts). Never a
   local `millis()` clock — that split-brains ages.
-- `carousel_goto_buddy()` hardcodes index 3 (`carousel.cpp:160-164`) — if you touch the carousel for
-  the `NEW` chip, do not disturb it.
+- **Corrected 2026-07-27:** this used to say `carousel_goto_buddy()` hardcodes index 3
+  (`carousel.cpp:160-164`). **That is no longer true.** The function now does a dynamic lookup —
+  `active_index_of("agents")`, falling back to `active_index_of("home")` if Agents is hidden — and lives
+  at `carousel.cpp:424` (`void carousel_goto_buddy(void)`). If you touch the carousel for the `NEW`
+  chip, the thing not to disturb is that lookup-and-fallback behavior, not a magic-number index.
 - No object creation in a view's `update()`; build creates, update mutates.
 
 #### Rollback story
@@ -889,50 +974,69 @@ before `setup()`" behaviour, which is worse than having no OTA at all.
 
 The hub gets an image (from GitHub Releases or from the local `.pio` build), verifies it, serves it
 over the LAN exactly once behind a single-use token, and drives the BLE offer/go/withdraw handshake —
-refusing outright to offer anything to a device that did not report `hatch:true`.
+refusing outright to offer anything to a device that did not report `hatch:true`. **`LanAssetServer`
+itself is not built here** — by the time this workstream branches, album art has already shipped it.
+This workstream *extends* it with OTA's parameters and, critically, becomes the one caller responsible
+for a sleep assertion the server itself must not take (see below).
 
 #### Files to touch
 
-- `hub/Sources/beacon-hub/LanAssetServer.swift` — **new**.
+- `hub/Sources/beacon-hub/LanAssetServer.swift` — **existing, created by album art. Extend, do not
+  recreate.** Read it first. The extension surface is almost certainly nothing at all on the server's
+  own API — `arm(_:contentType:peer:ttl:maxServes:)` already takes `ttl` and `maxServes` as caller
+  arguments, so OTA's larger/slower/rarer profile (600 s TTL, 3 attempts, ~1.8 MB payload) versus art's
+  (30 s TTL, 1 attempt, 80,000 B payload) should be expressible by passing different arguments at the
+  call site, not by changing the type. Only touch this file if a real gap turns up — e.g. a payload-size
+  assumption baked in for art's fixed 80,000 B that does not hold for a multi-hundred-KB streamed image.
 - `hub/Sources/BeaconHubKit/ReleaseSource.swift` — **new**, pure.
-- `hub/Sources/beacon-hub/FirmwareUpdateService.swift` — **new**, the orchestrator.
+- `hub/Sources/beacon-hub/FirmwareUpdateService.swift` — **new**, the orchestrator. **This is where the
+  sleep assertion now lives** — see below.
 - `hub/Sources/beacon-hub/LocalBuildSource.swift` — **new**.
 - `hub/Sources/beacon-hub/AppDelegate.swift` — construct the service, assign the four `HubViewModel`
   closures Phase 0 declared, route `DeviceCommand.otaGo` / `.otaStat` / `.deviceReport`.
 - `hub/Tests/BeaconHubKitTests/ReleaseSourceTests.swift` — **new**.
-- `hub/Tests/beacon-hubTests/LanAssetServerTests.swift` — **new**.
+- `hub/Tests/beacon-hubTests/FirmwareUpdateServiceTests.swift` — **new** (see the sleep-assertion test
+  below; this replaces the standalone `LanAssetServerTests.swift` this plan originally scoped here —
+  the server's own tests belong to whoever authored it).
 
 #### Files NOT to touch
 
 `hub/Sources/beacon-hub/LocalIngestServer.swift` (its 127.0.0.1 binding and POST-only routing are
-security properties — see below), `SettingsPanel.swift`, `FirmwareSettingsView.swift`,
-`HubViewModel.swift`, `MenubarController.swift` (all WS-4's), `hub/Sources/BeaconHubKit/Protocol.swift`
-and `FirmwareUpdateState.swift` (Phase 0 froze them), anything under `firmware/` **except reading**
-`firmware/.pio/build/beacon/firmware.bin`.
+security properties — see below), `FirmwareSettingsView.swift`, `HubViewModel.swift`,
+`MenubarController.swift` (all WS-4's), `hub/Sources/BeaconHubKit/Protocol.swift` and
+`FirmwareUpdateState.swift` (Phase 0 froze them), anything under `firmware/` **except reading**
+`firmware/.pio/build/beacon/firmware.bin`. (`SettingsPanel.swift`, previously listed here, no longer
+exists — see Phase 0's Files-to-touch section for what replaced it.)
 
-#### `LanAssetServer` is one component, shared with Sonos phase-2 album art
+#### `LanAssetServer` is one component, shared with Sonos phase-2 album art — **and album art built it first**
 
-`docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md` §3 already proposes exactly this shape
-for album art: the hub fetches and downscales the art, serves it over the LAN, and the device fetches
-it by URL. **OTA is the same mechanism with a bigger file, so there must be one LAN byte-serving
-component, used by both.** Build it that way now; retrofitting later means two listeners on the user's
-network.
+`docs/specs/2026-07-27-sonos-album-art-design.md` §0 records the reasoning for building it there: album
+art is the gentler, higher-frequency exerciser of the LAN plane (a wrong picture vs. a bricked board
+with no reset button), so proving the mechanism against the cosmetic payload first is the correct order.
+Its design's §1.5/§7 hold: **the server stays exactly as dumb as OTA originally specified it** — it
+holds a `Data` and writes it, `arm(_:contentType:peer:ttl:maxServes:)` needs no change, and it never
+learns what a pixel — or a firmware image — is. **This workstream's job is to confirm that promise held
+and to be the caller that supplies OTA's own arm parameters, not to build the type.**
 
 Concretely, and this is an acceptance item, not a style note:
 
-- **No OTA vocabulary anywhere in the type.** Not in the name, not in a parameter, not in a log line.
-  It serves bytes.
-- The API is payload-agnostic:
+- **Confirm no OTA vocabulary crept into the type while nobody was looking**, and that album art's own
+  file-header comment names OTA as a second caller (it should, since the design was written with this
+  plan in view). Flag it rather than silently "fixing" it if it does not — that is album art's file.
+- The API is payload-agnostic and should already look like this (verify, do not assume):
   ```swift
   func arm(_ data: Data, contentType: String, peer: IPv4Address,
            ttl: TimeInterval, maxServes: Int) -> URL     // http://<hubIP>:<port>/a/<32 hex>
   func disarm()
   ```
-- **A test must arm it with a small non-firmware payload** (e.g. 2 KB of `image/jpeg`) and fetch it
-  successfully. That test is the proof the component is general.
-- A file-header comment naming both callers and pointing at the Sonos design §3.
+- **The generality proof — "arm it with a small non-firmware payload and fetch it successfully" — is
+  album art's test, already written, because album art *is* the non-firmware payload.** This workstream
+  does not need to re-prove it. What this workstream *does* need its own test for: an OTA-sized payload
+  (order of 1.8 MB, not 80,000 B) round-trips through the same `arm()`/serve path with `ttl: 600` and
+  `maxServes: 3`, since those are OTA-specific parameter values nobody has exercised yet.
 
-The server's own rules (design §2.1, §7):
+The server's own rules (design §2.1, §7 — **all still true of the server**, restated here for the
+workstream that now only consumes them rather than builds them):
 
 1. **A separate listener, not `LocalIngestServer`.** `LocalIngestServer` binds
    `requiredLocalEndpoint = 127.0.0.1:8765` and routes POST only (`LocalIngestServer.swift:45,154`);
@@ -944,17 +1048,15 @@ The server's own rules (design §2.1, §7):
    close` — reuse the same response-writer shape `LocalIngestServer` already has
    (`LocalIngestServer.swift:172-181`).
 3. **Ephemeral port** (`NWEndpoint.Port.any`), **armed only for the duration of a transfer**, never at
-   rest. Torn down on `done`, `fail`, first successful serve, or a **10 minute** window expiry —
-   whichever is first.
+   rest. Torn down on `done`, `fail`, first successful serve, or the window's TTL expiry (600 s for OTA;
+   album art uses 30 s) — whichever is first.
 4. **128-bit single-use path token** — 32 hex chars from `SecRandomCopyBytes`, compared in **constant
    time**, invalidated after the first complete response.
 5. **Source-address restriction.** Accept only connections whose remote endpoint matches the device's
    IP as reported in D1; drop everything else before reading a byte. Additionally reject any remote
    address outside RFC1918 / link-local, so a misconfigured router cannot expose it to a WAN peer.
-6. **Attempt cap: at most 3 accepted connections per armed window**, then disarm.
-7. `NSProcessInfo.beginActivity(.userInitiated, .idleSystemSleepDisabled)` for the transfer window,
-   released on completion or on the 10 min expiry — otherwise a sleeping Mac is indistinguishable from
-   a WiFi drop.
+6. **Attempt cap: at most 3 accepted connections per armed window** for OTA (album art uses 1 —
+   `maxServes` is a caller argument, not a server constant), then disarm.
 
 **The device does not authenticate to the server, and that is deliberate.** It does not need to prove
 its identity to fetch a public artifact — the same bytes are on GitHub Releases and served by the web
@@ -962,6 +1064,41 @@ flasher over the open internet. The direction that matters is the reverse: the d
 bytes are the ones the hub meant, and that comes from the **SHA-256 delivered over the bonded,
 LE-Secure-Connections-encrypted BLE link**, not from the HTTP hop. The path token is a capability, not
 an authenticator. Do not add device auth.
+
+#### The sleep assertion belongs to this workstream now, not to the server — this is a real bug fix, not a style preference
+
+The original OTA design (§7 rule 7, before album art existed) put
+`NSProcessInfo.beginActivity(.userInitiated, .idleSystemSleepDisabled)` **inside** `LanAssetServer`,
+taken for the transfer window and released on completion or TTL expiry. That was correct for OTA in
+isolation — a one-shot ~1.8 MB transfer roughly monthly — and it is **wrong** now that the same server
+is armed by album art roughly every few minutes, all day, on a listening day
+(`docs/specs/2026-07-27-sonos-album-art-design.md` §7.2, §10 risk 2). If the assertion stayed in the
+shared server, album art would silently stop the user's Mac from ever sleeping — "a silent,
+user-hostile regression in an unrelated part of the system, caused entirely by sharing a component," in
+the album-art design's own words.
+
+**Album art's design already made the structural call: the assertion moves out of `LanAssetServer`
+entirely, and into whichever caller actually needs it.** OTA is the only caller that needs it — a
+firmware transfer really does want the Mac awake for the ~30-60 s the write takes, and a sleeping Mac
+mid-transfer really is indistinguishable from a WiFi drop otherwise (design §9's "Mac sleeps
+mid-download" failure mode still applies). Album art's transfers are seconds long and frequent; it
+takes none.
+
+**This workstream therefore owns the assertion, explicitly, as an acceptance item, not an implementation
+detail:**
+
+- `FirmwareUpdateService` takes `NSProcessInfo.beginActivity(.userInitiated, .idleSystemSleepDisabled)`
+  immediately before calling `LanAssetServer.arm(...)` for an OTA transfer, and ends the activity on
+  `done`, `fail`, or TTL expiry — the same lifecycle the server's own window has, just held one layer up.
+- **Confirm `LanAssetServer.arm()` itself takes no assertion of any kind.** If it does — if album art's
+  implementation left one in, or a later refactor reintroduces one inside the shared type — that is a
+  regression against album art's own design and must be flagged (in album art's file, which this
+  workstream does not own) rather than worked around locally.
+- **A test asserting the OTA path takes the assertion and releases it**, and — if it is reachable from
+  this workstream's test target — **a test asserting the art path takes none**, mirroring the album-art
+  design's own acceptance item for the same fact from the other side. If art's test lives in a target
+  this workstream cannot see, at minimum assert the *server* itself never calls `beginActivity` for any
+  caller, which covers both directions from here.
 
 #### Release fetch
 
@@ -994,19 +1131,27 @@ code-enforced invariant rather than a promise.
 #### Acceptance gate
 
 ```bash
-cd hub      && swift build && swift test    # >= 402 cases (378 + >= 24 new), 0 failures
+cd hub      && swift build && swift test    # >= 494 cases (476 + >= 18 new — see note), 0 failures
 cd firmware && ~/.beacon-pio/bin/pio test -e native && ~/.beacon-pio/bin/pio run -e beacon   # unchanged
 ```
 
+**The "+18 new" is a floor, not a target, and it is lower than this plan's original "+24" for a real
+reason: LanAssetServer's own generality tests (correct-token-serves-once, wrong-token-404s,
+non-matching-peer-dropped, 4th-connection-refused, listener-gone-after-disarm, non-firmware-payload
+round-trips) already exist — album art wrote them, so re-writing them here would be duplicate coverage
+against a file this workstream does not own.** What is left is genuinely this workstream's own:
+
 Required test coverage, beyond raw count:
-- `LanAssetServer`: correct token serves once and only once; wrong token 404s; a second GET with the
-  correct token 404s; a connection from a non-matching peer is dropped; the 4th connection in a window
-  is refused; the listener is gone after `disarm()`; a **non-firmware** payload round-trips.
 - `ReleaseSource`: the semver / prefix / `dev` / missing-asset / bad-digest matrix above.
 - `FirmwareUpdateService`: the `hatch` interlock in both directions; a `rev` that the device acks with
   `err:"too_big"` does not arm the server; hash mismatch does **not** auto-retry the same `rev` (it
   re-verifies the hub's own copy first and mints a new `rev` if the artifact was bad) — this avoids a
-  retry loop that grinds flash against a corrupt artifact.
+  retry loop that grinds flash against a corrupt artifact; **an OTA-sized (~1.8 MB) payload round-trips
+  through `LanAssetServer.arm()` with `ttl: 600, maxServes: 3`** (the one piece of `LanAssetServer`
+  coverage that genuinely is this workstream's, since nobody has exercised those parameter values yet).
+- **The sleep assertion** (see above): a test confirming `FirmwareUpdateService` holds
+  `.idleSystemSleepDisabled` for the duration of an OTA transfer and releases it on completion, failure,
+  and TTL expiry — three cases, not one, since "released" is the part a refactor is likely to break.
 - **`err` => user-facing text**, one case per value in the frozen vocabulary. `conn_refused` must name
   the macOS firewall and `timeout` must name Local Network permission — those two strings are the
   whole payoff of §9 item 11, and a generic "network error" for either throws it away.
@@ -1033,10 +1178,13 @@ Required test coverage, beyond raw count:
 
 #### Rollback story
 
-Three separable commits: `LanAssetServer` (+tests), `ReleaseSource` + `LocalBuildSource` (+tests), the
-service + `AppDelegate` wiring. Reverting the wiring commit alone leaves two tested, unused components
-and a hub that offers nothing — a clean degraded state, and the one to reach for if anything about the
-LAN listener misbehaves in the field.
+Up to three separable commits: any genuine `LanAssetServer` extension (+its OTA-sized-payload test —
+likely a no-op commit if album art's server needed no changes), `ReleaseSource` + `LocalBuildSource`
+(+tests), the service + `AppDelegate` wiring (including the sleep assertion). Reverting the wiring
+commit alone leaves the tested, unused components and a hub that offers nothing — a clean degraded
+state, and the one to reach for if anything about the LAN listener misbehaves in the field. **Do not
+revert a `LanAssetServer` extension commit in isolation if album art has since taken a dependency on the
+same change** — check who else calls it before reverting a shared file.
 
 ---
 
@@ -1051,8 +1199,13 @@ be, built entirely against the `HubViewModel` surface Phase 0 froze.
 
 - `hub/Sources/beacon-hub/FirmwareSettingsView.swift` — extend Phase 0's section.
 - `hub/Sources/beacon-hub/HubViewModel.swift` — any additional `@Published` the view needs.
-- `hub/Sources/beacon-hub/SettingsPanel.swift` — at most the one line that inserts the section (Phase 0
-  may already have added it; verify before editing).
+- **The one-line insertion point Phase 0 used** — verify what Phase 0 actually did before touching this.
+  `SettingsPanel.swift`, named here originally, **no longer exists** (see Phase 0's Files-to-touch
+  section). Depending on which way Phase 0 resolved its own flagged ambiguity, this is either a line in
+  `hub/Sources/beacon-hub/DeviceTab.swift` (if Firmware became a section of the Device destination) or a
+  new case + switch arm in `hub/Sources/beacon-hub/SettingsTabs.swift` (if it became the fifth sidebar
+  destination `SettingsTabs.swift`'s own comments anticipate, with the open Cmd-5 slot). Read Phase 0's
+  PR, don't re-decide it here.
 - `hub/Sources/beacon-hub/MenubarController.swift` — the failed-update alert (§10 open question 3).
 - `hub/Tests/beacon-hubTests/` — view-model-level tests for the row states.
 
@@ -1089,7 +1242,7 @@ progress bar.
 #### Acceptance gate
 
 ```bash
-cd hub      && swift build && swift test    # >= 410 cases (WS-3's floor + >= 8 new), 0 failures
+cd hub      && swift build && swift test    # >= WS-3's floor + >= 8 new, 0 failures
 cd firmware && ~/.beacon-pio/bin/pio test -e native && ~/.beacon-pio/bin/pio run -e beacon   # unchanged
 ```
 
@@ -1100,8 +1253,8 @@ up to date, update available, transfer in progress, failed.
 
 - `AppDelegate.swift` is not yours. If you need something it must provide, say so in the PR rather
   than reaching in — the whole point of the Phase 0 seam is that this workstream compiles without it.
-- The Connection section already gained a Local Network row in Phase 0. Add the Firmware section; do
-  not restructure Connection.
+- The Connection section already has a Local Network row — landed by album art's Phase B, only verified
+  (not authored) by Phase 0. Add the Firmware section; do not restructure Connection.
 - Design §8.5: **after an update, nothing** on the device. If you find yourself building a "your device
   updated" toast on the Mac, check it against decision 2 first.
 
@@ -1181,8 +1334,10 @@ in one place, so no two wave-C agents fought over `docs/codemap.md`.
 - `docs/perf.md` §3 — the measured OTA internal-heap watermark, wall-clock duration, and UI hitch.
 - `docs/codemap.md` — device->hub commands **4 => 7**; hub->device blocks gains `ota`; the new
   firmware/hub file rows; refreshed test counts.
-- `docs/recipes.md` — a short §11 "ship a firmware release" covering the tag, the artifacts,
-  `SHA256SUMS`, and the pre-tag hatch exercise. (§10's hatch bullet is WS-1's and should already exist.)
+- `docs/recipes.md` — a short **§12** "ship a firmware release" covering the tag, the artifacts,
+  `SHA256SUMS`, and the pre-tag hatch exercise. (**Corrected 2026-07-27**: this was §11 when written;
+  the complications track has since claimed §11 for "Add a Home complication" and kept Conventions at
+  §10, so this must be §12. §10's hatch bullet is WS-1's and should already exist.)
 - `docs/plans/2026-07-27-ota-updates-plan.md` — this file: mark it done and record the measured
   numbers and the answers to the open questions.
 
@@ -1390,6 +1545,13 @@ agent hit it first.
    one — **with a deep link to
    `x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork`.** Its evidence now
    arrives for free from item 11's split `err` vocabulary.
+   **Addendum, same day, now that album art builds first:** an outcome-derived row is only as useful as
+   how often it gets outcomes. Written against OTA alone, that is roughly once a month — the row spends
+   almost all its life in `.checking`. Album art arms the same server roughly every few minutes on a
+   listening day (`docs/specs/2026-07-27-sonos-album-art-design.md` §0), so by the time OTA ships, the
+   row will carry **continuous, current evidence** instead of a stale monthly data point. Treat a
+   `.bad`/`.ok` reading as trustworthy in real time once album art is live — it is no longer "the last
+   time anyone checked, maybe weeks ago."
 
 7. ~~**The per-read stall deadline for the LAN GET.**~~ **Settled 2026-07-27.** §5.4 gives a 180 s
    hard abort on the whole transfer, and §9 says a WiFi drop is caught by "the per-read deadline" but
