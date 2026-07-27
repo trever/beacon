@@ -199,6 +199,35 @@ device (once per connection, after the first inbound frame):
 hub:    ReportAssembler -> adopted ONLY if tickerStore.isPristine (rev 0, no rows)
 ```
 
+### E. Page config (hub -> device), including the chart's instrument option
+
+```
+hub:    PageDesignerView -> AppDelegate.applyPageEdit(ids, opts) -> PageConfigStore.set (bumps rev,
+        UserDefaults keys BeaconPageIDs/BeaconPageRev/BeaconPageOpts) -> pushPageConfig() -> send
+device: hub_parse_pages (hub_proto.cpp) -> flattens {"opts":{"k":"v"}} into "k:v;k:v" per page
+        -> carousel_apply_pages: page_list_equal (ids AND opts) decides `changed`
+        -> unchanged (idempotent re-push on reconnect): pages_ack only, no restart
+        -> changed: nvs_set_bytes(NVS_PAGES_KEY) -> pages_ack -> ESP.restart()
+device (boot): main.cpp carousel_init() [loads NVS "pages" synchronously via load_active_pages()]
+        runs strictly before fetch_task_start(), so the first fetch_series() call already sees the
+        persisted opts -- there is no boot-order race here.
+```
+
+**Verifying which instrument the Chart page is actually showing** (came up in the 2026-07-26 "chart
+shows S&P when Nasdaq was selected" investigation, `docs/plans/2026-07-26-chart-instrument-diagnosis-plan.md`
+— verdict: no code bug, see that file's Status line):
+- **On-device, no tools needed:** the Chart page's header is built once per boot from
+  `chart_display_label()` (`firmware/src/fetch/series.cpp`), so it always names the resolved
+  instrument, not a compiled default. Swipe to the Chart page and read the header.
+- **Serial:** `series: N pts, last=… prev=… lo=… hi=…` (`fetch_series`, `series.cpp:73`) — `last` is
+  the live price, and S&P 500 vs. Nasdaq levels differ by thousands of points, so one line settles it.
+  A `chart: ticker '<id>' not in the table` or `is not a Yahoo row` warning (same file) means
+  `resolve_chart()` fell back to the compiled default (`sp500`) instead of the requested id.
+- The option key on the wire is **`sym`** end to end: hub encodes `row.opts["sym"]`
+  (`PageDesignerView.swift`), device reads it via `carousel_page_opt("chart", "sym", …)`
+  (`series.cpp:30`). `hub/CONTRACT.md`'s own JSON example used to say `symbol` here, which is what misled
+  this investigation in the first place -- fixed 2026-07-26 (`hub/CONTRACT.md:109`).
+
 ---
 
 ## 5. Test topology

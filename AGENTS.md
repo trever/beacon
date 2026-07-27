@@ -55,7 +55,7 @@ Requires Xcode 16+ and `jq` (hooks installer).
 - `core/` — `DataStore` (thread-safe pub/sub for all domain records), `records.h` (frozen record schema with per-source state: LOADING/LIVE/STALE/OFFLINE/ERROR/...), `hub_proto.cpp` (BLE frame parser), WiFi multinetwork, timezone map.
 - `fetch/` — API parsers (Open-Meteo weather, Yahoo/Binance finance, IP geolocation). Run on Core 0 timers, write snapshots to DataStore.
 - `hal/` — hardware init: AXP2101 power, CO5300 display, CST92xx touch, QMI8658 IMU, PCF85063 RTC.
-- `ui/` — LVGL: `carousel.cpp` (swipe nav + screen lifecycle), `theme.h` (token struct, 7 themes), `gauge.cpp` (one component, token-switched into 7 visual styles), `screens/` (5 screens, each exposing build/update/destroy), `screens/views/` (per-theme per-screen layouts, 35 views).
+- `ui/` — LVGL: `carousel.cpp` (swipe nav + screen lifecycle), `theme.h` (token struct, 1 theme), `gauge.cpp` (one component, token-switched into 7 visual styles), `screens/` (5 screens, each exposing build/update/destroy), `screens/views/` (per-screen layouts, 7 views).
 
 **Threading:** Core 0 = WiFi/BLE/timers/HTTP; Core 1 = LVGL render only. All inter-core communication goes through DataStore snapshots — never block the UI loop.
 
