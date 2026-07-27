@@ -7,30 +7,44 @@ struct GeneralTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                SectionHeader(title: "General", subtitle: "Beacon Hub, the menu-bar app")
-                Module(padding: 0) {
-                    VStack(spacing: 0) {
-                        ToggleRow(icon: "person.fill", title: "Start at login",
-                                  subtitle: model.loginItem == .requiresApproval ? "Approve in Login Items" : nil,
-                                  isOn: loginBinding)
-                        Divider().padding(.leading, 12)
-                        ToggleRow(icon: "speaker.slash.fill", title: "Mute prompt sound", isOn: muteBinding)
-                    }
-                }
+            VStack(alignment: .leading, spacing: HubSpace.xl) {
+                generalSection
+                aboutSection
+            }
+            .padding(HubSpace.xl)
+        }
+    }
 
-                SectionHeader(title: "About", subtitle: "Beacon Hub")
-                Module {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Beacon Hub \(Self.appVersion)")
-                            .font(.system(size: 12, weight: .medium))
-                        Text("The menu-bar companion that bridges this Mac's Claude/Codex usage and Sonos household to your Beacon device.")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder private var generalSection: some View {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
+            SectionHeader(title: "General", subtitle: "Beacon Hub, the menu-bar app")
+            Card(padding: .rows) {
+                VStack(spacing: 0) {
+                    SettingsRow(icon: "person.fill", title: "Start at login",
+                                subtitle: model.loginItem == .requiresApproval ? "Approve in Login Items" : nil) {
+                        Toggle("", isOn: loginBinding).labelsHidden().toggleStyle(.switch)
+                    }
+                    RowSeparator(hasLeadingIcon: true)
+                    SettingsRow(icon: "speaker.slash.fill", title: "Mute prompt sound") {
+                        Toggle("", isOn: muteBinding).labelsHidden().toggleStyle(.switch)
                     }
                 }
             }
-            .padding(20)
+        }
+    }
+
+    @ViewBuilder private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
+            SectionHeader(title: "About", subtitle: "Beacon Hub")
+            Card {
+                VStack(alignment: .leading, spacing: HubSpace.xs) {
+                    Text("Beacon Hub \(Self.appVersion)")
+                        .font(HubType.body).foregroundStyle(HubColor.inkPrimary)
+                    Text("The menu-bar companion that bridges this Mac's Claude/Codex usage and Sonos household to your Beacon device.")
+                        .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

@@ -11,29 +11,29 @@ struct DeviceTab: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: HubSpace.xl) {
                 connectionSection
                 forgetSection
                 tickerSection
                 firmwareSection
             }
-            .padding(20)
+            .padding(HubSpace.xl)
         }
     }
 
     // MARK: - Connection
 
     private var connectionSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             SectionHeader(title: "Connection", subtitle: "Bluetooth link to this Beacon")
-            Module(padding: 0) {
+            Card(padding: .rows) {
                 VStack(spacing: 0) {
                     StatusRow(state: model.setupBluetooth, title: "Bluetooth") {
                         if model.setupBluetooth != .ok {
-                            DeckButton(title: "Open Settings") { model.onOpenBluetooth() }
+                            HubButton(title: "Open Settings") { model.onOpenBluetooth() }
                         }
                     }
-                    Divider().padding(.leading, 42)
+                    RowSeparator(hasLeadingIcon: true)
                     StatusRow(state: model.setupPaired, title: "Device connected",
                               hint: "Power on the device; macOS will prompt to pair.") { EmptyView() }
                 }
@@ -46,16 +46,16 @@ struct DeviceTab: View {
     // CoreBluetooth cannot remove an OS-level bond (no API for it) -- this guidance text stays as-is, it
     // is not a WS-2 UI bug to "fix".
     private var forgetSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             SectionHeader(title: "Forget device", subtitle: "macOS owns the pairing, not the hub")
-            Module {
-                VStack(alignment: .leading, spacing: 10) {
+            Card {
+                VStack(alignment: .leading, spacing: HubSpace.m) {
                     Text("In Bluetooth settings, click the info button next to Beacon, then choose \u{201C}Forget This Device.\u{201D} It reconnects on its own when back in range.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Spacer()
-                        DeckButton(title: "Open Bluetooth & forget", kind: .primary) { model.onForget() }
+                        HubButton(title: "Open Bluetooth & forget", kind: .primary) { model.onForget() }
                     }
                 }
             }
@@ -66,7 +66,7 @@ struct DeviceTab: View {
     // folds into Pages -- one hub window total, design §3.4).
 
     private var tickerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             SectionHeader(title: "Tickers", subtitle: "One shared list -- Markets and Chart both read from it")
             TickerEditorView(model: model)
         }
@@ -80,14 +80,16 @@ struct DeviceTab: View {
     // rather than inventing a value or silently dropping the row (plan §5 lists "firmware version" as
     // Device-tab content; see this agent's final report for the judgment call).
     private var firmwareSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             SectionHeader(title: "Firmware", subtitle: "This Beacon")
-            Module {
+            Card {
                 HStack {
-                    Text("Version").font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("Version").font(HubType.body).foregroundStyle(HubColor.inkSecondary)
                     Spacer()
+                    // Was `ink.tertiary` (~2.8:1, below the 4.5:1 floor) for genuine content (design §2.3,
+                    // §8.1) -- moved to `ink.secondary`.
                     Text("Not reported by this firmware build")
-                        .font(.system(size: 12)).foregroundStyle(.tertiary)
+                        .font(HubType.body).foregroundStyle(HubColor.inkSecondary)
                 }
             }
         }
