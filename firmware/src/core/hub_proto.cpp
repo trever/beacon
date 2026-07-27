@@ -192,6 +192,27 @@ bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* h
   return true;
 }
 
+// "sonos" frame (CONTRACT.md A, phase 1 text only): a full snapshot of the selected room's now-playing
+// state, not joined/sticky like sdetail. Every present field replaces; every absent field clears to its
+// default -- copy_trunc already treats a missing key (nullptr from as<const char*>()) as "", and the
+// `| false` idiom (fill_window's sibling) covers the bool. Unknown keys inside "sonos" are simply never
+// read, so they cost nothing and never fail the frame.
+bool hub_parse_sonos(const char* json, size_t len, sonos_rec_t* out, bool* had_sonos) {
+  *had_sonos = false;
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len)) return false;   // not valid JSON
+  if ((doc["v"] | 0) != 1) return false;                // unknown major version => ignore
+  JsonVariantConst s = doc["sonos"];
+  if (!s.is<JsonObjectConst>()) return false;            // no "sonos" object in this frame
+  *had_sonos = true;
+  copy_trunc(out->room,   SONOS_ROOM_LEN,   s["room"].as<const char*>());
+  copy_trunc(out->track,  SONOS_TRACK_LEN,  s["track"].as<const char*>());
+  copy_trunc(out->artist, SONOS_ARTIST_LEN, s["artist"].as<const char*>());
+  copy_trunc(out->album,  SONOS_ALBUM_LEN,  s["album"].as<const char*>());
+  out->playing = s["playing"] | false;                   // absent/non-bool => false
+  return true;
+}
+
 // Defined below with the other frame builders; declared here so the pages ack can sit beside its parser.
 static size_t finish_frame(JsonDocument& doc, char* buf, size_t cap);
 

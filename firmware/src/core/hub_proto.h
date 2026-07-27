@@ -65,6 +65,16 @@ bool hub_parse_sessions(const char* json, size_t len, buddy_rec_t* buddy, bool* 
 // field leaves the current value. Returns false for non-JSON / wrong v / no sdetail array.
 bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* had_sdetail);
 
+// --- Inbound: hub -> device Sonos now-playing frame (phase 1, text only) ---
+// {"v":1,"sonos":{"room":"Kitchen","track":"...","artist":"...","album":"...","playing":true}}
+// A standalone frame, like "sessions" -- NOT joined/sticky like "sdetail": every call fills *out fresh
+// (a full snapshot), so an absent field clears to its default (empty string / playing=false) rather
+// than preserving whatever the caller passed in. Strings truncate to their *_LEN caps regardless of the
+// hub's documented wire limits (defensive against an oversize/malformed frame); unknown keys inside the
+// "sonos" object are ignored. Sets *had_sonos true only when a "sonos" object is present. Returns false
+// on invalid JSON, wrong v, or no "sonos" object (leaves *out untouched on a false return).
+bool hub_parse_sonos(const char* json, size_t len, sonos_rec_t* out, bool* had_sonos);
+
 // --- Outbound: device -> hub command builders ---
 // Write a newline-terminated command frame into buf. Returns bytes written (incl. the '\n', excl. the
 // NUL), or 0 on overflow / invalid args. `id` echoes the originating (short) prompt id.

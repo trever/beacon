@@ -190,6 +190,16 @@ static void on_frame(const char* json, size_t len) {
       return;
     } }
 
+  // A "sonos" now-playing frame (standalone, like sessions/sdetail; phase 1 text only). Full snapshot,
+  // not merged: hub_parse_sonos already fills every field (present or defaulted), so no need to seed
+  // from the stored record first.
+  { sonos_rec_t sn; bool had = false;
+    if (hub_parse_sonos(json, len, &sn, &had) && had) {
+      sn.hdr.last_updated = (uint32_t)timekeep_now();
+      ds_set_sonos(&sn);
+      return;
+    } }
+
   usage_rec_t u = ds_get_usage();
   buddy_rec_t b = ds_get_buddy();
   buddy_prompt_t prev = b.prompt;                          // snapshot before parse (r1 #4)

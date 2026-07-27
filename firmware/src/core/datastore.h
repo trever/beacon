@@ -20,6 +20,7 @@ void ds_set_ice(const ice_rec_t* r);   // ICE D4 RIN contract table (device-plan
 void ds_set_series(const series_rec_t* r);   // intraday series for the graph screen
 void ds_set_usage(const usage_rec_t* r);
 void ds_set_buddy(const buddy_rec_t* r);
+void ds_set_sonos(const sonos_rec_t* r);   // Sonos now-playing (hub-plane, phase 1 text only)
 
 // Reseed the finance slots from a new ticker set (A5 live re-apply): set the new count and, per slot,
 // the new id + ST_LOADING with value/change zeroed. Called after a validated hub config swap.
@@ -36,7 +37,8 @@ void ds_set_state_weather(screen_state_t s, data_err_t e);
 void ds_set_state_ice(screen_state_t s, data_err_t e);
 void ds_set_state_series(screen_state_t s, data_err_t e);
 void ds_set_state_finance(uint8_t idx, screen_state_t s, data_err_t e);
-void ds_set_hub_offline(void);   // flips usage + buddy to ST_HUB_OFFLINE
+void ds_set_state_sonos(screen_state_t s, data_err_t e);
+void ds_set_hub_offline(void);   // flips usage + buddy + sonos to ST_HUB_OFFLINE
 
 // Getters (Core-1). By-value snapshot under the lock.
 weather_rec_t    ds_get_weather(void);
@@ -46,6 +48,7 @@ finance_rec_t    ds_get_finance(uint8_t idx);
 uint8_t          ds_get_finance_count(void);
 usage_rec_t      ds_get_usage(void);
 buddy_rec_t      ds_get_buddy(void);
+sonos_rec_t      ds_get_sonos(void);
 
 // Staleness sweep (~1/s from a Core-0 timer). For each record: if state==ST_LIVE and
 // record_age_s(hdr, now) >= stale_s(source), promote to ST_STALE. Inclusive boundary.

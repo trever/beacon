@@ -114,6 +114,28 @@ typedef struct {
   ice_contract_t c[ICE_CONTRACTS_MAX];
 } ice_rec_t;
 
+// --- Sonos now-playing (FR-SONOS, hub-plane) — phase 1, text only (album art is a phase-2 hub-served-
+// URL job; see docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md §3). ---
+// Wire "sonos" block (CONTRACT.md A, standalone frame like "sessions"/"sdetail"):
+// {"room","track","artist","album","playing"}. Every field is optional and absent means default
+// (empty string / playing=false), NOT sticky across updates -- each frame is a full snapshot of what
+// the hub currently sees for the selected room, so an absent field means "the hub has nothing for this
+// right now" and must clear, not hold a stale value (unlike sdetail's per-field join).
+// Caps mirror the hub's documented wire limits (room<=20, track<=40, artist<=32, album<=32); the parser
+// truncates defensively to these regardless, since HUB_FRAME_MAX trimming is the hub's job, not ours.
+#define SONOS_ROOM_LEN   21   // 20 chars + NUL
+#define SONOS_TRACK_LEN  41   // 40 chars + NUL
+#define SONOS_ARTIST_LEN 33   // 32 chars + NUL
+#define SONOS_ALBUM_LEN  33   // 32 chars + NUL
+typedef struct {
+  record_hdr_t hdr;             // ST_HUB_OFFLINE when the hub link drops
+  char         room[SONOS_ROOM_LEN];
+  char         track[SONOS_TRACK_LEN];
+  char         artist[SONOS_ARTIST_LEN];
+  char         album[SONOS_ALBUM_LEN];
+  bool         playing;         // absent on the wire => false
+} sonos_rec_t;
+
 // --- AI usage (FR-USAGE, hub-plane) — mirrors tech.md §7.1/§7.2 BLE JSON ---
 typedef struct {
   int16_t  pct;                // 0..100; -1 = null/unavailable (JSON null)

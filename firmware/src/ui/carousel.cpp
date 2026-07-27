@@ -17,6 +17,7 @@
 #include "ui/screens/screen_ice.h"
 #include "ui/screens/screen_chart.h"
 #include "ui/screens/screen_buddy.h"
+#include "ui/screens/screen_sonos.h"
 #include "ui/screens/screen_settings.h"
 
 // Every screen this firmware carries, keyed by the STABLE ID the hub uses on the wire. Which of these
@@ -29,6 +30,7 @@ static const page_entry_t REGISTRY[] = {
   {"chart",    &chart_module},
   {"ice",      &ice_module},
   {"agents",   &buddy_module},
+  {"sonos",    &sonos_module},
   {"settings", &settings_module},
 };
 static const uint8_t REGISTRY_N = (uint8_t)(sizeof(REGISTRY) / sizeof(REGISTRY[0]));
