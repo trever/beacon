@@ -367,6 +367,16 @@ final class SonosProvider {
     // This performs the identical two HTTP calls and reuses the identical SonosAPI parsers, but only ever
     // reports through `completion` -- it is read-only from the gate's point of view. Completion always
     // lands on the main actor (the picker is SwiftUI @State-driven).
+    //
+    // Defect 3(b): `completion` may now fire TWICE for a household with 1-12 groups -- once immediately
+    // with names/player-counts (`SonosRoomList.summarize` needs nothing beyond what `parseGroups` already
+    // decoded), and again once playback enrichment lands or the deadline passes, exactly as before. Every
+    // other path (notAuthorized/failed/expired/empty/>12 groups) still fires exactly once, unchanged. The
+    // two deliveries are strictly ordered (the first is queued before the enrichment fan-out even starts),
+    // so the second can only ever ADD information (playback), never regress behind the first -- see
+    // `enrichAndDeliverRoomList` below. Callers that only care about the final word (e.g. a caller wanting
+    // one-shot semantics) can simply keep the last value they received, exactly like PageDesignerInspector
+    // does today.
     func fetchAvailableRooms(completion: @escaping (SonosRoomListResult) -> Void) {
         queue.async { [weak self] in
             guard let self else { return }
@@ -441,6 +451,15 @@ final class SonosProvider {
             deliverRoomList(.rooms(summaries), completion)
             return
         }
+
+        // Perceived-speed fix (Defect 3b): names/player-counts are already fully decoded above -- only
+        // playback needs the network round-trip below, and that is the slow, boundable part. Deliver the
+        // names-only summary right away so the menu is usable before the fan-out even starts, then let the
+        // existing exactly-once `deliverOnce` latch below deliver the enriched version on top of it once
+        // playback lands (or the deadline passes). This call happens-before the fan-out is even kicked
+        // off, so it can never race behind (and can therefore never overwrite) the enriched delivery.
+        let namesOnly = SonosRoomList.summarize(groups: groupTuples, players: playerTuples, playing: [:])
+        deliverRoomList(.rooms(namesOnly), completion)
 
         var playingByName: [String: Bool] = [:]
         var delivered = false   // latch: guarantees the completion fires exactly once, including on the deadline path
