@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let tickerSearch = TickerSearch()        // Binance(cached) + Yahoo(live) discovery (issue #92 B4)
     private lazy var tickerEditor = TickerEditorWindowController(model: menubar.viewModel)
     private lazy var settingsWindow = SettingsWindowController(model: menubar.viewModel)
+    private lazy var pageDesigner = PageDesignerWindowController(model: menubar.viewModel)
     private var binanceCandidates: [TickerCandidate] = []   // warmed-once cache for local Binance filtering
 
     // A single ephemeral session (15s timeout) shared by every provider's usage source (#64).
@@ -239,12 +240,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mux.onSessions = { [weak self] sessions in
             guard let self else { return }
             self.sessions = sessions
+            self.menubar.viewModel.sessions = sessions   // feeds the page designer's Agents/Home previews
             if let data = try? SessionsFrame(sessions).encoded() { self.central.send(data) }
         }
         // Own frame, own budget: the sessions frame's caps are frozen and have no room for title/message.
         mux.onSessionDetails = { [weak self] details in
             guard let self else { return }
             self.sessionDetails = details
+            self.menubar.viewModel.sessionDetails = details
             if let data = try? SessionDetailsFrame(details).encoded() { self.central.send(data) }
         }
         mux.onAttention = { [weak self] in self?.menubar.playAttentionSoundIfEnabled() }
@@ -369,6 +372,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menubar.onRetryPairing = { [weak self] in self?.central.retryPairing() }
         menubar.viewModel.onApplyPages = { [weak self] ids in self?.applyPageEdit(ids: ids) }
+        menubar.viewModel.onOpenPages = { [weak self] in self?.pageDesigner.show() }
+        // Revert re-seeds the editor from the store, which is the list the device is running.
+        menubar.viewModel.onRevertPages = { [weak self] in
+            guard let self else { return }
+            self.menubar.setPages(ids: self.pageStore.current.ids)
+            self.menubar.setPageSync(nil)
+        }
         menubar.onApplyTickerEdit = { [weak self] rows in self?.applyTickerEdit(rows) }
         central.start()
     }

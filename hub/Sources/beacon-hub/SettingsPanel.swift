@@ -27,18 +27,23 @@ struct SettingsPanel: View {
                 }
             }
 
-            if !model.pageRows.isEmpty {
-                SectionHeader(title: "Device pages",
-                              subtitle: "Which screens the Beacon shows, and in what order")
-                Module(padding: 0) {
-                    VStack(spacing: 0) {
-                        ForEach(Array(model.pageRows.enumerated()), id: \.element.id) { idx, row in
-                            if idx > 0 { Divider().padding(.leading, 12) }
-                            PageRowView(model: model, row: row, index: idx)
+            SectionHeader(title: "Device pages",
+                          subtitle: "Which screens the Beacon shows, and in what order")
+            Module {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.enabledPageIDs.isEmpty
+                             ? "No pages configured"
+                             : model.enabledPageIDs.compactMap { PageCatalog.entry($0)?.title }
+                                 .joined(separator: " \u{00B7} "))
+                            .font(.system(size: 12)).foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if model.pagesDirty {
+                            Text("Unsaved changes").font(.system(size: 11)).foregroundStyle(.orange)
                         }
-                        Divider()
-                        applyBar
                     }
+                    Spacer()
+                    DeckButton(title: "Edit pages\u{2026}") { model.onOpenPages() }
                 }
             }
 
@@ -78,25 +83,6 @@ struct SettingsPanel: View {
         }
         .padding(16)
         .frame(width: 460)
-    }
-
-    // Applying restarts the device, so edits stage until you press Apply rather than firing per click.
-    private var applyBar: some View {
-        HStack(spacing: 8) {
-            if let sync = model.pageSync {
-                Text(sync).font(.system(size: 11)).foregroundStyle(.secondary)
-            } else if model.pagesDirty {
-                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                Text("The Beacon restarts to apply (about 5 seconds)")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            DeckButton(title: "Apply") { model.onApplyPages(model.enabledPageIDs) }
-                .disabled(!model.pagesDirty)
-                .opacity(model.pagesDirty ? 1 : 0.4)
-        }
-        .padding(.horizontal, 12).padding(.vertical, 9)
     }
 
     private var header: some View {
@@ -257,65 +243,3 @@ struct StatusRow<Trailing: View>: View {
     return SettingsPanel(model: m)
 }
 #endif
-
-// One page: an include checkbox, its name and one line of description, and move up/down. Reordering uses
-// buttons rather than drag: these rows live in a VStack inside a scrolling panel, where a drag gesture
-// would fight the scroll, and the list is short enough that two clicks is not a burden.
-private struct PageRowView: View {
-    @ObservedObject var model: HubViewModel
-    let row: PageRow
-    let index: Int
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: Binding(
-                get: { row.enabled },
-                set: { on in
-                    guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
-                    model.pageRows[i].enabled = on
-                    model.pageSync = nil
-                }))
-                .labelsHidden()
-                .toggleStyle(.checkbox)
-                .disabled(row.pinned)
-                .help(row.pinned ? "Settings is always on the device" : "")
-
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(row.title).font(.system(size: 13, weight: .medium))
-                    if row.pinned {
-                        Text("always on").font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Color.secondary.opacity(0.12), in: Capsule())
-                    }
-                }
-                Text(row.detail).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 2) {
-                moveButton(systemName: "chevron.up", enabled: index > 0) { move(by: -1) }
-                moveButton(systemName: "chevron.down", enabled: index < model.pageRows.count - 1) { move(by: 1) }
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .opacity(row.enabled ? 1 : 0.55)
-    }
-
-    private func moveButton(systemName: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName).font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 16)
-        }
-        .buttonStyle(.borderless)
-        .disabled(!enabled)
-        .opacity(enabled ? 0.7 : 0.2)
-    }
-
-    private func move(by delta: Int) {
-        let to = index + delta
-        guard model.pageRows.indices.contains(index), model.pageRows.indices.contains(to) else { return }
-        model.pageRows.swapAt(index, to)
-        model.pageSync = nil
-    }
-}

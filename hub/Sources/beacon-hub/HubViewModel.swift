@@ -59,6 +59,11 @@ final class HubViewModel: ObservableObject {
     // One dynamic card per registered provider (design 2026-07-19): the Usage / Coding Buddy toggles the
     // menubar shows, each gated by the provider's declared capabilities. Backed by ProviderSettings.
     @Published var providers: [ProviderToggle] = []
+    // Mirrors of what the hub last pushed, so the page designer's previews show real session content
+    // rather than placeholders. Device-plane pages (chart/ICE/markets) cannot be mirrored -- the device
+    // fetches those itself and the hub never sees the values.
+    @Published var sessions: [Session] = []
+    @Published var sessionDetails: [SessionDetail] = []
     @Published var pageRows: [PageRow] = []
     /// The list last known to be on the device; Apply is enabled only when pageRows differ from it.
     @Published var appliedPageIDs: [String] = []
@@ -77,6 +82,8 @@ final class HubViewModel: ObservableObject {
     var onToggleDontShow: (Bool) -> Void = { _ in }           // persist first-run auto-open suppression
     var onRetryPairing: () -> Void = {}
     var onApplyPages: ([String]) -> Void = { _ in }   // push the edited page list (restarts the device)
+    var onRevertPages: () -> Void = {}                // discard staged edits, back to what the device runs
+    var onOpenPages: () -> Void = {}                  // open the page designer window
     var onApplyTickerEdit: ([TickerRow]) -> Void = { _ in }   // issue #92: B4 editor commits the desired list
     var onOpenTickerEditor: () -> Void = {}                    // issue #92: open the dedicated editor window
     // issue #92: editor calls this with a query; AppDelegate runs Binance(local) + Yahoo(live) and delivers
