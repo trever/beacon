@@ -177,13 +177,15 @@ final class MenubarController: NSObject {
 
     /// Seed the page editor: `ids` is the list currently on the device, ordered. Enabled pages come
     /// first in that order, then the rest of the catalog as unchecked options.
-    func setPages(ids: [String]) {
+    func setPages(ids: [String], opts: [String: [String: String]] = [:]) {
         let rows = PageCatalog.editorRows(applied: ids).map {
             PageRow(id: $0.entry.id, title: $0.entry.title, detail: $0.entry.detail,
-                    pinned: !$0.entry.removable, enabled: $0.enabled)
+                    pinned: !$0.entry.removable, enabled: $0.enabled, opts: opts[$0.entry.id] ?? [:])
         }
         model.pageRows = rows
         model.appliedPageIDs = rows.filter(\.enabled).map(\.id)
+        model.appliedPageOpts = Dictionary(uniqueKeysWithValues:
+            rows.filter { $0.enabled && !$0.opts.isEmpty }.map { ($0.id, $0.opts) })
     }
 
     func setPageSync(_ text: String?) { model.pageSync = text }

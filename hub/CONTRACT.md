@@ -115,7 +115,14 @@ set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHub
   config's chunking would be dead weight. If `opts` ever outgrows the frame, chunk it exactly like §B2.
 - Caps: `list` length ≤ **8** (`PAGES_MAX`); `id` ≤ **11** chars. `rev` is a monotonic hub counter,
   echoed in the ack; a stale ack (for a rev the user has since edited past) is ignored.
-- `opts` is **parsed and ignored** — reserved so per-page settings can land without a wire break.
+- `opts` is a small per-page bag of **scalar** values (string/int/bool). The device flattens it to a
+  compact `k:v;k:v` string and stores it with the page; nested objects/arrays are skipped rather than
+  half-encoded. Keys/values must not contain `: ; | = ,` — both ends strip them, so a value can never
+  split a stored record. Unknown keys are kept but ignored by whichever screen owns the page.
+- Options in use today: `chart.sym` = a **ticker id** from the §B2 list (not a raw symbol), so the device
+  resolves the Yahoo symbol and display name from that row. Non-Yahoo or unknown ids fall back to the
+  compiled default. The chart interval is deliberately NOT an option: the response must fit the shared
+  8 KB `fetch_scratch()`, where 5m measured 7789 B against 15m's 3449 B.
 - Ids are the device's `REGISTRY` in `firmware/src/ui/carousel.cpp`, mirrored by `PageCatalog`:
   `home`, `markets`, `chart`, `ice`, `agents`, `settings`.
 - **Unknown ids are dropped, not rejected**, so a hub ahead of its firmware degrades quietly instead of

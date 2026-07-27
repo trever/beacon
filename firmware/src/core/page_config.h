@@ -12,13 +12,28 @@
 //
 // Pure + freestanding so the whole resolve step is host-tested; NVS and LVGL live in the caller.
 
-#define PAGES_MAX     8    // s_pages[]/s_dots[] in carousel.cpp are fixed at 8
-#define PAGE_ID_LEN  12    // 11 chars + NUL
+#define PAGES_MAX      8    // s_pages[]/s_dots[] in carousel.cpp are fixed at 8
+#define PAGE_ID_LEN   12    // 11 chars + NUL
+#define PAGE_OPTS_LEN 48    // "k:v;k:v" per page + NUL
 
 typedef struct {
   char    ids[PAGES_MAX][PAGE_ID_LEN];
+  // Per-page options as a compact "k:v;k:v" string -- a tiny format rather than JSON so the device
+  // stores and re-serializes it without a parser. Keys and values carry none of the separators
+  // (: ; | = ,); both ends strip them, so a value can never split a record.
+  char    opts[PAGES_MAX][PAGE_OPTS_LEN];
   uint8_t count;
 } page_list_t;
+
+// Read one option out of a "k:v;k:v" string. Returns false (and empties `out`) when absent.
+bool page_opts_get(const char* opts, const char* key, char* out, size_t cap);
+
+// The opts string for `id`, or "" when the page is absent or carries none.
+const char* page_list_opts(const page_list_t* l, const char* id);
+
+// Set the opts string for an existing page. Separators are stripped from `opts`, which is then
+// truncated to PAGE_OPTS_LEN-1. No-op when the id is not present.
+void page_list_set_opts(page_list_t* l, const char* id, const char* opts);
 
 // Append `id` if it is not already present and there is room. Returns false when full or duplicate.
 bool page_list_add(page_list_t* l, const char* id);
