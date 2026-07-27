@@ -20,13 +20,16 @@ final class SettingsTabTests: XCTestCase {
         super.tearDown()
     }
 
-    func testAllFourTabsRoundTripThroughRawValue() {
+    // Renamed off the old four-tab-specific names (plan SS1 step 10): already allCases-driven, so both
+    // keep passing unchanged when a fifth destination (Firmware, design SS4.2) lands. No assertion
+    // changed, no test deleted.
+    func testEveryTabRoundTripsThroughRawValue() {
         for tab in SettingsTab.allCases {
             XCTAssertEqual(SettingsTab(rawValue: tab.rawValue), tab)
         }
     }
 
-    func testAllFourTabsHaveDistinctTitles() {
+    func testEveryTabHasADistinctTitle() {
         let titles = Set(SettingsTab.allCases.map(\.title))
         XCTAssertEqual(titles.count, SettingsTab.allCases.count)
     }
