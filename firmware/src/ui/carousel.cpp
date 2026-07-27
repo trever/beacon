@@ -8,6 +8,8 @@
 #include "ui/durations.h"
 #include "ui/idle_glue.h"
 #include "core/nvs.h"
+#include "core/page_config.h"
+#include <string.h>
 #include "util/log.h"
 #include "config/layout.h"
 #include "ui/screens/screen_home.h"
@@ -17,24 +19,66 @@
 #include "ui/screens/screen_buddy.h"
 #include "ui/screens/screen_settings.h"
 
-// Markets (finance_module) is intentionally not listed: the user does not want the ticker list on the
-// device. screen_finance.cpp is left in the build rather than deleted -- the ticker FETCH still feeds the
-// chart screen (finance_by_id("sp500")) and the home dashboard, and the page set is about to become
-// hub-configurable at runtime, at which point this array becomes a registry rather than a fixed list.
-static const screen_module_t* MODULES[] = {
-  &home_module, &chart_module, &ice_module, &buddy_module,
-  &settings_module,
+// Every screen this firmware carries, keyed by the STABLE ID the hub uses on the wire. Which of these
+// appear, and in what order, is chosen on the hub and persisted in NVS -- see core/page_config.h.
+// Screens stay compiled in (flash is ~56% of 3 MB); the hub only selects and orders them.
+typedef struct { const char* id; const screen_module_t* mod; } page_entry_t;
+static const page_entry_t REGISTRY[] = {
+  {"home",     &home_module},
+  {"markets",  &finance_module},
+  {"chart",    &chart_module},
+  {"ice",      &ice_module},
+  {"agents",   &buddy_module},
+  {"settings", &settings_module},
 };
-static const int COUNT = (int)(sizeof(MODULES) / sizeof(MODULES[0]));
+static const uint8_t REGISTRY_N = (uint8_t)(sizeof(REGISTRY) / sizeof(REGISTRY[0]));
+
+// Shipped default when NVS is empty or holds nothing usable. Markets is deliberately absent.
+static const char* DEFAULT_PAGES = "home,chart,ice,agents,settings";
+#define PAGE_ALWAYS_ID "settings"   // pinned so no config can strand the user without settings
+#define NVS_PAGES_KEY  "pages"
+
+// The resolved, active page set. MODULES/COUNT are now runtime state, not compile-time constants.
+static const screen_module_t* MODULES[PAGES_MAX];
+static char  s_active_ids[PAGES_MAX][PAGE_ID_LEN];
+static int   COUNT = 0;
+
+static const screen_module_t* registry_lookup(const char* id) {
+  for (uint8_t i = 0; i < REGISTRY_N; i++)
+    if (strcmp(REGISTRY[i].id, id) == 0) return REGISTRY[i].mod;
+  return nullptr;
+}
+
+// Resolve the persisted (or hub-supplied) list into MODULES/COUNT.
+static void load_active_pages(void) {
+  const char* known[REGISTRY_N];
+  for (uint8_t i = 0; i < REGISTRY_N; i++) known[i] = REGISTRY[i].id;
+
+  // Stored as the comma-joined id string via the generic bytes API (nvs.h has no string helper).
+  char stored[PAGES_MAX * PAGE_ID_LEN] = {0};
+  size_t n = nvs_get_bytes(NVS_PAGES_KEY, stored, sizeof(stored) - 1);
+  stored[n < sizeof(stored) ? n : sizeof(stored) - 1] = '\0';
+  if (n == 0) snprintf(stored, sizeof(stored), "%s", DEFAULT_PAGES);
+
+  page_list_t want, fallback, resolved;
+  page_list_deserialize(stored, &want);
+  page_list_deserialize(DEFAULT_PAGES, &fallback);
+  page_list_resolve(&want, known, REGISTRY_N, PAGE_ALWAYS_ID, &fallback, &resolved);
+
+  COUNT = 0;
+  for (uint8_t i = 0; i < resolved.count; i++) {
+    const screen_module_t* m = registry_lookup(resolved.ids[i]);
+    if (!m) continue;                      // resolve already filtered, belt and braces
+    MODULES[COUNT] = m;
+    snprintf(s_active_ids[COUNT], PAGE_ID_LEN, "%s", resolved.ids[i]);
+    COUNT++;
+  }
+}
 
 static lv_obj_t* s_pager = nullptr;
 static lv_obj_t* s_pages[8];
 static lv_obj_t* s_dots[8];
 static int s_current = 0;
-// Index of the buddy screen in MODULES. Named so a screen inserted before it cannot silently send
-// wake-on-prompt to the wrong page (it has moved: 3 -> 4 for ICE, 4 -> 5 for the graph, 5 -> 4 when
-// usage was dropped, 4 -> 3 when markets was hidden).
-#define BUDDY_INDEX 3
 static bool s_settling = false;   // guards reentrant SCROLL_END from our own recenter()
 static lv_timer_t* s_tick = nullptr;   // the 500ms visible-screen update timer; paused while idle (#60)
 
@@ -160,6 +204,7 @@ static void autoswipe_cb(lv_timer_t*) {
 #endif
 
 void carousel_init(void) {
+  load_active_pages();   // MODULES/COUNT are runtime state now; resolve before any page is created.
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
 
@@ -239,10 +284,42 @@ lv_obj_t* carousel_root(void) { return s_pager; }
 
 // Buddy screen index in MODULES (home=0, finance=1, chart=2, ice=3, buddy=4, settings=5).
 // Kept as a named function rather than carousel_goto(3) so callers don't embed the magic index.
+// Index of a page in the ACTIVE list, or -1. Looked up by id: the old #define BUDDY_INDEX was wrong or
+// moved four times as screens came and went, and with a hub-configurable list a constant cannot work.
+static int active_index_of(const char* id) {
+  for (int i = 0; i < COUNT; i++)
+    if (strcmp(s_active_ids[i], id) == 0) return i;
+  return -1;
+}
+
 void carousel_goto_buddy(void) {
-  if (s_current == BUDDY_INDEX) return;   // already there; no scroll churn
-  show(BUDDY_INDEX);
+  int idx = active_index_of("agents");
+  if (idx < 0) return;                    // the user removed the agents page: nothing to wake to
+  if (s_current == idx) return;           // already there; no scroll churn
+  show(idx);
   recenter();
+}
+
+// Apply a page list from the hub. Persists first, so the choice survives even if the rebuild path
+// fails, then restarts: rebuilding the pager's children live would have to tear down and recreate LVGL
+// objects underneath a running render loop, and a page-set change is rare enough that ~5 s of reboot is
+// the cheaper, safer trade. Returns the resolved page count (0 => nothing applied).
+uint8_t carousel_apply_pages(const page_list_t* want) {
+  if (!want) return 0;
+  const char* known[REGISTRY_N];
+  for (uint8_t i = 0; i < REGISTRY_N; i++) known[i] = REGISTRY[i].id;
+
+  page_list_t fallback, resolved;
+  page_list_deserialize(DEFAULT_PAGES, &fallback);
+  uint8_t n = page_list_resolve(want, known, REGISTRY_N, PAGE_ALWAYS_ID, &fallback, &resolved);
+  if (n == 0) return 0;
+
+  char buf[PAGES_MAX * PAGE_ID_LEN];
+  size_t len = page_list_serialize(&resolved, buf, sizeof(buf));
+  if (len == 0) return 0;
+  nvs_set_bytes(NVS_PAGES_KEY, buf, len);
+  nvs_set_screen(0);   // the old index may not exist in the new list
+  return n;
 }
 
 #if BEACON_CAPTURE

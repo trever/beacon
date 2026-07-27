@@ -6,6 +6,7 @@
 #include "core/location.h"
 #include "core/timekeep.h"
 #include "config/ticker_table.h"
+#include "ui/carousel.h"   // carousel_apply_pages
 #include "util/log.h"
 #include <Arduino.h>
 #include <esp_heap_caps.h>
@@ -39,6 +40,34 @@ static void send_config_ack(uint32_t rev, bool ok, const char* err, int count) {
   size_t n = hub_build_config_ack(buf, sizeof(buf), rev, ok, err, count);
   if (n) g_link->send(buf, n);
   LOGI("hub: config_ack rev=%u ok=%d err=%s count=%d", (unsigned)rev, ok, err ? err : "", count);
+}
+
+static void send_pages_ack(uint32_t rev, bool ok, const char* err, int count) {
+  if (!g_link) return;
+  char buf[96];
+  size_t n = hub_build_pages_ack(buf, sizeof(buf), rev, ok, err, count);
+  if (n) g_link->send(buf, n);
+  LOGI("hub: pages_ack rev=%u ok=%d err=%s count=%d", (unsigned)rev, ok, err ? err : "", count);
+}
+
+// A "pages" frame: which screens the device shows, in what order. Persisted, acked, then applied by
+// restarting -- see carousel_apply_pages for why a restart rather than a live rebuild.
+static void on_pages(const char* json, size_t len) {
+  uint32_t rev = 0;
+  page_list_t want;
+  const char* err = nullptr;
+  if (hub_parse_pages(json, len, &rev, &want, &err) != ERR_NONE) {
+    send_pages_ack(rev, false, err ? err : "malformed", 0);
+    return;
+  }
+  uint8_t n = carousel_apply_pages(&want);
+  if (n == 0) { send_pages_ack(rev, false, "empty", 0); return; }
+
+  // Ack BEFORE restarting: the hub must learn the rev landed, and the reboot drops the link.
+  send_pages_ack(rev, true, nullptr, (int)n);
+  LOGI("hub: pages rev=%u applied (%u pages); restarting to rebuild the carousel", (unsigned)rev, (unsigned)n);
+  delay(250);          // let the BLE stack flush the ack frame before the reset
+  ESP.restart();
 }
 
 // Snapshot the device's current ticker table and emit it to the hub as chunked cmd:"report" frames so a
@@ -125,6 +154,8 @@ static void on_frame(const char* json, size_t len) {
   // A config frame (chunked ticker snapshot) carries neither "ack" nor "err"; dispatch it before the
   // loc/status fall-through so it isn't silently swallowed by hub_parse_status.
   if (frame_has(json, len, "\"config\"")) { on_config(json, len); return; }
+  // Page config, same treatment: dispatched before the loc/status fall-through so it is not swallowed.
+  if (frame_has(json, len, "\"pages\"")) { on_pages(json, len); return; }
 
   // A "loc" block (issue #54) may ride the (re)connect full frame or arrive alone. Parsed independently
   // of usage/buddy; persist via core/location (hub source wins) + apply tz OUTSIDE any location lock.
