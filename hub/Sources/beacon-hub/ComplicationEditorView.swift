@@ -11,6 +11,11 @@ import BeaconHubKit
 // indices with their own state -- the clock is one list entry charged 2 slot units, never two entries.
 // Drops therefore target INSERTION POINTS around the stack (the same "insert-at-index" primitive the
 // Pages carousel above uses for reordering pages), not a positional 1-6 grid.
+//
+// WS-3 (2026-07-27-hub-visual-system-plan.md SS"WS-3", design SS2/SS3/SS5): this view is laid out for the
+// Pages inspector's 260 pt column (228 pt of content after the inspector's own SS5.1 padding), and every
+// literal font size / colour / radius here has been replaced by HubStyle/HubRows/HubSurfaces tokens and
+// components. The model above is untouched -- only pixels moved.
 struct ComplicationEditorView: View {
     @ObservedObject var model: HubViewModel
 
@@ -24,7 +29,7 @@ struct ComplicationEditorView: View {
     private var rows: [ComplicationEditor.Row] { ComplicationEditor.rows(for: placements) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             header
             stack
             warnings
@@ -35,67 +40,118 @@ struct ComplicationEditorView: View {
 
     // --- header ---
 
+    // At 228 pt of content width the title/subtitle and the "n of N slots" capsule cannot share a row
+    // (plan WS-3 item 1: the header "puts a two-line title beside a capsule chip on one row"). Stacking
+    // the badge under the header is the deterministic choice the plan asks for, rather than a
+    // GeometryReader race that measures available width at render time.
     private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Complications").font(.system(size: 13, weight: .semibold))
-                Text("Drag a tile onto the stack to place it; drag within the stack to reorder.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(ComplicationEditor.unitsUsed(placements)) of \(ComplicationEditor.capacity) slots")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
+        VStack(alignment: .leading, spacing: HubSpace.m) {
+            SectionHeader(title: "Complications",
+                          subtitle: "Drag a tile onto the stack to place it; drag within the stack to reorder.")
+            HubBadge("\(ComplicationEditor.unitsUsed(placements)) of \(ComplicationEditor.capacity) slots")
         }
     }
 
     // --- the stack (design order == device order) ---
 
     private var stack: some View {
-        VStack(spacing: 6) {
-            ForEach(Array(rows.enumerated()), id: \.element.placement.id) { index, row in
-                stackRow(index: index, row: row)
+        VStack(alignment: .leading, spacing: HubSpace.s) {
+            if !rows.isEmpty {
+                Card(padding: .rows) {
+                    VStack(spacing: 0) {
+                        ForEach(Array(rows.enumerated()), id: \.element.placement.id) { index, row in
+                            if index > 0 {
+                                RowSeparator(hasLeadingIcon: false)
+                            }
+                            stackRow(index: index, row: row)
+                        }
+                    }
+                }
             }
             appendDropZone
         }
     }
 
+    // `SettingsRow`'s two text slots (title/subtitle) carry the placement's label and its arg/orphan
+    // detail; the "2 slots" and "unknown" marks are informational, not controls, so they ride alongside
+    // the row's one real trailing control (remove) rather than counting against design SS3.2's "exactly
+    // one control" rule. Tapping the row (outside the remove button) opens the arg picker for fin/usage --
+    // the same action the old detail-line button performed -- since `SettingsRow`'s subtitle is plain text
+    // and cannot carry its own tap target.
     private func stackRow(index: Int, row: ComplicationEditor.Row) -> some View {
-        ComplicationStackRow(row: row, onRemove: { removeRow(at: index) },
-                              onPickArg: { argPickerFor = index })
-            .draggable(row.placement.id)
-            .dropDestination(for: String.self) { items, _ in handleDrop(items, at: index) }
-            .popover(isPresented: Binding(get: { argPickerFor == index },
-                                          set: { if !$0 { argPickerFor = nil } })) {
-                argPicker(for: row, index: index)
+        let title = row.entry?.label ?? row.placement.id
+        return SettingsRow(title: title, subtitle: stackRowSubtitle(row)) {
+            HStack(spacing: HubSpace.s) {
+                if let entry = row.entry, entry.size == 2 {
+                    HubBadge("2 slots")
+                }
+                if row.isOrphan {
+                    HubBadge("unknown", tint: HubColor.stateWarn)
+                }
+                IconButton(systemImage: "xmark.circle.fill", label: "Remove \(title)") {
+                    removeRow(at: index)
+                }
             }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard let entry = row.entry, entry.takesArg else { return }
+            argPickerFor = index
+        }
+        .draggable(row.placement.id)
+        .dropDestination(for: String.self) { items, _ in handleDrop(items, at: index) }
+        .popover(isPresented: Binding(get: { argPickerFor == index },
+                                      set: { if !$0 { argPickerFor = nil } })) {
+            argPicker(for: row, index: index)
+        }
+    }
+
+    private func stackRowSubtitle(_ row: ComplicationEditor.Row) -> String? {
+        if let entry = row.entry, entry.takesArg {
+            return row.placement.arg.map { "Arg: \($0)" } ?? "Choose \u{2026}"
+        }
+        if row.isOrphan {
+            return "Not in this build's catalog \u{2014} kept as-is."
+        }
+        return nil
     }
 
     private var appendDropZone: some View {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(Color.secondary.opacity(0.3), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            .frame(height: 26)
-            .overlay(Text(rows.isEmpty ? "Drop here" : "").font(.system(size: 10)).foregroundStyle(.secondary))
+        HubShape.control
+            .strokeBorder(HubColor.lineHairline, style: StrokeStyle(lineWidth: HubStroke.hairline, dash: [4, 3]))
+            .frame(minHeight: 26)
+            .overlay {
+                if rows.isEmpty {
+                    Text("Drop here").font(HubType.caption).foregroundStyle(HubColor.inkSecondary)
+                }
+            }
             .dropDestination(for: String.self) { items, _ in handleDrop(items, at: nil) }
     }
 
     @ViewBuilder private var warnings: some View {
+        // Transient refusal (capacity / duplicate / invalid arg): it clears on the next successful drop,
+        // so it stays an inline `type.secondary` line rather than the standing `StatusRow` treatment
+        // (plan WS-3 item 5's explicitly-allowed "may stay inline" option).
         if let dropMessage {
-            Text(dropMessage).font(.system(size: 10)).foregroundStyle(.orange)
+            Text(dropMessage).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
         }
+        // The blank-Home warning is a genuine standing state until the user places something, so it takes
+        // the full `StatusRow` `warn` treatment -- the glyph carries the colour, the word stays
+        // `ink.primary` (design SS2.3).
         if ComplicationEditor.isBlank(placements) {
-            Text("Home will be blank \u{2014} only the eyebrow and status chip will show.")
-                .font(.system(size: 10)).foregroundStyle(.orange)
+            StatusRow(state: .warn,
+                      title: "Home will be blank \u{2014} only the eyebrow and status chip will show.") {
+                EmptyView()
+            }
         }
     }
 
     // --- palette ---
 
     private var palette: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("AVAILABLE").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: 8)], spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.s) {
+            Text("AVAILABLE").hubEyebrow().foregroundStyle(HubColor.inkSecondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 92), spacing: HubSpace.s)], spacing: HubSpace.s) {
                 ForEach(ComplicationCatalog.all, id: \.id) { entry in
                     paletteTile(entry)
                 }
@@ -103,17 +159,21 @@ struct ComplicationEditorView: View {
         }
     }
 
+    // `CatalogTile` requires a real action (it is the same tile the Pages AVAILABLE grid uses to toggle a
+    // provider on tap); wiring it to append this id mirrors that contract and gives keyboard/VoiceOver
+    // users a way to place a complication that pure drag-and-drop does not. It calls the identical
+    // `handleDrop` path a drop onto the append zone already used -- dragging an already-placed palette
+    // tile onto the append zone was already legal before this change (the old `paletteTile` never
+    // disabled `.draggable` when `placed` was true), so tapping a placed tile moving it to the end of the
+    // stack is exposing an existing capability through a second input method, not new behaviour.
     private func paletteTile(_ entry: ComplicationCatalogEntry) -> some View {
         let placed = ComplicationEditor.isAlreadyPlaced(entry.id, in: placements)
-        return VStack(spacing: 3) {
-            Text(entry.label).font(.system(size: 11, weight: .medium)).lineLimit(1)
-            Text(entry.size == 2 ? "2 slots" : "1 slot").font(.system(size: 9)).foregroundStyle(.secondary)
+        return CatalogTile(title: entry.label,
+                            detail: entry.size == 2 ? "2 slots" : "1 slot",
+                            isEnabled: placed,
+                            isSelected: false) {
+            _ = handleDrop([entry.id], at: nil)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.secondary.opacity(0.18)))
-        .opacity(placed ? 0.35 : 1)
         .help(placed ? "\(entry.label) is already on Home. One instance of each complication at a time." : entry.detail)
         .draggable(entry.id)
     }
@@ -185,67 +245,6 @@ struct ComplicationEditorView: View {
     }
 }
 
-// One row in the stack: the placement's label, a 2-slot badge for the clock, an "unknown" mark for an
-// orphaned id (design §10.4 -- preserved, not dropped, the same treatment PageOptions.orphan gives a
-// missing chart instrument), a tappable arg summary for fin/usage, and a remove button (the
-// non-drag-and-drop path -- mirrors the Pages carousel keeping chevron buttons alongside dragging).
-private struct ComplicationStackRow: View {
-    let row: ComplicationEditor.Row
-    let onRemove: () -> Void
-    let onPickArg: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                titleLine
-                detailLine
-            }
-            Spacer(minLength: 6)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Remove from Home")
-        }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Color.secondary.opacity(0.18)))
-    }
-
-    private var title: String { row.entry?.label ?? row.placement.id }
-
-    private var titleLine: some View {
-        HStack(spacing: 6) {
-            Text(title).font(.system(size: 12, weight: .medium))
-            if let entry = row.entry, entry.size == 2 {
-                badge("2 slots", color: .secondary)
-            }
-            if row.isOrphan {
-                badge("unknown", color: .orange)
-            }
-        }
-    }
-
-    @ViewBuilder private var detailLine: some View {
-        if let entry = row.entry, entry.takesArg {
-            Button(action: onPickArg) {
-                Text(row.placement.arg.map { "Arg: \($0)" } ?? "Choose \u{2026}")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        } else if row.isOrphan {
-            Text("Not in this build's catalog \u{2014} kept as-is.")
-                .font(.system(size: 9)).foregroundStyle(.secondary)
-        }
-    }
-
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text).font(.system(size: 9)).foregroundStyle(color)
-            .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(color.opacity(0.14), in: Capsule())
-    }
-}
-
 private struct ArgOption: Identifiable {
     let id: String
     let label: String
@@ -253,6 +252,7 @@ private struct ArgOption: Identifiable {
 
 /// Shared popover body for the fin/usage arg pickers -- a plain tappable list, mirroring
 /// SonosRoomPopover/ChartInstrumentPopover's "no matches" honesty rather than an empty-looking sheet.
+/// Each option is a `ListRow` (design SS3.4) rather than a hand-rolled button.
 private struct ArgPickerList: View {
     let title: String
     let options: [ArgOption]
@@ -260,21 +260,17 @@ private struct ArgPickerList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(title).font(.system(size: 11, weight: .semibold)).padding(8)
+            Text(title).font(HubType.secondary).fontWeight(.semibold).foregroundStyle(HubColor.inkPrimary)
+                .padding(HubSpace.s)
             Divider()
             if options.isEmpty {
-                Text("Nothing to choose from yet.").font(.system(size: 11)).foregroundStyle(.secondary).padding(8)
+                Text("Nothing to choose from yet.").font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                    .padding(HubSpace.s)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(options) { option in
-                            Button { select(option.id) } label: {
-                                Text(option.label).font(.system(size: 12))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 8).padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                            ListRow(primary: option.label) { select(option.id) }
                             Divider()
                         }
                     }
@@ -284,4 +280,18 @@ private struct ArgPickerList: View {
         }
         .frame(width: 220)
     }
+}
+
+#Preview("228 pt -- light") {
+    ComplicationEditorView(model: HubViewModel())
+        .frame(width: 228)
+        .padding(HubSpace.l)
+        .preferredColorScheme(.light)
+}
+
+#Preview("228 pt -- dark") {
+    ComplicationEditorView(model: HubViewModel())
+        .frame(width: 228)
+        .padding(HubSpace.l)
+        .preferredColorScheme(.dark)
 }
