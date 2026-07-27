@@ -189,6 +189,50 @@ static void test_resolve_carries_opts(void) {
   TEST_ASSERT_EQUAL_STRING("", page_list_opts(&out, "home"));
 }
 
+// ===== idempotence =====
+//
+// REGRESSION: the hub re-pushes the current page config on every reconnect. The device used to apply and
+// restart unconditionally, so the restart reconnected, was re-pushed, and restarted again -- a boot loop
+// that only stopped when the hub was killed. Applying an identical list must be a no-op.
+
+static void test_equal_detects_identical_lists(void) {
+  page_list_t a = of("home|chart=sym:btc|settings");
+  page_list_t b = of("home|chart=sym:btc|settings");
+  TEST_ASSERT_TRUE(page_list_equal(&a, &b));
+}
+
+static void test_equal_detects_order_change(void) {
+  page_list_t a = of("home|chart|settings");
+  page_list_t b = of("chart|home|settings");
+  TEST_ASSERT_FALSE(page_list_equal(&a, &b));
+}
+
+// The instrument changing with the order untouched still has to reach the device.
+static void test_equal_detects_option_change(void) {
+  page_list_t a = of("chart=sym:sp500");
+  page_list_t b = of("chart=sym:btc");
+  TEST_ASSERT_FALSE(page_list_equal(&a, &b));
+}
+
+static void test_equal_detects_added_or_removed_page(void) {
+  page_list_t a = of("home|settings");
+  page_list_t b = of("home|chart|settings");
+  TEST_ASSERT_FALSE(page_list_equal(&a, &b));
+  TEST_ASSERT_TRUE(page_list_equal(&a, &a));
+  TEST_ASSERT_FALSE(page_list_equal(&a, NULL));
+  TEST_ASSERT_TRUE(page_list_equal(NULL, NULL));
+}
+
+// What the device actually does: resolve the pushed list, compare to what is running. A re-push of the
+// running config must compare equal even though it went through resolve (which appends settings).
+static void test_resolved_repush_equals_running(void) {
+  page_list_t fb = of("home,settings"), first, second;
+  page_list_t want = of("home|chart=sym:btc");
+  page_list_resolve(&want, KNOWN, KNOWN_N, "settings", &fb, &first);
+  page_list_resolve(&want, KNOWN, KNOWN_N, "settings", &fb, &second);
+  TEST_ASSERT_TRUE(page_list_equal(&first, &second));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_roundtrip);
@@ -211,5 +255,10 @@ int main(int, char**) {
   RUN_TEST(test_opts_survive_serialize_roundtrip);
   RUN_TEST(test_deserialize_reads_legacy_comma_format);
   RUN_TEST(test_resolve_carries_opts);
+  RUN_TEST(test_equal_detects_identical_lists);
+  RUN_TEST(test_equal_detects_order_change);
+  RUN_TEST(test_equal_detects_option_change);
+  RUN_TEST(test_equal_detects_added_or_removed_page);
+  RUN_TEST(test_resolved_repush_equals_running);
   return UNITY_END();
 }

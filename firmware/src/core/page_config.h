@@ -40,6 +40,11 @@ bool page_list_add(page_list_t* l, const char* id);
 
 bool page_list_contains(const page_list_t* l, const char* id);
 
+// Same pages, same order, same options. Used to make applying a page list IDEMPOTENT: the hub re-pushes
+// the current config on every reconnect, so a device that restarted for an identical list would restart
+// forever.
+bool page_list_equal(const page_list_t* a, const page_list_t* b);
+
 // Resolve a REQUESTED list (from the hub, or restored from NVS) against the ids this firmware actually
 // has, producing the list the carousel should build. The rules exist to make a bad config non-fatal:
 //

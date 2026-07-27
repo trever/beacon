@@ -9,6 +9,16 @@ bool page_list_contains(const page_list_t* l, const char* id) {
   return false;
 }
 
+bool page_list_equal(const page_list_t* a, const page_list_t* b) {
+  if (!a || !b) return a == b;
+  if (a->count != b->count) return false;
+  for (uint8_t i = 0; i < a->count && i < PAGES_MAX; i++) {
+    if (strncmp(a->ids[i],  b->ids[i],  PAGE_ID_LEN)   != 0) return false;
+    if (strncmp(a->opts[i], b->opts[i], PAGE_OPTS_LEN) != 0) return false;
+  }
+  return true;
+}
+
 bool page_list_add(page_list_t* l, const char* id) {
   if (!l || !id || !*id) return false;
   if (l->count >= PAGES_MAX) return false;
