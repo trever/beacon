@@ -241,6 +241,10 @@ public enum DeviceCommand: Equatable {
     case report(what: String, rev: UInt32, part: Int, parts: Int, rows: [TickerRow])
     // Tap-to-open: device asks hub to focus the terminal/editor for session `id` (issue #110, P2-b).
     case open(id: String)
+    // One ack per pushed page list. Echoes the `rev`; on ok carries the resolved page count, on reject
+    // an `err` ("malformed" / "too_many_pages" / "empty"). The device restarts right after acking, so
+    // the link drops immediately -- an absent ack is normal if the reset beat the flush.
+    case pagesAck(rev: UInt32, ok: Bool, count: Int?, err: String?)
 
     public static func parse(_ data: Data) -> DeviceCommand? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -252,6 +256,9 @@ public enum DeviceCommand: Equatable {
         case "open":
             guard let id = obj["id"] as? String, !id.isEmpty else { return nil }
             return .open(id: id)
+        case "pages_ack":
+            guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
+            return .pagesAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)
         case "config_ack":
             guard let rev = obj["rev"] as? Int, rev >= 0, let ok = obj["ok"] as? Bool else { return nil }
             return .configAck(rev: UInt32(rev), ok: ok, count: obj["count"] as? Int, err: obj["err"] as? String)

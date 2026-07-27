@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var poller: UsagePoller!                   // built once providers exist
     private let location = LocationProvider()
     private let tickerStore = TickerConfigStore()   // desired ticker list + monotonic rev (issue #92)
+    private let pageStore = PageConfigStore()      // which device pages, in what order (+ monotonic rev)
     private var reportAssembler = ReportAssembler()   // reassembles device->hub ticker report chunks (#105)
     private let tickerSearch = TickerSearch()        // Binance(cached) + Yahoo(live) discovery (issue #92 B4)
     private lazy var tickerEditor = TickerEditorWindowController(model: menubar.viewModel)
@@ -359,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Without this the device redraws its rows on reconnect with no project/title/message.
                 if let data = try? SessionDetailsFrame(self?.sessionDetails ?? []).encoded() { self?.central.send(data) }
                 self?.pushTickerConfig()
+                self?.pushPageConfig()
             }
         }
         central.onCommand = { [weak self] cmd in
@@ -413,6 +415,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .applied: central.send(HubAck.ack(id: id, ok: true))
             case .late:    central.send(HubAck.ack(id: id, ok: false))
             case .unknown: central.send(HubAck.err(id: id, reason: "unknown_prompt_id"))
+            }
+        case .pagesAck(let rev, let ok, let count, let err):
+            // Stale acks are ignored for the same reason as configAck: a later edit already bumped the
+            // rev we are tracking. The device restarts immediately after acking, so the link drops here.
+            guard rev == UInt32(pageStore.current.rev) else { break }
+            if ok {
+                NSLog("[beacon-hub] pages rev=%u applied (%d pages); device is restarting", rev, count ?? 0)
+            } else {
+                NSLog("[beacon-hub] pages rev=%u REJECTED: %@", rev, err ?? "unknown")
             }
         case .configAck(let rev, let ok, let count, let err):
             // Ignore stale acks: a later edit already bumped our rev, so an ack for an older push no
@@ -610,6 +621,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FileHandle.standardError.write(Data("[beacon-hub] ticker config encode failed: \(error.localizedDescription)\n".utf8))
             menubar.setTickerSync(.error("encode failed"))
         }
+    }
+
+    // Push the chosen page list. No-ops while pristine (rev 0): applying a page list RESTARTS the device,
+    // so an untouched hub must never reboot it just for connecting.
+    private func pushPageConfig() {
+        guard central.isConnected, let frame = pageStore.frame() else { return }
+        guard frame.fitsFrame() else {
+            FileHandle.standardError.write(Data("[beacon-hub] page config exceeds HUB_FRAME_MAX; not sent\n".utf8))
+            return
+        }
+        do { central.send(try frame.encoded()) }
+        catch {
+            FileHandle.standardError.write(Data("[beacon-hub] page config encode failed: \(error.localizedDescription)\n".utf8))
+        }
+    }
+
+    /// Apply a new page order/selection from the UI: persist, bump the rev, push.
+    func applyPageEdit(ids: [String]) {
+        let before = pageStore.current
+        let after = pageStore.set(ids: ids)
+        guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
+        pushPageConfig()
     }
 
     private func sendFrame(_ frame: StatusFrame) {

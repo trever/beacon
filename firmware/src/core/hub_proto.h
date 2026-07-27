@@ -2,7 +2,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "core/records.h"   // usage_rec_t, buddy_rec_t, *_LEN capacities
+#include "core/records.h"        // usage_rec_t, buddy_rec_t, *_LEN capacities
+#include "core/page_config.h"    // page_list_t
 #include "core/screen_state.h"     // data_err_t
 #include "config/ticker_table.h"   // ticker_runtime_t, MAX_TICKERS bounds
 
@@ -126,6 +127,25 @@ typedef struct {
 // when count in [1,MAX_TICKERS], else CFG_ERR "empty". On any CFG_ERR the partial is discarded and
 // *err_out is set to the static ack-err string. (NVS/apply errors are handled by the caller in A5.)
 config_status_t hub_config_accum_step(config_accum_t* acc, const config_chunk_t* chunk, const char** err_out);
+
+// --- Inbound: hub -> device page config (which pages, in what order) ---
+// {"v":1,"pages":{"rev":R,"list":[{"id":"home"},{"id":"chart","opts":{...}}]}}
+//
+// Single-frame by design: 8 ids cost ~200 B against HUB_FRAME_MAX (1024), so the chunking the ticker
+// config needs would be dead weight. `opts` is PARSED AND IGNORED -- reserved so per-page settings can
+// land later without a wire break. If page options ever outgrow the frame, chunk it exactly like §B2.
+//
+// Returns ERR_NONE and fills *out on a structurally valid frame (v==1, a "pages" object, integer rev, a
+// non-empty "list" array of objects carrying a non-empty "id"). On failure returns ERR_PARSE and sets
+// *err_out to the static ack-err string: "malformed" (bad JSON / missing field / empty id) or
+// "too_many_pages" (> PAGES_MAX entries). Unknown ids are NOT an error here -- the resolve step drops
+// them, so an older device stays usable against a newer hub. err_out may be NULL.
+data_err_t hub_parse_pages(const char* json, size_t len, uint32_t* rev, page_list_t* out,
+                           const char** err_out);
+
+// ok  => {"v":1,"cmd":"pages_ack","rev":R,"ok":true,"count":N}\n
+// err => {"v":1,"cmd":"pages_ack","rev":R,"ok":false,"err":"E"}\n
+size_t hub_build_pages_ack(char* buf, size_t cap, uint32_t rev, bool ok, const char* err, int count);
 
 // --- Outbound: device -> hub config ack (uses the cmd channel, NOT the ack field) ---
 // ok  => {"v":1,"cmd":"config_ack","rev":R,"ok":true,"count":N}\n

@@ -100,6 +100,35 @@ Optional `sdetail` block (additive `v:1` extension). A **standalone** frame, joi
 - Old firmware ignores the unknown frame; new firmware treats absent detail as "no content yet" and
   falls back to the `sessions` `label`. No version bump.
 
+## A2. Hub -> device page config (additive, design `docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md`)
+
+Which screens the device shows, and in what order. Persisted in NVS and applied by the device; the page
+set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHubKit/PageConfig.swift`.
+
+```json
+{"v":1,"pages":{"rev":3,"list":[{"id":"home"},{"id":"chart","opts":{"symbol":"sp500"}},{"id":"agents"}]}}
+{"v":1,"cmd":"pages_ack","rev":3,"ok":true,"count":4}
+{"v":1,"cmd":"pages_ack","rev":3,"ok":false,"err":"too_many_pages"}
+```
+
+- **Single frame, not chunked.** 8 ids cost ~200 B against `HUB_FRAME_MAX` (1024), so the ticker
+  config's chunking would be dead weight. If `opts` ever outgrows the frame, chunk it exactly like §B2.
+- Caps: `list` length ≤ **8** (`PAGES_MAX`); `id` ≤ **11** chars. `rev` is a monotonic hub counter,
+  echoed in the ack; a stale ack (for a rev the user has since edited past) is ignored.
+- `opts` is **parsed and ignored** — reserved so per-page settings can land without a wire break.
+- Ids are the device's `REGISTRY` in `firmware/src/ui/carousel.cpp`, mirrored by `PageCatalog`:
+  `home`, `markets`, `chart`, `ice`, `agents`, `settings`.
+- **Unknown ids are dropped, not rejected**, so a hub ahead of its firmware degrades quietly instead of
+  stranding the device on an old page set. Duplicates collapse to their first occurrence.
+- **`settings` is force-appended when missing** (evicting the last entry if the list is full): no
+  configuration may leave the device unable to reach its own settings.
+- An empty or fully-unknown list falls back to the shipped default rather than a blank carousel.
+- `err` ∈ {`malformed`, `too_many_pages`, `empty`}.
+- **The device acks and then RESTARTS** to rebuild the carousel, so the link drops immediately after the
+  ack — an ack lost to the reset is normal. Rebuilding the pager's children live would mean tearing down
+  LVGL objects under a running render loop, and a page-set change is rare enough that ~5 s of reboot is
+  the safer trade. The hub therefore never pushes while pristine (`rev` 0), or for a no-op edit.
+
 ## B. Device -> hub commands + hub acks (FROZEN, `tech.md` §7.1)
 
 ```json

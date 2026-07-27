@@ -1,4 +1,5 @@
 #pragma once
+#include "core/page_config.h"
 #include <lvgl.h>
 
 // Builds the swipe carousel from the five screen modules + the dot indicator, applies the initial
@@ -12,6 +13,10 @@ void carousel_set_tick_paused(bool paused);  // pause/resume the 500ms update ti
 // carousel_init() calls it once at boot. Safe to call repeatedly.
 void carousel_apply_rotate(void);
 void carousel_goto_buddy(void);              // navigate to the CLAUDE/buddy screen (auto-wake, no animation)
+
+// Apply a hub-supplied page list: resolve against the registry, persist to NVS, and report the resolved
+// count (0 => rejected, nothing written). The caller acks, then restarts to pick it up.
+uint8_t carousel_apply_pages(const page_list_t* want);              // navigate to the CLAUDE/buddy screen (auto-wake, no animation)
 void carousel_advance(int dir);              // +1 next / -1 prev page, animated (physical buttons)
 #if BEACON_CAPTURE
 int  carousel_count(void);                   // number of screens (screenshot sweep)

@@ -192,6 +192,51 @@ bool hub_parse_sdetail(const char* json, size_t len, buddy_rec_t* buddy, bool* h
   return true;
 }
 
+// Defined below with the other frame builders; declared here so the pages ack can sit beside its parser.
+static size_t finish_frame(JsonDocument& doc, char* buf, size_t cap);
+
+data_err_t hub_parse_pages(const char* json, size_t len, uint32_t* rev, page_list_t* out,
+                           const char** err_out) {
+  static const char* E_MALFORMED = "malformed";
+  static const char* E_TOO_MANY  = "too_many_pages";
+  if (out) memset(out, 0, sizeof(*out));
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len))                 { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  if ((doc["v"] | 0) != 1)                             { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  JsonVariantConst p = doc["pages"];
+  if (!p.is<JsonObjectConst>())                        { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  if (!p["rev"].is<uint32_t>() && !p["rev"].is<int>()) { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  JsonVariantConst list = p["list"];
+  if (!list.is<JsonArrayConst>())                      { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+
+  JsonArrayConst arr = list.as<JsonArrayConst>();
+  if (arr.size() > PAGES_MAX)                          { if (err_out) *err_out = E_TOO_MANY;  return ERR_PARSE; }
+  if (arr.size() == 0)                                 { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+
+  page_list_t tmp; memset(&tmp, 0, sizeof(tmp));
+  for (JsonVariantConst e : arr) {
+    const char* id = e["id"].as<const char*>();
+    if (!id || !*id)                                   { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+    page_list_add(&tmp, id);   // duplicates collapse; unknown ids are the resolve step's problem, not ours
+  }
+  if (tmp.count == 0)                                  { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  if (rev) *rev = (uint32_t)(p["rev"] | 0);
+  if (out) *out = tmp;
+  return ERR_NONE;
+}
+
+size_t hub_build_pages_ack(char* buf, size_t cap, uint32_t rev, bool ok, const char* err, int count) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["v"] = 1;
+  doc["cmd"] = "pages_ack";
+  doc["rev"] = rev;
+  doc["ok"] = ok;
+  if (ok) doc["count"] = count;
+  else    doc["err"] = (err && *err) ? err : "malformed";
+  return finish_frame(doc, buf, cap);
+}
+
 bool hub_parse_loc(const char* json, size_t len, hub_loc_t* out) {
   JsonDocument doc;
   if (deserializeJson(doc, json, len)) return false;   // not valid JSON
