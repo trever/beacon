@@ -19,6 +19,18 @@ written to be lifted into a subagent brief almost verbatim.
 - **No inspector collapse toggle** in Phase 1.
 - The sidebar dirty dot **shows regardless of selection**.
 
+**Ruled by the coordinator on 2026-07-27, after this plan's first draft.** Detail and consequences in
+§10; summarised here because four workstream briefs are downstream of them:
+
+- `SettingsPanel.swift` is **deleted by WS-0**. The OTA track adapts to whatever structure exists when
+  it runs, not the reverse.
+- Device fonts ship as **instanced static TTFs at wght 500** plus each family's `OFL.txt`.
+- The macOS 13 sidebar toggle is **spiked, not argued** — WS-1 opens with a timeboxed check and a
+  written fallback.
+- **The Sonos room row carries real per-room data, not a bare name.** A one-line row in nicer type is
+  the same defect with better spacing. A new pre-wave workstream, **WS-0b**, widens the provider seam
+  so the renderer is never blocked on data that does not exist.
+
 **Not in scope, and owned by another track — do not open these files:**
 `docs/specs/2026-07-27-ota-updates-design.md`, `docs/plans/2026-07-27-ota-updates-plan.md`,
 `DESIGN.md` (the device's system), and anything under `firmware/`.
@@ -63,7 +75,8 @@ And the escalation rule that closes the loop, pasted into every brief below:
 
 | Wave | ID | Workstream | Parallel? | Design phase |
 |---|---|---|---|---|
-| 0 | **WS-0** | Tokens + shared components + the glass frame | **No** — single owner, sequential | Phase 1 steps 1–2 |
+| 0 | **WS-0** | Tokens + shared components + the glass frame | **No** — single owner | Phase 1 steps 1–2 |
+| 0 | **WS-0b** | The Sonos room seam: rooms carry data, not names | **Parallel with WS-0** (disjoint files) | new — §3A |
 | 1 | **WS-1** | Window chrome: sidebar, titles, dirty state, close sheet | yes | Phase 1 step 3 |
 | 1 | **WS-2** | Pages destination: merge, band, tiles, inspector, Sonos `Menu` | yes | Phase 1 step 4 |
 | 1 | **WS-3** | Home's complication inspector, re-laid-out for a 260 pt column | yes | Phase 1 step 4 (see §1.2) |
@@ -75,6 +88,9 @@ And the escalation rule that closes the loop, pasted into every brief below:
 | 4 | **WS-9** | Convergence: delete the compat layer, docs, final QA | **No** — sequential | — |
 
 Wave *n* starts only when every workstream in wave *n−1* is merged into the integration branch.
+**WS-0 and WS-0b run concurrently** — their file sets do not intersect at a single path (§1.1), and
+WS-0 was dispatched before WS-0b existed, so WS-0b must not require any change to it. Both must be
+merged before wave 1 starts, because **WS-2 renders the rows WS-0b supplies the data for**.
 
 ### 1.1 Files, by exclusive owner
 
@@ -91,6 +107,11 @@ brief repeats its own row plus an explicit "files NOT to touch" list.
 | `hub/Sources/beacon-hub/SettingsPanel.swift` | **WS-0** deletes (see §10.4) |
 | `hub/Tests/beacon-hubTests/HubStyleTests.swift` *(new)* | **WS-0** |
 | `hub/Tests/beacon-hubTests/HubComponentTests.swift` *(new)* | **WS-0** |
+| `hub/Sources/BeaconHubKit/SonosRoomSummary.swift` *(new)* | **WS-0b** |
+| `hub/Tests/BeaconHubKitTests/SonosRoomSummaryTests.swift` *(new)* | **WS-0b** |
+| `hub/Sources/beacon-hub/SonosProvider.swift` | **WS-0b** |
+| `hub/Sources/beacon-hub/HubViewModel.swift` | **WS-0b** — one closure's type, nothing else |
+| `hub/Sources/beacon-hub/PageDesignerView.swift` — **compile-only carve-out** | **WS-0b** in wave 0, then **WS-2** in wave 1 (§3A) |
 | `hub/Sources/beacon-hub/SettingsTabs.swift` | **WS-1** |
 | `hub/Sources/beacon-hub/SettingsWindowController.swift` | **WS-1** |
 | `hub/Sources/beacon-hub/SettingsCloseDecision.swift` *(new)* | **WS-1** |
@@ -108,10 +129,15 @@ brief repeats its own row plus an explicit "files NOT to touch" list.
 | every view file (labels + reduce-motion only) | **WS-8**, and only after wave 2 is merged |
 | `docs/codemap.md`, `docs/recipes.md` | **WS-9** |
 
-**Nothing in this plan touches `firmware/`, `hub/Sources/BeaconHubKit/`, `AppDelegate.swift`,
-`MenubarController.swift`, `HubViewModel.swift`, or any provider/BLE/Keychain/hooks file.** That is a
-hard boundary, and it is what makes the whole effort low-risk: `BeaconHubKit` contains no view type,
-so all **308** of its tests are untouched by construction.
+**Nothing in this plan touches `firmware/`, `AppDelegate.swift`, `MenubarController.swift`, or any
+BLE/Keychain/hooks file.** That is a hard boundary.
+
+**WS-0b is the single, named exception to the "no `BeaconHubKit`, no `HubViewModel`, no provider code"
+rule**, and it is scoped to exactly what §3A lists. Everywhere else the rule stands. The consequence
+for the test baseline is stated precisely rather than loosely: WS-0b **adds** one file and one test
+file to `BeaconHubKit` and changes **one closure's type** on `HubViewModel`. All **308** existing
+`BeaconHubKitTests` remain untouched and must still pass; the module's total rises. No other
+workstream may open any of those files.
 
 ### 1.2 Why WS-3 exists as its own workstream
 
@@ -125,6 +151,23 @@ the grid drops to two columns.
 Folding it into WS-2 would make the largest workstream larger. Leaving it in Phase 2 ships a visibly
 broken Home inspector for a whole wave. So it becomes its own small, file-exclusive workstream in the
 same wave, under one written contract: **lay out for 228 pt of content.**
+
+### 1.3 Why WS-0b exists, and why it is not WS-2's problem
+
+The owner's complaint was *"the sonos room selector needs to be better,"* attached to a screenshot of a
+popover containing one bare room name. The first draft of this plan proposed shipping one-line rows
+because richer data crosses three files WS-2 does not own. **That was overturned, correctly: a
+one-line row in nicer type is the same defect with better spacing**, and we would have done the entire
+visual system while leaving complaint #1 unfixed.
+
+The constraint is real — `SonosProvider.swift:23` is `case rooms([String])`, names only — so the seam
+gets widened rather than worked around. It cannot live in WS-2 (wrong files) and it cannot live
+*after* WS-2 (the renderer would be blocked on data that does not exist). So it is a small, dedicated
+workstream in wave 0, parallel to WS-0, merged before wave 1 opens.
+
+**Scope discipline: this is not a Sonos redesign.** No new screen, no new poll, no change to
+`SonosProvider`'s existing timer, gate, backoff or now-playing path. It is: *give the row something
+true and useful to say beyond the name.*
 
 ---
 
@@ -246,7 +289,9 @@ tree that does not build.
 **Rewritten:** `hub/Sources/beacon-hub/DeckUI.swift` → the deprecation compat layer.
 
 **Deleted:** `hub/Sources/beacon-hub/SettingsPanel.swift` — its two surviving types (`SectionHeader`,
-`StatusRow`) move into `HubRows.swift`. **Check §10.4 before deleting.**
+`StatusRow`) move into `HubRows.swift`. **Ruled 2026-07-27: delete it outright** (§10.4). The OTA
+track's claim on this file rests on a reference that was already stale before this plan existed, and
+that track adapts to the structure it finds when it runs.
 
 ### Files NOT to touch
 
@@ -456,6 +501,180 @@ deletes the file when the global count reaches zero.
 
 ---
 
+## 3A. WS-0b — the Sonos room seam
+
+**Wave 0, parallel with WS-0, disjoint files. Must merge before wave 1 opens.** WS-0 was dispatched
+before this workstream existed; **nothing here requires a change to WS-0's files, and you may not edit
+them.**
+
+### Goal
+
+Make `SonosRoomListResult` carry a small per-room value instead of a bare `String`, so that when WS-2
+renders the room picker in wave 1 the data for a useful row already exists. The design's own benchmark
+is the ticker search, which shows name, symbol and exchange; the room picker gets comparable depth.
+
+### Files to touch
+
+- **New** `hub/Sources/BeaconHubKit/SonosRoomSummary.swift` — the value type and the pure composition.
+- **New** `hub/Tests/BeaconHubKitTests/SonosRoomSummaryTests.swift`
+- `hub/Sources/beacon-hub/SonosProvider.swift` — `SonosRoomListResult` + the listing path.
+- `hub/Sources/beacon-hub/HubViewModel.swift` — **the `onFetchSonosRooms` closure's type, and nothing
+  else.** Do not add a field, do not touch another closure, do not reformat the file.
+- `hub/Sources/beacon-hub/PageDesignerView.swift` — **compile-only carve-out, see below.**
+
+### Files NOT to touch
+
+`SonosAPI.swift` (see "what already exists" — you almost certainly do not need it),
+`SonosSettingsView.swift`, `SonosAuthorizer.swift`, `SonosOAuth.swift`, `SonosKeychain.swift`,
+`SonosRoomStore.swift`, `SonosOutcomeClassifier.swift`, `AppDelegate.swift`, `MenubarController.swift`,
+`HubStyle.swift` / `HubRows.swift` / `HubSurfaces.swift` / `DeviceGlass.swift` / `DeckUI.swift` /
+`SettingsPanel.swift` (**all WS-0's, dispatched, in flight**), every other view file, anything under
+`firmware/`.
+
+**The `PageDesignerView.swift` carve-out is narrow and literal.** Widening the enum breaks
+`PageDesignerView.swift:501-505` (`case .rooms(let names): roomFetch = .loaded(names)`),
+`SonosRoomFetchState.loaded([String])` (`:824`), `roomOrphan`'s `names.contains(currentRoom)` (`:467`),
+and `SonosRoomPopover`'s `ForEach(names, id: \.self)` (`:885`). **You adapt exactly those expressions
+so the file compiles, with no visual change, no re-layout, no re-tokenising, and no new view type.**
+WS-2 rewrites this whole area in wave 1 — it is in a later wave, so there is no concurrent edit. If
+you find yourself changing how anything *looks*, you have exceeded the carve-out.
+
+### What already exists — check this before writing a parser
+
+**`SonosAPI.parseGroups` already decodes everything the row needs except playback state.** Read
+`SonosAPI.swift:26-48` before touching anything:
+
+```swift
+struct Group  { let id: String; let name: String; let playerIds: [String] }
+struct Player { let id: String; let name: String }
+struct GroupsResponse { let groups: [Group]; let players: [Player] }
+```
+
+So **player count is free** (`group.playerIds.count`) and **member names are free** (join `playerIds`
+against `players`). No new decoding, no new request, no change to `SonosAPI.swift`.
+
+**Playback state is not free.** `SonosAPI.parsePlaybackState` (`:81`) already exists and is already
+fixture-tested, but it parses `GET /groups/{id}/playback` — one request **per group**. That is the
+only new network cost in this workstream, and it is bounded below.
+
+Also already true, and load-bearing:
+
+- `fetchAvailableRooms` (`SonosProvider.swift:365`) is a **read-only listing that never calls
+  `noteOutcome` and never touches `fails` / `backoffUntil`**. Its own doc comment says so, and
+  `SonosGateTests` pins the behaviour. **Your fan-out must preserve this exactly.** If a playback
+  request fails, that is a `nil` on one row — never a gate event, never a backoff.
+- The completion fires **once**. Do not make it fire twice; callers are not written for it.
+- `SonosProvider`'s existing timer, now-playing poll, OAuth refresh and `onUpdate` path are **not
+  yours**. Do not touch them.
+
+### What to build
+
+**1. `BeaconHubKit/SonosRoomSummary.swift`** — pure, host-testable, no networking, no `SonosAPI` types.
+The precedent is `ChartInstrument.swift` and `ComplicationEditor.swift`: the *rules* live in the kit,
+the view renders what they decide.
+
+```swift
+public struct SonosRoomSummary: Equatable {
+    public let name: String
+    public let playerCount: Int
+    public let memberNames: [String]
+    public let playing: Bool?          // nil == NOT KNOWN. Never render "paused" for nil.
+}
+
+public enum SonosRoomList {
+    /// Built from primitives, NOT from SonosAPI types — provider JSON shapes stop at SonosProvider
+    /// (SonosAPI.swift's file header states this rule; keep it true).
+    public static func summarize(groups: [(name: String, playerIds: [String])],
+                                 players: [(id: String, name: String)],
+                                 playing: [String: Bool]) -> [SonosRoomSummary]
+
+    /// "2 players · playing" / "2 players · Kitchen, Dining" / nil when there is nothing true to add.
+    public static func secondary(_ room: SonosRoomSummary) -> String?
+
+    /// One line, because a macOS Menu item renders one label: "Kitchen — 2 players · playing".
+    public static func menuTitle(_ room: SonosRoomSummary) -> String
+}
+```
+
+`menuTitle` exists so WS-2 composes nothing itself and the string is unit-tested here rather than
+eyeballed there.
+
+**2. `SonosRoomListResult` widens** to `case rooms([SonosRoomSummary])`. Keep the enum where it is and
+keep its "deliberately not `ProviderOutcome`" doc comment — that reasoning is unchanged.
+
+**3. The listing path enriches, bounded and best-effort.** After household + groups resolve:
+
+- Build the summaries immediately from `parseGroups`. This is the **guaranteed** content.
+- Then fire `GET /groups/{id}/playback` per group, **concurrently, on the existing `queue`**, with:
+  - a **cap** — if the household has more than 12 groups, skip enrichment entirely and report player
+    counts only. The design's own premise for choosing a `Menu` is "< 12 items";
+  - a **hard deadline** (1.5 s). Whatever has landed by then is filled in; everything else stays
+    `nil`.
+- Fire the single completion with the enriched list.
+
+**The cost, stated so nobody discovers it later:** opening the picker can now take up to ~1.5 s longer
+than today in the worst case. That is why `LoadingState`'s 150 ms guard and its "Loading rooms…" label
+exist in the component layer, and why `playing` is `Bool?` — a row that never learns its state says
+`2 players` and stops, rather than lying.
+
+### Acceptance gate
+
+§2.2, plus:
+
+```bash
+cd <worktree>/hub
+grep -c "case rooms(\[String\])"  Sources/beacon-hub/SonosProvider.swift   # 0
+grep -c "SonosRoomSummary"        Sources/beacon-hub/SonosProvider.swift   # >= 1
+grep -c "noteOutcome"             Sources/beacon-hub/SonosProvider.swift   # UNCHANGED from your step-0.4 baseline
+git diff --stat <base> -- Sources/beacon-hub/HubViewModel.swift            # 1 file, <= 4 lines changed
+git diff --name-only <base> -- Sources/beacon-hub/SonosAPI.swift           # ideally empty; justify if not
+git diff --name-only <base> | grep -c "Tests/beacon-hubTests/SonosGateTests.swift"   # 0
+git diff --name-only <base> | grep -c "Tests/beacon-hubTests/SonosAPITests.swift"    # 0
+swift test 2>&1 | grep -E "^Executed [0-9]+ tests"    # >= 424 (416 + >= 8), 0 failures
+```
+
+**Test floor +8, all pure, all in `BeaconHubKitTests`:** a single-player group yields
+`playerCount == 1` and no "players" phrase; a two-player group yields `"2 players"`; member names join
+in the API's order; `playing: true` appends `"playing"`; **`playing: nil` appends nothing** (the
+lying-row test — this is the one that matters); a group whose `playerIds` reference unknown players
+degrades to the count without names; `menuTitle` round-trips a name containing a `·`;
+`summarize` on an empty groups list returns `[]`.
+
+`SonosGateTests`, `SonosAPITests`, `SonosOutcomeClassifierTests`, `SonosRoomPersistenceTests` and
+`SonosAuthorizerTests` must all pass **unmodified**.
+
+### Traps
+
+1. **The gate is pinned by tests you must not change.** `fetchAvailableRooms` deliberately bypasses
+   `noteOutcome` / `fails` / `backoffUntil`. A playback request that 401s inside your fan-out must not
+   reach any of them. `SonosGateTests` is the tripwire; if it goes red you have wired the fan-out into
+   the poll gate.
+2. **`SonosAPI`'s types must not leak into `BeaconHubKit`.** `SonosAPI.swift`'s header states that raw
+   Sonos response types stop at `SonosProvider`. `summarize` takes primitives for exactly this reason;
+   do not "simplify" it by importing the API shapes.
+3. **`queue`-confinement.** `SonosProvider`'s poll state is confined to its serial `beacon.sonos`
+   queue. A concurrent fan-out that mutates shared state off that queue is a data race that will not
+   show up in tests. Collect into a local, hop back, then deliver.
+4. **The completion must fire exactly once, including on the deadline path.** A `DispatchGroup.notify`
+   plus a timeout that both call the completion is the classic double-call bug. Latch it.
+5. **`playing: Bool?` is three-valued and the view must treat it that way.** `parsePlaybackState`
+   returns `true` for `PLAYBACK_STATE_BUFFERING` by deliberate design (`SonosAPI.swift:78`). Do not
+   "fix" that; do not collapse `nil` to `false`.
+6. **`HubViewModel.onFetchSonosRooms` has a default value** (`HubViewModel.swift:100`) that calls
+   `completion(.notAuthorized)`. It still compiles after the widening; leave it alone.
+7. **`AppDelegate` wires this closure** and you may not edit `AppDelegate.swift`. Verify the wiring
+   still type-checks; if it does not, the widening has changed the closure's *shape* rather than its
+   payload type, and you have gone too far. Report instead of opening the file.
+
+### Rollback
+
+Revert the WS-0b commit. `SonosRoomListResult` returns to `[String]`, the `PageDesignerView` carve-out
+reverts with it, and WS-0 is untouched because it never shared a file. Wave 1 can still proceed —
+WS-2 would then ship one-line rooms and record the exception, which is the outcome this workstream
+exists to avoid, so a revert here is a decision to escalate, not a quiet fallback.
+
+---
+
 ## 4. Wave 1 — the two named complaints
 
 All three run in parallel over disjoint files. **Three written contracts between them:**
@@ -500,6 +719,30 @@ file, `AppDelegate.swift`, `MenubarController.swift`, `HubViewModel.swift`, anyt
   `contentMinSize` 720 × 520 (`:48`), `frameAutosaveName`, `isRestorable`,
   `isReleasedWhenClosed = false`, and flips activation policy `.regular` ⇄ `.accessory`.
 - `windowWillClose` (`:60`) — **silently reverts** staged page and complication edits today.
+
+**Step 0.5 — the sidebar-toggle spike. Timeboxed to 30 minutes. Do this first, before you design
+anything.**
+
+Design §4.4 and §5.1 both assert that `NavigationSplitView`'s "standard show/hide toggle comes free,"
+and §5.1 makes it the escape hatch for anyone whose display cannot give the window 820 pt. The
+Settings window has **no `NSToolbar`** and a plain `[.titled, .closable, .miniaturizable, .resizable]`
+style mask. Whether the toggle appears in that configuration on the macOS 13 deployment target is a
+fact to observe, not to argue.
+
+Build a throwaway two-column `NavigationSplitView` in an `NSHostingController` in a window with that
+exact style mask. Run it. Look for the toggle.
+
+**If it is present:** nothing changes; note it in your report and continue.
+
+**If it is absent, do this — do not stall and do not improvise:**
+
+1. Ship Phase 1 **without** a sidebar toggle. The 820 pt `contentMinSize` is what makes collapsing
+   optional rather than required (design §5.1), so its absence is a missing convenience, not a broken
+   layout.
+2. Add **one line** to your report: *"macOS 13 gives no sidebar toggle without a toolbar."*
+3. **Do not add an `NSToolbar` to get one.** A toolbar changes the whole title bar's appearance and
+   whether this window has one is a design decision the owner has not been asked, not an
+   implementation detail you may settle. Flag it; move on.
 
 **What to build.**
 
@@ -557,7 +800,7 @@ grep -c "NavigationSplitView" Sources/beacon-hub/SettingsTabs.swift  # >= 1
 grep -c "\.system(size:"     Sources/beacon-hub/SettingsTabs.swift Sources/beacon-hub/SettingsWindowController.swift  # 0
 grep -c "820\|560"           Sources/beacon-hub/SettingsWindowController.swift  # >= 2
 grep -c "testAllFourTabs"    Tests/beacon-hubTests/SettingsTabTests.swift       # 0
-swift test 2>&1 | grep -E "^Executed [0-9]+ tests"   # >= 436 (WS-0's 428 + >=8)
+swift test 2>&1 | grep -E "^Executed [0-9]+ tests"   # >= 444 (wave 0's 436 + >=8)
 ```
 
 Test floor **+8**, all pure: clean close needs no confirmation and reverts nothing; pages-only dirty
@@ -580,10 +823,8 @@ Plus the human script in §8.3, items H1–H4.
 4. **The `frameAutosaveName` frame may be smaller than the new 820 × 560 minimum** for anyone who has
    run this build before. AppKit clamps to `contentMinSize` on restore; verify by hand, because a
    window that opens 720 pt wide with a sidebar is the first thing the owner will see.
-5. **The sidebar show/hide toggle is not automatic on macOS 13 without a toolbar.** Design §5.1 leans
-   on it as the sub-820 escape hatch. Verify it appears. If it does not, report — do **not** silently
-   add an `NSToolbar` (it changes the title bar's whole look and is a design decision, not an
-   implementation detail). See §10.6.
+5. **The sidebar show/hide toggle.** Answered by your own step-0.5 spike, not by reading. Whatever it
+   returns, the fallback is already written; follow it rather than inventing a third option.
 6. **`@AppStorage` + `List(selection:)` wants an `Optional` binding.** `SettingsTab?` selection with a
    non-optional persisted raw value needs a small adapter; keep it as a typed computed `Binding`, not
    an inline ternary (§9.2).
@@ -624,6 +865,12 @@ or `firmware/`.
   changes; the storage route does not.
 - The chevron reorder path (`:285`) — the non-pointer equivalent of dragging. Keep it, and now it gets
   real labels for free from `IconButton`.
+- **From WS-0b, merged in wave 0:** `BeaconHubKit.SonosRoomSummary` (`name`, `playerCount`,
+  `memberNames`, `playing: Bool?`) and `SonosRoomList.menuTitle(_:)` / `.secondary(_:)`.
+  `SonosRoomListResult.rooms` already carries `[SonosRoomSummary]`, and WS-0b already made this file
+  compile against it with a deliberately ugly, minimal adaptation in `fetchRooms`,
+  `SonosRoomFetchState` and `roomOrphan`. **That adaptation is yours to delete and replace** — it was
+  never meant to survive.
 
 **What to build.**
 
@@ -659,11 +906,30 @@ or `firmware/`.
    Tier `.previewOnly` and `.optionsPlusPreview` render a **"What this page shows"** block: the
    page's own `DevicePreview` at 160 pt inside a `DeviceGlassPanel`, plus one `type.secondary`
    sentence. **Delete `"No options"` at `.secondary.opacity(0.6)` (`:441`).**
-8. **The Sonos room selector becomes a `Menu`** (design §3.4), deleting `SonosRoomPopover` (`:830`),
-   `RoomRow` (`:901`) and the hand-built button at `:476`. Async states live inside the menu as
-   disabled items plus a "Retry" item. **Read §10.5 before starting** — whether a room row can carry
-   a second field is an open question, and the answer changes your scope. If it is unresolved at
-   dispatch, ship one-line rows and record the exception in your report.
+8. **The Sonos room selector becomes a `Menu` whose rows say something true** (design §3.4), deleting
+   `SonosRoomPopover` (`:830`), `RoomRow` (`:901`) and the hand-built button at `:476` — an `HStack`
+   with a chevron and a 6 pt corner radius that reinvents `Menu` badly: no native disclosure, no
+   keyboard navigation, no native highlight, no automatic dark-mode treatment. Async states live
+   inside the menu as disabled items plus a "Retry" item.
+
+   **WS-0b has already widened the data** (§3A): `SonosRoomListResult.rooms` now carries
+   `[SonosRoomSummary]`, and `BeaconHubKit.SonosRoomList.menuTitle(_:)` returns the finished,
+   unit-tested one-line string — `"Kitchen — 2 players · playing"`. **Call it. Do not compose that
+   string yourself and do not re-derive the pluralisation.** `playing` is `Bool?`; `nil` means *not
+   known* and renders nothing. A row that never learned its state says `Kitchen — 2 players`. Never
+   render "paused" for `nil`.
+
+   **The one-line shape is deliberate, and is not a compromise to re-open.** A macOS `Menu` item
+   renders a single label; the two-line `ListRow` of design §3.4 is a popover shape. The design chose
+   `Menu` for this list precisely to delete the hand-rolled chrome, so the depth rides in one
+   `·`-joined line. **If** you cannot get the current-room checkmark to render acceptably in a `Menu`
+   — the orphan room makes this fiddly — the sanctioned fallback is `Picker(selection:)` with
+   `.pickerStyle(.menu)`, **including the orphan as an option** so the selection is always in-set.
+   Those are the two options; a third one is a report, not a decision.
+
+   **Acceptance for this item is the row's content, not just the widget.** The design's benchmark is
+   the ticker search, which shows name, symbol and exchange. A menu of bare room names in nicer type
+   is the defect the owner complained about, and it fails H8.
 9. **`AgentProviderRows` / `AgentProviderRow` (`:741`–`:813`) are deleted** and replaced with
    `SettingsRow`s bound to the same `model.providers` / `onSetProviderUsage` / `onSetProviderBuddy` /
    `onInstallProviderHooks`, and `StatusRow`'s one vocabulary for the setup chip. **`.controlSize(.mini)`
@@ -695,11 +961,14 @@ grep -cE "Color\.white|Color\.black|Color\.blue" Sources/beacon-hub/PageDesigner
 grep -cE "cornerRadius: (6|7|8|10|12|13)"        Sources/beacon-hub/PageDesigner*.swift   # 0
 grep -cE "^(private )?struct .*(Row|Tile|Card|Chip|Badge): View"  Sources/beacon-hub/PageDesigner*.swift
 #   ^ must be 0 or exactly the names in your report's "new types" line, with a reason each
-swift test 2>&1 | grep -E "^Executed [0-9]+ tests"   # >= 434 (WS-0's 428 + >=6)
+grep -c "SonosRoomList.menuTitle" Sources/beacon-hub/PageDesigner*.swift   # >= 1 — you call it, you don't rebuild it
+grep -c "players\"\|playing\"" Sources/beacon-hub/PageDesigner*.swift      # 0 — no locally composed row strings
+swift test 2>&1 | grep -E "^Executed [0-9]+ tests"   # >= 442 (wave 0's 436 + >=6)
 ```
 
 Test floor **+6**: `InspectorLayout.tier` for 0 / 1 / 2 / 3 / 8 options; and that the tier a Sonos page
-with one option resolves to is `.optionsPlusPreview` — the machine-checkable half of complaint 2.
+with one option resolves to is `.optionsPlusPreview` — the machine-checkable half of complaint 2. The
+row's *content* is already covered by WS-0b's `SonosRoomSummaryTests`; do not duplicate those here.
 
 Plus the human script in §8.3, items H5–H9.
 
@@ -716,8 +985,10 @@ Plus the human script in §8.3, items H5–H9.
 4. **`ComplicationEditorView` is rendered by your `inspector` but owned by WS-3.** Call it, size the
    column for it, do not edit it. If it does not fit, that is WS-3's contract, not your patch.
 5. **`Menu` on macOS 13 does not support arbitrary view content in items** the way iOS does — items
-   are `Button`s with `Label`s. A two-field room row may need `Text` with an embedded `·`, not a
-   `VStack`. Confirm before promising it.
+   are `Button`s with `Label`s, and AppKit flattens a `VStack` label to its first `Text`. This is why
+   `SonosRoomList.menuTitle` returns one joined string rather than two fields. Do not fight it with a
+   `VStack`; if you need two visual lines you have chosen the wrong widget, and the answer is the
+   `Picker` fallback in build item 8, not a hand-built popover.
 6. **The chart popover must keep its search.** It is not a `Menu` candidate. Design §3.4 says so
    explicitly.
 7. **Do not "simplify" the room's `SonosRoomStore` route into `PageRow.opts`.** `:444`'s comment
@@ -773,7 +1044,7 @@ grep -c "\.system(size:" Sources/beacon-hub/ComplicationEditorView.swift    # 0 
 grep -cE "cornerRadius: (6|7|8|10|12|13)" Sources/beacon-hub/ComplicationEditorView.swift  # 0
 grep -cE "^private struct .*(Row|Tile): View" Sources/beacon-hub/ComplicationEditorView.swift  # 0
 git diff --name-only <base> | grep -c "BeaconHubKit"    # 0
-swift test 2>&1 | grep -E "^Executed [0-9]+ tests"      # >= 428, 0 failures
+swift test 2>&1 | grep -E "^Executed [0-9]+ tests"      # >= 436, 0 failures
 ```
 
 No new tests required (the rules are already covered by `ComplicationEditorTests`); if you add none,
@@ -936,9 +1207,16 @@ bitmaps that CoreText cannot load. `firmware/src/ui/fonts/MANIFEST.md` records t
 So WS-7 must **acquire** the OFL TTFs, instance them to wght 500 (`fonttools varLib.instancer`, the
 same route the firmware manifest documents), and commit them under `hub/Resources/fonts/` alongside
 each family's `OFL.txt`. The OFL requires the licence to ship with the font and forbids renaming a
-Reserved Font Name — keep the upstream filenames. **This is a decision that needs the owner's
-approval before dispatch** (§10.1): committing binary font assets to a public repo is a repository
-policy call, not an implementation detail.
+Reserved Font Name — keep the upstream filenames.
+
+**Ruled 2026-07-27: approved, as instanced static TTFs at wght 500** — not the upstream variable
+fonts. Instanced statics render deterministically, are smaller, avoid CoreText variable-axis
+surprises, and match the exact instance the device is built from, which is the whole point of the
+change. Budget ~300–400 KB.
+
+**These are OFL-licensed *assets*, not a code dependency.** The project's no-third-party-deps rule
+(`CLAUDE.md`) is about libraries linked into the build: a font file has no code, no build-system
+involvement and no API surface. Recorded here so nobody reads WS-7 as relitigating that rule.
 
 Mechanics, once the files exist:
 
@@ -1133,7 +1411,8 @@ Graphite or Yellow).
 | H5 | WS-2 | Look at the Pages destination | One elastic column: strip above, hairline, grid below. **No grey band.** |
 | H6 | WS-2 | Look at an enabled tile | Two text lines, a corner check. Not simultaneously the greenest and the faintest thing on screen |
 | H7 | WS-2 | Click a carousel card | Selection ring appears **outside** the bezel; nothing moves by a pixel |
-| H8 | WS-2 | Select **Sonos** | A native menu with disclosure and keyboard nav — **and the Sonos page's own preview filling the column below it.** This is complaint 2; if the column still reads as a lone dropdown in a lake, the workstream is not done |
+| H8 | WS-2 | Select **Sonos**, open the room menu | A native menu with disclosure and keyboard nav; **every row says more than a name** (`Kitchen — 2 players · playing`); **and the Sonos page's own preview fills the column below it.** This is complaint 2, and it has two halves: if the column still reads as a lone dropdown in a lake, **or** if the rows are still bare names in nicer type, the workstream is not done |
+| H8b | WS-2 | Open the menu with Sonos disconnected, and again with one speaker offline | Disconnected: an explanatory disabled item plus Retry, never an empty menu. Offline: the stored room still appears, marked, and nothing claims a playback state it does not know |
 | H9 | WS-2 | Select **Chart** with no instrument, then **ICE** | Chart: menu + preview. ICE (0 options): preview + one sentence, **no "No options" string** |
 | H10 | WS-3 | Select **Home** | Six-slot editor legible at the 820 pt minimum; header does not wrap into itself; palette is a clean two columns |
 | H11 | WS-4 | Compare **Sources** rows with the **Agents** page inspector | Same component, same size, same "Ready" treatment. Screenshot **both** in one image |
@@ -1158,6 +1437,7 @@ independently revertable because file ownership is exclusive. The smallest usefu
 | WS | Smallest revert | What the tree looks like after |
 |---|---|---|
 | WS-0 | Revert the one commit | Pre-existing UI, unchanged. Nothing consumes the layer yet — that is why it ships alone |
+| WS-0b | Revert the one commit | `SonosRoomListResult` returns to `[String]`; the `PageDesignerView` carve-out reverts with it; WS-0 is untouched (no shared file). Wave 1 can still run, but WS-2 would ship bare room names — **the outcome this workstream exists to prevent**, so reverting here is a decision to escalate, not a quiet fallback |
 | WS-1 | Revert the one commit | Pill tab bar returns; WS-2/WS-3's re-laid-out Pages destination survives inside it. `contentMinSize` returns to 720 × 520 — **note this in the PR**, since WS-2 removed the 780 pt internal frame |
 | WS-2 | Revert its commits | Sidebar survives with the old three-zone Pages layout. Tight at 820 pt but functional. Complaint 2 remains |
 | WS-3 | Revert the one commit | Home's editor reverts to its wide layout inside a 260 pt column — visibly cramped, not broken. Ship only if WS-2 also reverted |
@@ -1171,78 +1451,118 @@ that is itself a QA failure worth reporting.
 
 ---
 
-## 10. Under-specified in the design — settle these before dispatch
+## 10. Gaps in the design — all ten now decided
 
-Ten items a cold agent would otherwise have to guess. Ordered by how much damage a wrong guess does.
+Ten things a cold agent would otherwise have had to guess. **The four blocking ones were ruled by the
+coordinator on 2026-07-27 and are recorded here as decisions, not questions.** The remaining six were
+leans in the first draft and are now decided-but-flagged, in the same style as the complications plan:
+each carries the call, the reasoning, and the one thing that would justify re-opening it. Nothing in
+this section is an open question at dispatch time.
 
-**10.1 — The device fonts do not exist in this repository.** Design §6.4 says they are "already in the
-firmware's font pipeline." The *pipeline* is documented (`firmware/src/ui/fonts/MANIFEST.md`); what is
-committed is **generated LVGL C bitmap arrays**, which CoreText cannot load. WS-7 must download the
-OFL variable fonts from google/fonts, instance both to wght 500, and commit ~300–400 KB of binary
-under `hub/Resources/fonts/` with each family's `OFL.txt`. **Decide before dispatch:** is committing
-binary font assets to this public repo acceptable, and does the plan commit *instanced statics*
-(smaller, matches the device exactly) or the *upstream variable fonts* (larger, no toolchain step)?
-Lean: instanced statics, filenames preserved for the OFL Reserved Font Name clause.
+**10.1 — Device fonts: DECIDED. Instanced static TTFs at wght 500.**
 
-**10.2 — Who adds `SettingsTab.firmware`?** Design §4.1 lists Firmware as a destination and §10 says
-the test rename "anticipates" a fifth case, but never says which plan adds it. If WS-1 adds it with a
-placeholder pane, it collides with the OTA plan's Phase 0, which creates
-`FirmwareSettingsView.swift`. **Lean: this plan adds *only* the four existing cases**; the OTA
-workstream adds the case and its view, and the sidebar picks it up with no edit because it is
-`allCases`-driven. Consequence: WS-1 wires `⌘1`–`⌘4`, not `⌘1`–`⌘5`. Confirm.
+The design said the faces are "already in the firmware's font pipeline." The *pipeline* is documented
+(`firmware/src/ui/fonts/MANIFEST.md`); what is committed is **generated LVGL C bitmap arrays**, which
+CoreText cannot load. WS-7 downloads the OFL variable fonts from google/fonts, instances Space Grotesk
+and JetBrains Mono to **wght 500** with `fonttools varLib.instancer`, and commits ~300–400 KB under
+`hub/Resources/fonts/` with each family's `OFL.txt` and upstream filenames preserved (the OFL's
+Reserved Font Name clause).
 
-**10.3 — Open question 1 in the design: flat five rows, or Firmware nested under Device?** The design
-leans flat and the owner has settled on flat; recorded here because it is WS-1's sidebar shape and the
-first decision the OTA Phase 0 owner hits. **Treated as settled — flat.** Flagged only so it is not
-re-opened mid-wave.
+**Statics over variable fonts** because they render deterministically, are smaller, avoid CoreText
+variable-axis surprises, and are the exact instance the firmware is built from — which is the entire
+justification for bundling them. **These are licensed assets, not a code dependency;** the
+no-third-party-deps rule concerns libraries linked into the build and is not in play (§6.1).
 
-**10.4 — `SettingsPanel.swift` has two claimants.** This plan's WS-0 deletes it. The OTA plan's
-Phase 0 file table lists `hub/Sources/beacon-hub/SettingsPanel.swift` under its own ownership, and its
-text places a Local Network `StatusRow` in "the existing Connection section
-(`SettingsPanel.swift:52-64`)" — a section that has not lived there since the four-destination IA
-landed; it is at `DeviceTab.swift:26`. Design §10 records the correction. **Needed before dispatch: a
-handshake.** If OTA Phase 0 has not started, WS-0 deletes the file freely. If it has, WS-0 must instead
-leave an empty stub and WS-9 deletes it later.
+**10.4 — `SettingsPanel.swift`: DECIDED. WS-0 deletes it outright.**
 
-**10.5 — Can a Sonos room row carry a second field?** Design §3.4 requires that "every list row carries
-at least two fields where a second field exists," and asserts player count and coordinator are
-"derivable today" because the Control API's `groups` response carries `playerIds` and `coordinatorId`.
-That is true of **the API** and false of **the hub's current seam**: `HubViewModel.onFetchSonosRooms`
-delivers `SonosRoomListResult.rooms([String])` — **names only**. A two-field row therefore requires
-changing `SonosProvider.fetchAvailableRooms`'s return type, `SonosAPI`'s parse, and the closure on
-`HubViewModel` — three files WS-2 does not own, in provider code this plan deliberately excludes.
-**Decide:** (a) widen the seam as a small pre-wave workstream with its own tests, (b) ship one-line
-room rows in wave 1 and widen later, or (c) drop the two-field rule for rooms. Lean: **(b)**, with the
-exception recorded in WS-2's report, because complaint 2 is about the selector being a hand-built fake
-`Menu` in an empty column — not about the row's field count.
+Two plans claimed the file. The OTA plan's Phase 0 lists it under its own ownership and places a Local
+Network `StatusRow` in "the existing Connection section (`SettingsPanel.swift:52-64`)" — a range past
+the end of what is now a **53-line** file holding only `SectionHeader` and `StatusRow`. Connection has
+lived at `DeviceTab.swift:24` since the four-destination IA landed; the reference was stale before
+this plan existed and is already corrected in the repo.
 
-**10.6 — Does `NavigationSplitView` give a sidebar show/hide toggle on macOS 13 without a toolbar?**
-Design §4.4 and §5.1 both lean on "the standard show/hide toggle comes free," and §5.1 makes it the
-escape hatch for anyone below 820 pt. The Settings window today has no `NSToolbar` and a plain
-`.titled` style mask. If the toggle does not appear, the options are: add a minimal `NSToolbar` with a
-sidebar tracking separator (**a visible change to the title bar's look — a design decision, not an
-implementation detail**), add an explicit toggle button, or accept no toggle in Phase 1. **This wants
-a five-minute check before WS-1 is briefed**, because the answer changes WS-1's scope.
+**Resolved in the visual system's favour.** WS-0 deletes the file, its two types move into
+`HubRows.swift`, and **the OTA Phase 0 owner adapts to whatever structure exists when they run, not
+the reverse.** The two substantive facts for that owner, neither of which changes the OTA design:
+the Local Network check belongs in **Device → Connection** (`DeviceTab.swift`), and
+`FirmwareSettingsView.swift` is a **destination**, not a section.
 
-**10.7 — `type.figure` inside a 340 pt popover.** The only current 21 pt site is `HubPanel.WindowRow`
-(`:175`), the big usage percentage. `type.figure` is `.title` bold ≈ 22 pt **and now scales with the
-system text size**, inside a fixed-width popover holding two `ProviderCard`s side by side. Confirm the
-intended behaviour: `minimumScaleFactor`, `lineLimit(1)`, or an explicit exemption for this one figure.
+**10.5 — Sonos room rows: DECIDED, and the first draft's lean was OVERTURNED.**
 
-**10.8 — What sentence goes under the "What this page shows" preview?** Design §5.2.1 requires "one
-`type.secondary` sentence describing what it renders," for tiers 0 and 1–2. `PageRow.detail` already
-exists and is the catalog tile's caption ("Ticker list, live"). **Decide:** reuse `row.detail`, or
-write seven new strings. Lean: **reuse `row.detail`** — one source of truth for what a page is, and it
-is already user-facing.
+The first draft proposed shipping one-line rows because richer data spans `SonosProvider.swift`,
+`SonosAPI.swift` and `HubViewModel.swift` — none of which WS-2 owns. That lean shipped precisely the
+thing the owner complained about: **a one-line row in nicer type is the same defect with better
+spacing**, and we would have completed the whole visual system with complaint #1 unfixed.
 
-**10.9 — The sidebar dot's colour.** §4.3 specifies a 6 pt `state.warn` dot; the settled decisions say
-"system accent only, no signal orange in hub chrome." These do not actually conflict —
-`state.warn` is `NSColor.systemOrange`, a *state* role, not the device's `#ff4a2b` — but a cold agent
-will hesitate. One confirming sentence in WS-1's brief resolves it.
+The constraint was verified as real (`SonosProvider.swift:23` is `case rooms([String])`), so the seam
+gets widened rather than routed around. **A dedicated workstream, WS-0b (§3A), runs in wave 0 parallel
+to WS-0 and merges before wave 1**, so the renderer is never blocked on data that does not exist.
 
-**10.10 — Pane gutters.** Four destination bodies use `.padding(20)`; the ladder's window gutter is
-`space.xl` = **24**. Trivial, but it is a visible 4 pt shift across four files in one wave, and it is
-worth saying out loud so nobody reports it as a regression.
+What the check of the existing parsers found, and what it changes:
+
+- **Player count and member names are free.** `SonosAPI.parseGroups` (`:31-48`) already decodes
+  `Group.playerIds` and the `players` array. No new decoding, no new request, **no change to
+  `SonosAPI.swift`**.
+- **Playback state is not free.** `parsePlaybackState` (`:81`) already exists and is fixture-tested,
+  but it parses one `GET /groups/{id}/playback` **per group**. That is the workstream's only new
+  network cost, and it is bounded: ≤ 12 groups, concurrent, 1.5 s hard deadline, best-effort, and it
+  must never touch the poll gate `SonosGateTests` pins.
+- **`playing` is therefore `Bool?`, where `nil` means *not known*.** A row that never learned its
+  state renders `Kitchen — 2 players` and stops. Rendering "paused" for `nil` would be a lie, and the
+  test that pins this is the one that matters most in WS-0b's suite.
+
+Pure logic lands in `BeaconHubKit` per the `ChartInstrument.swift` / `ComplicationEditor.swift`
+precedent, so the row string is unit-tested where it is composed rather than eyeballed where it is
+rendered. **Scope discipline: this is not a Sonos redesign** — no new screen, no new poll, no change
+to the existing timer, gate, backoff or now-playing path.
+
+**10.6 — The macOS 13 sidebar toggle: DECIDED not to decide on paper.**
+
+Design §4.4 and §5.1 both assert the standard show/hide toggle "comes free," and §5.1 makes it the
+escape hatch below 820 pt. The window has no `NSToolbar` and a plain `.titled` style mask, so the
+claim is doubtful — but it is a fact to observe, not to argue. **WS-1's brief opens with a 30-minute
+spike** (§4, step 0.5) and a written fallback: if the toggle is absent, ship Phase 1 without it, note
+it in one line, and **do not add an `NSToolbar` to manufacture one** — that changes the title bar's
+whole appearance and is a design decision the owner has not been asked. The agent has an explicit
+"if absent, do X" so it cannot stall.
+
+---
+
+The remaining six were leans in the first draft. **All are now decided.** Each is flagged so a
+workstream recognises it as a settled call rather than an invitation.
+
+**10.2 — Who adds `SettingsTab.firmware`? DECIDED: not this plan.** WS-1 ships the four existing cases
+only. The OTA workstream adds the fifth case *and* its view together, and the sidebar picks it up with
+no edit at all because it is `allCases`-driven — which is the property that makes the two plans
+compose instead of collide. **Consequence: WS-1 wires `⌘1`–`⌘4`, not `⌘1`–`⌘5`.** Re-open only if the
+OTA track slips far enough that the hub ships with a visibly four-row sidebar for a long period and
+the owner wants a placeholder.
+
+**10.3 — Sidebar shape? DECIDED: five flat rows.** Owner-settled; recorded because it is WS-1's
+sidebar shape and the first decision the OTA Phase 0 owner hits. One disclosure group containing one
+child is the shape that ages worst and reads as an accident rather than a hierarchy. Not re-openable
+mid-wave.
+
+**10.7 — `type.figure` in the 340 pt popover? DECIDED: `lineLimit(1)` + `minimumScaleFactor(0.7)`,
+no exemption.** The only 21 pt site is `HubPanel.WindowRow:175`, the big usage percentage, and
+`type.figure` is ≈ 22 pt that now scales with the system text size inside a fixed-width popover
+holding two `ProviderCard`s side by side. The token stays; the figure shrinks to fit. **If it cannot
+be made legible at the largest text size, WS-6 reports rather than reverting the token** (§5, WS-6
+trap 2) — a per-site exemption is a decision the coordinator makes, not a workstream.
+
+**10.8 — The "What this page shows" sentence? DECIDED: reuse `PageRow.detail`.** It already exists,
+is already user-facing as the catalog tile's caption ("Ticker list, live"), and keeps one source of
+truth for what a page is. Seven new hand-written strings would be a second, drift-prone copy of the
+same fact. Re-open only if a specific page's `detail` reads wrong under a preview.
+
+**10.9 — The sidebar dot's colour? DECIDED: `state.warn`, and there is no conflict.** "System accent
+only, no signal orange in hub chrome" bans the device's `#ff4a2b`; `state.warn` is
+`NSColor.systemOrange`, a semantic *state* role that every macOS app uses. Stated explicitly because a
+cold agent will otherwise hesitate or substitute the accent, which would make the dirty dot invisible
+against a selected row.
+
+**10.10 — Pane gutters? DECIDED: 20 → `HubSpace.xl` (24).** Four destination bodies shift by 4 pt in
+one wave. Trivial, and written down only so nobody reports it as a regression.
 
 ---
 
@@ -1270,5 +1590,7 @@ worth saying out loud so nobody reports it as a regression.
    (**target 1**), bundle size delta.
 
 **Definition of done for the whole effort:** chrome carries **0** raw font sizes, **2** corner radii,
-**3** row implementations, **1** status vocabulary, **0** deprecation warnings, hub tests ≥ 445, and
-the owner has looked at H1 and H8 and agrees the two things they complained about are gone.
+**3** row implementations, **1** status vocabulary, **0** deprecation warnings, hub tests **≥ 453**
+(416 baseline + 12 WS-0 + 8 WS-0b + 8 WS-1 + 6 WS-2 + 3 WS-7), and the owner has looked at **H1**,
+**H8** and **H8b** and agrees the two things they complained about are gone — the pill bar, and a room
+selector that was a hand-built fake `Menu` listing bare names.
