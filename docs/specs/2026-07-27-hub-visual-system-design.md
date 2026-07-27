@@ -21,8 +21,8 @@ is AppKit and SwiftUI. The one thing that would normally come from a library —
 |---|---|---|
 | **1. Tokens** | One `HubStyle.swift`: 6 spacing steps (the *same* 4/8/12/16/24/32 ladder the device uses), **9 type roles mapped to macOS text styles**, 15 semantic colours, **2 corner radii**, 1 shadow. `.font(.system(size:))` becomes illegal in hub chrome. | 154 raw font-size call sites across 12 point sizes; 6 numeric corner radii across 7 files; 9 fill opacities. There is no system to violate, so every session invents one. |
 | **2. Rows** | One `SettingsRow` / `StatusRow` / `ListRow` triad replaces **ten** row implementations. | No two of the ten agree on label size, padding, or separator inset — and two of them render *the same store* differently in the same window. |
-| **3. Navigation** | `NSToolbar` in `.preference` style on the real `NSWindow`, not SwiftUI `TabView`. Dirty state = `window.isDocumentEdited` + a dot on the *unselected* dirty item. | The pill bar is a palette idiom, gives no window title, and its badge API does not render — which is why the code appends `"•"` to a tab title. Own the item view and the problem disappears. |
-| **4. Density** | The inspector is a **fixed 280 pt column, top-aligned, shrink-wrapped**, and it fills its remaining height with *the page's own device preview*, not with nothing. | "This page has one option" is not a reason to show one dropdown in a lake. The honest thing to put under a page's options is a picture of the page. |
+| **3. Navigation** | A **source-list sidebar** (`NavigationSplitView`), not SwiftUI `TabView` and not an `NSToolbar`. Dirty state = `window.isDocumentEdited` + a dot in the sidebar row, shown regardless of selection. | Destination five is already written down in a committed plan (§4.2). The pill bar is a palette idiom, gives no window title, and its badge API does not render — which is why the code appends `"•"` to a tab title. A `List` row is ours outright, so the badge problem disappears. |
+| **4. Density** | The Pages carousel and catalog **merge into one elastic column**; the inspector is a 260–320 pt pane that fills its remaining height with *the page's own device preview*, not with nothing. Minimum window **820 × 560**. | The merge is what pays for the sidebar's width. "This page has one option" is not a reason to show one dropdown in a lake — the honest thing to put under a page's options is a picture of the page. |
 | **5. Two languages** | The panel edge is a **hard boundary with a drawn bezel**. Device tokens live in one file; nothing hub-styled is drawn inside the panel rect, and nothing device-styled leaks out of it. | A preview that adopts hub styling is lying about what the device shows. Today an SF Symbol renders inside the glass and a hub close-button sits on top of it. |
 | **6. Dark mode** | Every fill is a **dynamic light/dark pair**, not one opacity. `Color.white` / `Color.black` are banned in chrome. Every component preview ships in both schemes. | A fixed 6% overlay that reads correctly on `#ECECEC` is nearly invisible on `#323232`. Three hard black/white decisions ship today. |
 
@@ -97,7 +97,7 @@ green for "ok"; two of them agree on the glyph.
 
 **(1) The tab bar.** `SettingsTabs.swift:59` — SwiftUI `TabView` hosted inside a real `NSWindow`. On macOS
 this renders a centered segmented control at the top of the content area. It is the `NSTabView` palette
-idiom: correct for an inspector, wrong for a window that owns four top-level destinations. It gives no
+idiom: correct for an inspector, wrong for a window that owns top-level destinations. It gives no
 per-tab window title, does not participate in the toolbar, cannot host a search field, and — per the
 comment at `SettingsTabs.swift:80` — its `.badge(_:)` does not reliably render, which is why the dirty
 state is communicated by appending `"\u{2022}"` to the string `"Pages"`. A design system that has to
@@ -519,85 +519,195 @@ The AVAILABLE grid entry — problem 5.
 
 ### 4.1 The decision
 
-**An `NSToolbar` in `.preference` style on the real `NSWindow`, with selectable items.** Four items —
-Pages · Sources · Device · General — icon over label, centered, `NSWindow.toolbarStyle = .preference`
-(macOS 11+). The four tab *bodies* stay pure SwiftUI; only the chrome becomes AppKit.
-`SettingsWindowController` owns `selectedItemIdentifier` and writes through to the existing
-`BeaconSettingsTab` UserDefaults key, so `MenubarController.openSettingsOnSources()` keeps working
-unchanged.
+**A source-list sidebar.** `NavigationSplitView` with **two** columns — sidebar and detail — a
+`List(selection:)` of destination rows in the sidebar, and one pane per destination in the detail.
+Destinations today: Pages · Sources · Device · General, with **Firmware** landing fifth (§4.2).
 
-### 4.2 Why, and what was rejected
+The Pages destination is *internally* a two-pane `HSplitView` (composition | inspector, §5.1); the other
+four are single panes. Three-column complexity stays inside the one destination that needs it rather
+than being promoted to the window, which is why this is a 2-column `NavigationSplitView` and not a
+3-column one — the other four destinations have no middle column, and a window-level three-column
+structure would have to fake one.
 
-**SwiftUI `TabView` (current) — rejected.** On macOS it renders the `NSTabView` palette bar: a centered
-segmented control inside the content area. That control's job is switching an inspector's facets, not
-switching a window's top-level destinations. Concretely it costs: no per-destination window title; no
-participation in the toolbar (so no room for a future search field or overflow); no `⌘1`–`⌘4`; and a
-badge API that does not render on macOS, which is why the shipped code concatenates `"\u{2022}"` into the
-string `"Pages"` (`SettingsTabs.swift:83`). That workaround is not a bug to fix — it is the correct
-response to an API that does not work, and the right conclusion is that the API was the wrong choice.
+`SettingsWindowController` keeps writing the selection through to the existing `BeaconSettingsTab`
+UserDefaults key, so `MenubarController.openSettingsOnSources()` keeps working unchanged.
 
-**`NSSplitViewController` sidebar — rejected, but it is the real competitor.** The brief's premise (that
-System Settings uses a toolbar) is true of System *Preferences*; Ventura and later use a source-list
-sidebar, and that is the modern idiom. It loses here on one hard number: the Pages tab is *already* a
-three-pane layout inside the content area — a 150 pt-card carousel across the top, a 300 pt catalog grid,
-and a 280 pt inspector (§5). A 200 pt sidebar makes that four columns and pushes the window's minimum
-width past 1000 pt for a settings window with four destinations. A sidebar is the right answer at eight
-or more destinations, or if any destination grows sub-pages. It is the wrong answer at four with a
-three-pane child. This is recorded as an open question (§11.1) because it turns on a roadmap fact I do
-not have.
+### 4.2 Why — and why this reverses an earlier call
 
-**`SwiftUI.Settings` scene — rejected**, for the reason the previous design already recorded: it forces
-the fixed-size, non-resizable preferences look.
+An earlier draft of this document called `NSToolbar` in `.preference` style, on one hard number: a
+~200 pt sidebar plus the Pages tab's three panes pushes the window past 1000 pt. That call was explicitly
+conditional on a roadmap fact — *"do you expect the Settings window to grow past four top-level
+destinations?"* — and the answer is **yes, and destination five is already committed**.
 
-### 4.3 The dirty indicator
+`docs/plans/2026-07-27-ota-updates-plan.md` Phase 0 specifies a new
+`hub/Sources/beacon-hub/FirmwareSettingsView.swift`. It ships as one read-only "Device firmware v0.12.10"
+row, but the plan's own WS-4 grows it into a release-source picker, a repository field, a check-now
+action, an install action with live progress, and a blocked-state explanation
+(`FirmwareUpdateState.blockedReason`), backed by four new `HubViewModel` closures and a new
+`setupLocalNetwork` check. That is a destination, not a section.
 
-Two mechanisms, deliberately:
+Five destinations is where the toolbar idiom starts to strain — `.preference` toolbars crowd past five
+icon-over-label items in an 820 pt window — and where a sidebar starts to earn its width: it scrolls, it
+labels destinations in full without truncating, it holds per-destination status (§4.3), and it is the
+idiom Ventura-and-later System Settings actually uses. (The brief's premise, that System Settings uses an
+`NSToolbar`, is true of System *Preferences*; it stopped being true in Ventura.)
 
-1. **`window.isDocumentEdited = model.pagesDirty || model.compsDirty`.** This is macOS's own answer to
-   "this window has unsaved changes": a dot in the close button. It is visible from every tab, it costs
-   one line, and users already read it. It is strictly better than any badge we could draw.
-2. **A 6 pt `state.warn` dot on a toolbar item — only when that item is *not* selected.** With `NSToolbar`
-   you own the item's view, so this is a `NSView` subclass drawing a dot in its top-trailing corner, not a
-   string concatenation. It is suppressed on the selected item because a badge on the pane you are
-   staring at — which already has a footer bar naming exactly what changed and offering Revert — is noise.
+**The width problem has not gone away. It has stopped being avoidable, so §5.1 solves it** rather than
+routing around it.
 
-**Consequence that must be signed off (§11.2).** `SettingsWindowController.windowWillClose` currently
-*silently reverts* staged page and complication edits. Once `isDocumentEdited` is set, that is a visible
-data-loss path: the platform has just told the user there is unsaved work, and closing throws it away
-without asking. The call is to add a three-button sheet on close-with-dirty — **Save & push / Discard /
-Cancel** — using §3.10's wording rules. That is a behaviour change, not a visual one, which is why it is
-flagged rather than assumed.
+**Still rejected — SwiftUI `TabView` (current).** On macOS it renders the `NSTabView` palette bar: a
+centered segmented control inside the content area. That control's job is switching an inspector's
+facets, not a window's top-level destinations. It costs the per-destination window title, toolbar
+participation, `⌘1`–`⌘n`, and a badge API that does not render on macOS — which is why the shipped code
+concatenates `"\u{2022}"` into the string `"Pages"` (`SettingsTabs.swift:83`). That workaround is not a
+bug to fix; it is the correct response to an API that does not work, and the conclusion is that the API
+was the wrong choice.
+
+**Still rejected — `SwiftUI.Settings` scene**, for the reason the previous design already recorded: it
+forces the fixed-size, non-resizable preferences look.
+
+**One thing the flip gains outright:** the badge problem has a real fix under a sidebar. `.badge(_:)`
+does not render on a macOS `TabView` but *does* render on a `List` row — and more usefully, a `List`
+row's content is ours outright, so §4.3 needs no AppKit subclassing at all.
+
+### 4.3 The dirty indicator, under a sidebar
+
+Two mechanisms. The first is unchanged by the flip; the second is rebuilt, because the earlier design
+depended on owning an `NSToolbarItem`'s view, and there is no longer a toolbar item.
+
+1. **`window.isDocumentEdited = model.pagesDirty || model.compsDirty`.** macOS's own answer to "this
+   window has unsaved changes": a dot in the close button. Visible from every destination, one line,
+   and users already read it. Survives either navigation choice.
+2. **A 6 pt `state.warn` dot as a trailing element in the sidebar row's own `HStack`.** A `List` row is
+   our view, so this is `Circle().frame(width: 6, height: 6)` in the row body — not an `NSView` subclass,
+   not a string concatenation.
+
+   **It shows regardless of selection** — the reverse of the toolbar design, and the reversal is the
+   point. Under a toolbar the selected item sits in a horizontal strip you are looking at edge-on, where
+   a dot competes with the footer bar that already names what changed. Under a sidebar the row is a
+   persistent item in a column whose entire job is showing the state of every destination at once; a dot
+   that vanishes the moment you click the row makes that column read inconsistently as you navigate.
+
+   Do **not** use `.badge(_:)` even though it now works: a badge communicates a count, and this is a
+   boolean. Accessibility: the dot is decorative; the accessible signal is the row's
+   `.accessibilityValue("Unsaved changes")` plus the window's document-edited state (§8.2).
+
+**Approved: the close sheet.** `SettingsWindowController.windowWillClose` currently *silently reverts*
+staged page and complication edits. With `isDocumentEdited` set, that becomes a visible data-loss path —
+the platform has just told the user there is unsaved work, and closing throws it away without asking.
+Closing with either channel dirty presents a three-button sheet — **Save & push / Discard / Cancel** —
+worded per §3.10. Confirmed by the owner as an accepted behaviour change.
+
+**Enabled by the sidebar, not scheduled here.** A sidebar row can carry *any* per-destination status, not
+only dirt: a `state.warn` dot on **Device** when Bluetooth is off, on **Sources** when a provider's buddy
+toggle is on but its hooks are undetected. The second already exists as a hidden `NSMenuItem`
+(`MenubarController.installQuitShortcut` / `updateHooksHint`) that only surfaces in the app menu — a
+real affordance with no visible home. Folding it into the sidebar gives it one and makes
+`MenubarHooksHint` a second consumer of a single status projection. Worth doing; out of scope for the
+phases in §10, and raised in §11.
 
 ### 4.4 Window chrome details
 
-- `w.title` follows the selected destination: "Pages", "Sources", "Device", "General" — a real window
-  title, which `TabView` cannot give.
-- `⌘1`–`⌘4` select destinations; `⌘,` opens the window (already wired).
+- `w.title` follows the selected destination — "Pages", "Sources", "Device", "General", "Firmware" — a
+  real window title, which `TabView` cannot give.
+- `⌘1`–`⌘5` select destinations; `⌘,` opens the window (already wired). The sidebar's standard
+  show/hide toggle comes free with `NavigationSplitView`.
 - The window opens with **no text field as first responder**. A settings window that opens with a cursor
-  blinking in the Sonos Client ID field is wrong, and the Sources tab will do exactly that today once
+  blinking in the Sonos Client ID field is wrong, and the Sources destination will do exactly that once
   focus lands.
-- `frameAutosaveName` and `contentMinSize` stay; the minimum grows (§11.7).
+- `frameAutosaveName` and `isRestorable` stay. **`contentMinSize` grows from 720 × 520 to 820 × 560** —
+  derived in §5.1, and the 820 figure is the one the owner already accepted.
 
 ---
 
 ## 5. Density, and what an inspector does with empty space
 
-The rule that answers problem 3.
+Two things: the layout that makes the Pages destination fit beside a sidebar (§5.1), and the rule that
+answers problem 3 (§5.2–5.3).
 
-### 5.1 The rule
+### 5.1 The Pages destination, re-laid-out
 
-> **An inspector is a fixed-width, top-aligned, shrink-wrapped column. It never stretches a control to
+The sidebar costs ~180 pt that the Pages destination did not have to give. **The move that pays for it:
+the enabled carousel and the AVAILABLE catalog merge into one column.**
+
+They are the same content in two states — what is on the Beacon, and what could be — and the shipped
+design only separates them because the interaction is dragging between them. As a full-bleed band above a
+grid that sits beside an inspector, they are three horizontal zones. Stacked in one column they are two
+vertical zones, and the drag becomes a short vertical gesture inside a single column instead of a
+diagonal haul from a left-hand grid up into a band spanning the whole window. It is a better interaction
+independent of width; it also happens to be what makes the arithmetic work.
+
+```
+┌──────────┬───────────────────────────────┬──────────────┐
+│ Pages  ● │  ON THE BEACON      4 of 8    │  SONOS       │
+│ Sources  │  ┌────┐ ┌────┐ ┌────┐   →     │  ──────────  │
+│ Device   │  │glas│ │glas│ │glas│         │  Room  ▾     │
+│ General  │  └────┘ └────┘ └────┘         │              │
+│ Firmware │ ───────────────────────────── │  ──────────  │
+│          │  AVAILABLE                    │  WHAT THIS   │
+│          │  ┌───┐ ┌───┐ ┌───┐            │  PAGE SHOWS  │
+│          │  │   │ │   │ │   │            │  ┌────────┐  │
+│          │  └───┘ └───┘ └───┘            │  │ glass  │  │
+│          │                               │  └────────┘  │
+│          ├───────────────────────────────┴──────────────┤
+│          │ ● Pages changed…       [Revert] [Save & push]│
+└──────────┴──────────────────────────────────────────────┘
+  180–260       elastic, min 380              260–320
+  collapsible   (absorbs all slack)           draggable
+```
+
+| Pane | Min | Ideal | Max | Behaviour |
+|---|---|---|---|---|
+| Sidebar | **180** | 200 | 260 | `NavigationSplitView` sidebar; standard show/hide toggle |
+| Composition | **380** | elastic | — | absorbs all window slack |
+| Inspector | **260** | 280 | 320 | `HSplitView` trailing pane, draggable divider |
+
+Derived, not picked:
+
+- **Sidebar 180.** Five rows of icon + full label ("Firmware" is the longest today); macOS sidebars run
+  160–220. Five rows at 28 pt is 140 pt of content in a column hundreds of points tall — and that is
+  fine, by §5.3's own rule that whitespace below content needs no treatment. It is also the room the
+  sixth destination lands in without a redesign, which is the whole reason for the flip.
+- **Composition 380.** The binding constraint is the catalog at three columns:
+  `110 × 3` tiles `+ 10 × 2` gutters `+ space.l × 2` padding = **382**. The enabled strip is *not* the
+  constraint: a device-glass card is 120 preview + 3×2 bezel + 3×2 selection gap = 132, so two cards plus
+  a gutter and padding is `132 × 2 + 16 + 32` = 312. The strip scrolls horizontally; the grid does not
+  reflow below three columns without looking broken.
+- **Inspector 260.** It must hold the "What this page shows" preview at 160 pt plus `space.l × 2` padding
+  = 192, and a `Menu` that does not truncate a room name at ~230. 260 is the floor; 280 is where the
+  preview block gets margin, which is why it is the ideal.
+
+**Minimum content width** = 180 + 380 + 260 + 2 splitter dividers = **822 → 820**.
+
+**What the flip actually cost, stated honestly.** Today's `contentMinSize` is 720. The sidebar costs
+180 pt; merging the carousel and catalog into one elastic column recovers roughly 80 of that, because the
+old layout paid for a 300 pt *fixed* grid **and** a full-width band above it. Net **720 → 820, +100 pt**.
+The owner had already accepted 820 as the no-sidebar figure; it survives the flip unchanged, which is
+arithmetic luck rather than design, but it is the number.
+
+**Minimum height.** The composition column stacks the enabled strip (~200 pt with the §6.2 glass card),
+a hairline, and at least two grid rows (`92 × 2 + 10` = 194), under a pane header (~48) and above the
+footer bar (~52): 494. `contentMinSize` height rises **520 → 560**.
+
+**On collapsing.** The sidebar collapses via `NavigationSplitView`'s standard toggle, so anyone below
+820 pt has an out. That is an escape hatch, not the design — *a sidebar you must hide to use the main
+feature is a broken sidebar*, and the 820 minimum is what keeps collapsing optional. The inspector's
+divider drags to its 260 floor; an explicit collapse toggle is a follow-on, not Phase 1.
+
+### 5.2 The inspector rule
+
+> **An inspector is a bounded-width, top-aligned, shrink-wrapped pane. It never stretches a control to
 > fill height. When it runs out of options, it fills the remainder with *the thing it configures* — not
 > with nothing, and not with an empty state.**
 
 Concretely, replacing `PageDesignerView.swift:148`'s `maxWidth: .infinity, maxHeight: .infinity`:
 
-- Inspector column: **fixed 280 pt**. It does not absorb slack; the catalog grid does.
+- Inspector pane: 260–320 pt per §5.1. It does not absorb slack; the composition column does.
 - Content: `VStack(alignment: .leading, spacing: space.l)`, top-aligned, terminated by
   `Spacer(minLength: 0)`.
 - No control has `maxHeight: .infinity`. Only a scrollable list may grow.
 
-### 5.2 Three tiers by option count
+### 5.2.1 Three tiers by option count
 
 | Options | Layout |
 |---|---|
@@ -614,9 +724,11 @@ it puts the device's visual language in front of the user at the moment they are
 - **Nothing in a pane is centered vertically except an empty state.** Top-aligned by default.
 - **Whitespace below content is correct and needs no treatment.** The failure today is not that space
   exists; it is that a lone 11 pt control was scaled into it by `maxWidth: .infinity` and then abandoned.
+  This is also why a five-row sidebar in a tall column needs no filling (§5.1).
 - **A pane with less content than height does not grow its content.** It grows the gap after it.
-- **The catalog grid absorbs horizontal slack**, because a grid of fixed tiles genuinely improves with
-  more columns. That is the one pane in the window that should take `.infinity`.
+- **The composition column absorbs horizontal slack**, because its catalog grid genuinely improves with
+  more columns. It is the one pane in the window that should take `.infinity`; the sidebar and the
+  inspector are both bounded.
 
 ---
 
@@ -803,7 +915,7 @@ That only pays off if layout permits growth:
 
 - `@Environment(\.accessibilityReduceMotion)` gates the carousel's reorder animation
   (`PageDesignerView.swift:295`) and its `scrollTo` (`:79`), degrading to instant.
-- Every action reachable without a pointer. `⌘1`–`⌘4` for destinations (§4.4); Return commits a text
+- Every action reachable without a pointer. `⌘1`–`⌘5` for destinations (§4.4); Return commits a text
   field; Escape dismisses a popover.
 - Focus ring is the system's. Never suppressed.
 
@@ -825,8 +937,17 @@ minutes and then fails.
 | `HierarchicalShapeStyle.quinary` | 14 | Only `.tertiary` / `.quaternary` are available, which is one reason the fill tokens are explicit opacity pairs rather than hierarchical styles. |
 | `.scrollBounceBehavior`, `.contentMargins` | 14 | Scroll insets are padding. |
 | `Observable` macro | 14 | `HubViewModel` stays `ObservableObject`. Unchanged by this document. |
+| `.inspector(_:)` modifier | 14 | The Pages inspector is a hand-built `HSplitView` pane (§5.1), not the system inspector. |
 
-`NSWindow.toolbarStyle = .preference` (§4.1) **is** available — macOS 11+.
+Available, and load-bearing for §4:
+
+| API | Available | Note |
+|---|---|---|
+| `NavigationSplitView` | **13** | This is what makes the sidebar buildable in SwiftUI with no `NSSplitViewController` plumbing. Two-column form only (§4.1). |
+| `List(selection:)` with `.listStyle(.sidebar)` | 13 | The destination rows, whose content we own outright — the basis of §4.3's dot. |
+| `HSplitView` | 10.15 | The Pages composition ∣ inspector divider, with per-pane `minWidth`/`idealWidth`/`maxWidth`. |
+
+`NSWindow.toolbarStyle = .preference` is also available (macOS 11+) — it is simply no longer the choice.
 
 ### 9.2 The type checker
 
@@ -876,29 +997,55 @@ must therefore be small enough to hold in your head — which is why §2 is 6 sp
 
 Four phases. **Phase 1 is shippable alone and visibly fixes both named complaints.**
 
-### Phase 1 — the tokens, the shared components, and the Pages tab
+### Phase 1 — the tokens, the shared components, the sidebar, and the Pages destination
 
 Files: **new** `HubStyle.swift`; **rewritten** `DeckUI.swift`; **edited** `SettingsTabs.swift`,
-`SettingsWindowController.swift`, `PageDesignerView.swift`.
+`SettingsWindowController.swift`, `PageDesignerView.swift`; **renamed tests** in
+`Tests/beacon-hubTests/SettingsTabTests.swift`.
 
 1. `HubStyle.swift` — §2 in full. ~150 lines. No view changes yet; it compiles alone.
 2. Rebuild `DeckUI.swift` on it: `Module` → `Card` (§3.5), `DeckButton` → token-driven with both manual
    opacity dimmings removed (§2.5), `ToggleRow` → `SettingsRow` (§3.2). Add `StatusRow` (§3.3),
    `ListRow` (§3.4), `EmptyState` (§3.6), `SectionHeader` (§3.1). These are used by every surface, so one
-   edit propagates to all four tabs and the popover without touching them.
-3. **The window chrome** — `NSToolbar` `.preference` + `isDocumentEdited` + the unselected-item dot
-   (§4). Deletes the pill bar and the `"•"` hack. Highest visible improvement per line changed in the
-   whole document.
-4. **The Pages tab** — the carousel band de-greyed to hairlines-and-nothing (§3.5); the carousel card
-   reframed as device glass with the remove button moved off the panel (§6.2); the AVAILABLE tile
-   hierarchy fixed (§3.7); the inspector fixed at 280 pt with the density rule and the "What this page
-   shows" block (§5), which is what stops the Sonos inspector floating.
+   edit propagates to every destination and the popover without touching them.
+3. **The window chrome** — `SettingsRootView`'s `TabView` becomes a two-column `NavigationSplitView`
+   with a sidebar `List(selection:)` (§4.1); `SettingsWindowController` gains the destination-following
+   title, `isDocumentEdited`, the close sheet, and `contentMinSize` 820 × 560 (§4.4). Deletes the pill
+   bar and the `"•"` hack. Highest visible improvement per line changed in the document.
+4. **The Pages destination** — the carousel and catalog merge into one elastic column (§5.1); the band
+   de-greyed to hairlines-and-nothing (§3.5); the carousel card reframed as device glass with the remove
+   button moved off the panel (§6.2); the AVAILABLE tile hierarchy fixed (§3.7); the inspector bounded at
+   260–320 with the density rule and the "What this page shows" block (§5.2), which is what stops the
+   Sonos inspector floating.
 5. Dark-mode pass over exactly these surfaces, with both-scheme previews (§7).
 
 **Why this set.** It is precisely the two complaints the owner named — the tab bar and the Sonos
 inspector — plus the two they did not name but will see immediately (the grey band, the tile hierarchy).
-It touches no file in `BeaconHubKit`, so **none of the 416 tests move**, and it touches no BLE, Keychain,
-hooks or provider code.
+It touches no BLE, Keychain, hooks or provider code.
+
+**Revised test claim.** An earlier draft of this document claimed "none of the 416 tests move." That is
+now false in one small, specific way, and the claim is corrected rather than preserved:
+`Tests/beacon-hubTests/SettingsTabTests.swift` holds **3 tests** over `SettingsTab`. Their assertions are
+`allCases`-driven, so they keep passing when a fifth destination lands — but two are *named*
+`testAllFourTabs…`, and a test whose name says "four" over a five-case enum is a lie inside the suite.
+Those two get renamed. **No assertion changes, no test is deleted, and all 308 `BeaconHubKitTests` are
+untouched** — `Sources/BeaconHubKit/` contains no view type at all, which is the same property that made
+the language-binding argument for staying in Swift decisive.
+
+**Coordination note — the OTA plan is written against a stale file layout.** This is a merge conflict
+waiting to happen between two committed plans, so it is recorded here rather than discovered later.
+`docs/plans/2026-07-27-ota-updates-plan.md` Phase 0 puts a Local Network `StatusRow` in "the existing
+**Connection** section (`SettingsPanel.swift:52-64`)". `SettingsPanel.swift` has no Connection section —
+it moved to `DeviceTab.swift:26` when the four-tab IA landed, and `SettingsPanel.swift` is now 54 lines
+holding only `SectionHeader` and `StatusRow`. Under this document both of those types move into the
+component layer in Phase 1 and `SettingsPanel.swift` disappears entirely. Two file-boundary facts for the
+OTA Phase 0 owner, neither of which changes the OTA design's substance:
+
+1. The Local Network check belongs in **Device → Connection** (`DeviceTab.swift`), not
+   `SettingsPanel.swift`.
+2. `FirmwareSettingsView.swift` is a **destination**, not a section — the fifth sidebar row. That fact is
+   what flipped §4. Phase 0 can still ship it as a single read-only row; it just lands as its own pane,
+   and `SettingsTab` gains a `.firmware` case (which is what the test rename in this phase anticipates).
 
 ### Phase 2 — the remaining surfaces
 
@@ -920,44 +1067,47 @@ honesty strings moved out of the glass (§6.3); Space Grotesk + JetBrains Mono b
 Labels on all eleven icon-only buttons; the fixed-height audit (§8.3); reduce-motion gating; a contrast
 verification pass over both appearances; VoiceOver walkthrough of each destination.
 
-**Not scheduled:** any change to `HubViewModel`'s shape, any change to the four-tab IA (it just shipped
-and it is right), any change to the staging model or the two-channel footer semantics.
+**Not scheduled:** any change to `HubViewModel`'s shape, any change to the destination IA itself (the
+four tiers just shipped and they are right — the sidebar re-renders them, it does not re-cut them), any
+change to the staging model or the two-channel footer semantics.
 
 ---
 
 ## 11. Open questions
 
-1. **Toolbar or sidebar for the Settings window.** §4.2 calls toolbar, on the argument that a sidebar
-   costs ~200 pt of width the three-pane Pages tab cannot spare at four destinations. That flips if a
-   fifth destination is coming, or if any destination grows sub-pages. **Do you expect the Settings window
-   to grow past four top-level destinations?**
+### Settled by the owner on 2026-07-27
 
-2. **Close-with-unsaved-edits.** `window.isDocumentEdited` (§4.3) makes the current silent revert-on-close
-   visible as data loss, so the call is to add a Save & push / Discard / Cancel sheet. **This is a
-   behaviour change, not a visual one — confirm before it is built.** The alternative is to skip
-   `isDocumentEdited` and rely on the toolbar dot alone, which is weaker but changes nothing.
+Recorded because most of this document is downstream of them.
 
-3. **Bundling the device's fonts.** §6.4 calls yes: ~300–400 KB of OFL-licensed Space Grotesk + JetBrains
-   Mono so the device preview draws in the device's real faces. It is the single biggest fidelity win
-   available and it is not a third-party dependency in the sense the project rule means. **Is the bundle
-   size / build-script change acceptable?**
+| Question | Answer | Effect |
+|---|---|---|
+| **Navigation** | **More destinations are coming** — `FirmwareSettingsView.swift` is already specified in the OTA plan's Phase 0. | **§4.2 flipped from `NSToolbar` to a sidebar.** §4.3's dirty indicator rebuilt on a `List` row; §5.1 added to solve the width; §9.1 gained the `NavigationSplitView`/`HSplitView` availability rows; §10's Phase 1 file list and test claim revised. |
+| **Close with unsaved edits** | Approved. | §4.3 carries the Save & push / Discard / Cancel sheet as a decision, not a proposal. |
+| **Colour identity** | System accent only; `#ff4a2b` stays inside the device glass. | §2.3 and §6.3 stand as written. |
+| **Menu-bar popover** | Keeps its card-stack shape. | §10 Phase 2 re-tokenises `HubPanel` and does not redesign it. |
+| **Device fonts** | Bundle them. | §6.4 stands; Phase 3. |
+| **Minimum window size** | 820 accepted. | §5.1 re-derives it under the sidebar and lands on the same figure. |
+| **App icon** | Moot — `hub/Resources/BeaconHub.icns` already exists (260 KB). | §9.3's note stands as a fact about the Dock icon's new visibility. Whether the icon is *good* is out of scope. |
 
-4. **Does the hub adopt any of the device's colour identity?** §2.3 chose the user's system accent
-   everywhere, because a Mac app that ignores the accent colour reads as a web app. The cost is that the
-   hub and the device share no colour — the `#ff4a2b` signal orange appears only inside the device
-   preview. **Is that right, or should the hub use signal orange somewhere deliberate (the menubar
-   glyph's alert tint, the dirty dot, the primary action) so the two halves look like one product?**
+### Still open
 
-5. **The app icon.** The `.regular` activation policy puts a Dock icon on screen every time Settings is
-   opened and removes it on close (§9.3). That makes the icon a recurring visible surface. **Is there a
-   designed Beacon Hub icon, or does one need to be made?**
+Three, all raised by the sidebar rather than surviving from the earlier draft.
 
-6. **The menu-bar popover.** `HubPanel` is a Control-Center-style stack of cards. After the tab bar it is
-   the least Mac-native surface in the hub — but it is also by far the most-used one, and restyling it is
-   the most disruptive thing in this document. Phase 2 currently only re-tokenises it, preserving its
-   shape. **Should it stay a card stack, or become a plain grouped list?**
+**1. Sidebar shape: five flat rows, or Firmware nested under Device?** Firmware is about *this Beacon*,
+which is exactly what the Device destination is about, so there is a real case for Device owning a
+sub-item rather than a fifth peer. **Lean: five flat rows** — one disclosure group containing one child
+is the shape that ages worst, and it reads as an accident rather than a hierarchy. This is the first
+decision the OTA Phase 0 owner will hit, so it wants an answer before that work starts.
 
-7. **Window minimum width.** §5's density rule fixes the inspector at 280 pt and the catalog grid at
-   300 pt; with a 150 pt carousel card and `space.xl` gutters, the Pages tab wants roughly **820 pt**
-   minimum width, up from today's 720. **Acceptable?** If not, the inspector narrows to 240 and the
-   "What this page shows" preview drops from 160 pt to 120 pt.
+**2. Does the sidebar carry per-destination status beyond unsaved edits?** §4.3's last paragraph: a
+`state.warn` dot on **Device** when Bluetooth is off, on **Sources** when a provider's buddy toggle is on
+but its hooks are undetected. The second currently exists only as a hidden `NSMenuItem` in the app menu
+(`MenubarController.updateHooksHint`) — a real affordance most users will never see. Folding it into the
+sidebar gives it a visible home, but it **relocates a shipped affordance**, which is why it is outside
+§10's phases. **Worth doing?**
+
+**3. Does the Pages inspector need an explicit collapse toggle?** §5.1 gives it a draggable divider down
+to a 260 pt floor, and gives the sidebar its standard show/hide. An explicit inspector toggle (`⌥⌘I`)
+would let someone on a small display hand the full window to the composition column. **Lean: no in
+Phase 1** — the 820 pt minimum means collapsing is never *required*, and every control that can be hidden
+is a control that can be lost. Revisit if the Pages destination grows a second inspector mode.

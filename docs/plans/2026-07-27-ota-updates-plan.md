@@ -126,8 +126,13 @@ v0.12.10" row in Settings and a release workflow whose version string is finally
 
 Hub:
 - `hub/Info.plist` — add `NSLocalNetworkUsageDescription`.
-- `hub/Sources/beacon-hub/SettingsPanel.swift` — a **Local Network** `StatusRow` in the existing
-  **Connection** section (`SettingsPanel.swift:52-64`), beside Bluetooth and Device connected.
+- `hub/Sources/beacon-hub/DeviceTab.swift` — a **Local Network** `StatusRow` in the existing
+  **Connection** section (`DeviceTab.swift:24`), beside Bluetooth and Device connected.
+  **(Corrected 2026-07-27.** This plan was written against the pre-four-tab layout and said
+  `SettingsPanel.swift:52-64`. The four-tab IA moved Connection to `DeviceTab.swift`; `SettingsPanel.swift`
+  is now 53 lines holding only `SectionHeader` and `StatusRow`, so that reference points past the end of
+  the file. Both of those shared components are further dissolved into the component layer by
+  `docs/specs/2026-07-27-hub-visual-system-design.md` Phase 1 — check which has landed before editing.)
 - `hub/Sources/beacon-hub/HubViewModel.swift` — `setupLocalNetwork: CheckState`, the
   `firmware: FirmwareUpdateState` published property, and the four closure seams below.
 - `hub/Sources/beacon-hub/FirmwareSettingsView.swift` — **new**. A `FirmwareSettingsSection(model:)`
