@@ -19,6 +19,7 @@ struct SonosSettingsSection: View {
     @State private var clientIDDraft = ""
     @State private var secretDraft = ""
     @State private var secretMessage: String?
+    @State private var secretMessageIsError = false
     @State private var authorizing = false
     @State private var authorizeSucceeded = false
     @State private var authorizeMessage: String?
@@ -26,10 +27,10 @@ struct SonosSettingsSection: View {
     @State private var confirmClearSecret = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: HubSpace.m) {
             SectionHeader(title: "Sonos", subtitle: "Connect Beacon Hub to your Sonos system")
-            Module {
-                VStack(alignment: .leading, spacing: 12) {
+            Card {
+                VStack(alignment: .leading, spacing: HubSpace.m) {
                     statusRow
                     Divider()
                     clientIDField
@@ -83,26 +84,37 @@ struct SonosSettingsSection: View {
 
     // --- status ---
 
-    @ViewBuilder private var statusRow: some View {
-        HStack(alignment: .top, spacing: 11) {
-            Image(systemName: statusGlyph.name).foregroundStyle(statusGlyph.color).frame(width: 18)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(statusTitle).font(.system(size: 13, weight: .medium))
-                if let statusDetail {
-                    Text(statusDetail).font(.system(size: 11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            Spacer(minLength: 8)
+    // Collapses the four `SonosSetupSnapshot.status` cases into `HubState` (design §3.3), the one status
+    // vocabulary every surface in this system now shares. `.notConfigured` and `.secretStoredNotAuthorized`
+    // both map to `.notSetUp`, never `.warn` -- design §3.3/§2.3 calls out the old orange used for "you
+    // haven't set a Client ID yet" as miscast: that's a normal first-run state, not a warning, and the
+    // fix (below, in `clientIDHint`) drops the orange entirely.
+    private var sonosState: HubState {
+        switch snapshot.status {
+        case .notConfigured, .secretStoredNotAuthorized: return .notSetUp
+        case .authorized:                                return .ok
+        case .authorizedButFailing:                      return .warn
         }
     }
 
-    private var statusGlyph: (name: String, color: Color) {
-        switch snapshot.status {
-        case .notConfigured:              return ("circle", .secondary)
-        case .secretStoredNotAuthorized:  return ("circle.dashed", .secondary)
-        case .authorized:                 return ("checkmark.circle.fill", .green)
-        case .authorizedButFailing:       return ("exclamationmark.triangle.fill", .orange)
+    // Not the `StatusRow` component itself: that component's own `space.m` horizontal inset assumes a
+    // zero-padding row-stack card (design §3.2), and this card holds a mixed form (fields, buttons, a
+    // status line), not a stack of rows -- wrapping it in `StatusRow` here would double the inset against
+    // the card's own `space.l` content padding. Consuming `HubState`'s glyph/tint directly still lands the
+    // one shared vocabulary; only the layout differs from the row-stack case.
+    @ViewBuilder private var statusRow: some View {
+        HStack(alignment: .top, spacing: HubSpace.m) {
+            Image(systemName: sonosState.glyph)
+                .foregroundStyle(sonosState.tint)
+                .frame(width: HubControlMetrics.iconColumn)
+            VStack(alignment: .leading, spacing: HubSpace.xs) {
+                Text(statusTitle).font(HubType.body).foregroundStyle(HubColor.inkPrimary)
+                if let statusDetail {
+                    Text(statusDetail).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: HubSpace.s)
         }
     }
 
@@ -136,26 +148,29 @@ struct SonosSettingsSection: View {
     // --- client ID ---
 
     @ViewBuilder private var clientIDField: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Client ID").font(.system(size: 12, weight: .medium))
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.xs) {
+            Text("Client ID").font(HubType.body).foregroundStyle(HubColor.inkPrimary)
+            HStack(spacing: HubSpace.s) {
                 TextField(SonosClientID.placeholder, text: $clientIDDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
+                    .font(HubType.control)
                     .onSubmit { saveClientID() }
-                DeckButton(title: "Save", enabled: clientIDDraft != snapshot.storedClientID) { saveClientID() }
+                HubButton(title: "Save", isEnabled: clientIDDraft != snapshot.storedClientID) { saveClientID() }
             }
             clientIDHint
         }
     }
 
+    // Both branches are informational (a normal first-run nudge, or a note about an env override) --
+    // neither is a warning, so both are `ink.secondary`, not the old orange (design §3.3: a first-run
+    // "you haven't set this up" state is `notSetUp`, never `warn`).
     @ViewBuilder private var clientIDHint: some View {
         if snapshot.usingEnvOverride {
             Text("Using SONOS_CLIENT_ID from the environment. Saving a value here will override it.")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
+                .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
         } else if snapshot.effectiveClientID == SonosClientID.placeholder {
             Text("Not set. Get a Client ID from a \u{201C}Control\u{201D} integration at integration.sonos.com.")
-                .font(.system(size: 10)).foregroundStyle(.orange)
+                .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
         }
     }
 
@@ -167,17 +182,19 @@ struct SonosSettingsSection: View {
     // --- client secret ---
 
     @ViewBuilder private var secretField: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Client secret").font(.system(size: 12, weight: .medium))
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: HubSpace.xs) {
+            Text("Client secret").font(HubType.body).foregroundStyle(HubColor.inkPrimary)
+            HStack(spacing: HubSpace.s) {
                 SecureField(snapshot.secretStored ? "Replace the stored secret" : "Paste the client secret",
                            text: $secretDraft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-                DeckButton(title: "Save", enabled: !secretDraft.isEmpty) { saveSecret() }
+                    .font(HubType.control)
+                HubButton(title: "Save", isEnabled: !secretDraft.isEmpty) { saveSecret() }
             }
-            Text(secretStatusText).font(.system(size: 10))
-                .foregroundStyle(secretMessage != nil ? Color.orange : Color.secondary)
+            // Shows the stored secret only as a character count, never the value (unchanged). Error text
+            // is `ink.primary` (design §3.9), not a state colour standing in for a glyph-less word.
+            Text(secretStatusText).font(HubType.secondary)
+                .foregroundStyle(secretMessageIsError ? HubColor.inkPrimary : HubColor.inkSecondary)
         }
     }
 
@@ -191,10 +208,13 @@ struct SonosSettingsSection: View {
         switch model.onSaveSonosSecret(secretDraft) {
         case .saved(let count):
             secretMessage = "Saved (\(count) characters)."
+            secretMessageIsError = false
         case .refused(let reason):
             secretMessage = reason
+            secretMessageIsError = true
         case .keychainWriteFailed:
             secretMessage = "Could not write to the Keychain."
+            secretMessageIsError = true
         }
         secretDraft = ""
         refresh()
@@ -203,21 +223,30 @@ struct SonosSettingsSection: View {
     // --- authorize ---
 
     @ViewBuilder private var authorizeRow: some View {
-        HStack(alignment: .top, spacing: 10) {
-            DeckButton(title: authorizing ? "Authorizing\u{2026}" : "Authorize with Sonos",
-                      kind: .primary, enabled: canAuthorize && !authorizing) { authorize() }
+        HStack(alignment: .top, spacing: HubSpace.m) {
+            HubButton(title: authorizing ? "Authorizing\u{2026}" : "Authorize with Sonos",
+                      kind: .primary, isEnabled: canAuthorize && !authorizing) { authorize() }
             authorizeStatusText
             Spacer()
         }
     }
 
+    // The result word stays `ink.primary` (design §2.3: "state is never colour alone") -- the outcome is
+    // carried by `HubState`'s glyph/tint pair beside it, reusing the same one vocabulary `sonosState`
+    // above draws from, not a bare coloured word standing in for a glyph.
     @ViewBuilder private var authorizeStatusText: some View {
         if let authorizeMessage {
-            Text(authorizeMessage).font(.system(size: 11))
-                .foregroundStyle(authorizing ? Color.secondary : (authorizeSucceeded ? Color.green : Color.orange))
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: HubSpace.xs) {
+                if !authorizing {
+                    let outcome: HubState = authorizeSucceeded ? .ok : .warn
+                    Image(systemName: outcome.glyph).foregroundStyle(outcome.tint)
+                }
+                Text(authorizeMessage).font(HubType.secondary)
+                    .foregroundStyle(authorizing ? HubColor.inkSecondary : HubColor.inkPrimary)
+            }
+            .fixedSize(horizontal: false, vertical: true)
         } else if !canAuthorize {
-            Text(disabledReason).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(disabledReason).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
         }
     }
 
@@ -259,6 +288,8 @@ struct SonosSettingsSection: View {
         }
     }
 
+    // The model for error copy in this system (design §3.9): every case is a specific sentence, and the
+    // loopback-bind case even names the port. Kept verbatim.
     private func describe(_ e: SonosAuthError) -> String {
         switch e {
         case .noClientSecret:       return "No client secret stored."
@@ -276,17 +307,17 @@ struct SonosSettingsSection: View {
     // --- disconnect ---
 
     @ViewBuilder private var disconnectRow: some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Disconnect").font(.system(size: 12, weight: .medium))
+        HStack(spacing: HubSpace.s) {
+            VStack(alignment: .leading, spacing: HubSpace.xs) {
+                Text("Disconnect").font(HubType.body).foregroundStyle(HubColor.inkPrimary)
                 Text("Clears the stored authorization. The client secret stays saved.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
             }
             Spacer()
             if snapshot.secretStored {
-                DeckButton(title: "Clear secret") { confirmClearSecret = true }
+                HubButton(title: "Clear secret") { confirmClearSecret = true }
             }
-            DeckButton(title: "Disconnect", enabled: hasStoredAuthorization) { confirmDisconnect = true }
+            HubButton(title: "Disconnect", isEnabled: hasStoredAuthorization) { confirmDisconnect = true }
         }
     }
 }
@@ -299,6 +330,6 @@ struct SonosSettingsSection: View {
                            secretStored: true, secretCharCount: 44,
                            status: .authorized(expiresAt: Date().addingTimeInterval(3600)))
     }
-    return SonosSettingsSection(model: m).padding(16).frame(width: 460)
+    return SonosSettingsSection(model: m).padding(HubSpace.l).frame(width: 460)
 }
 #endif
