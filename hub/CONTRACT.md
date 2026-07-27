@@ -136,6 +136,82 @@ set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHub
   LVGL objects under a running render loop, and a page-set change is rare enough that ~5 s of reboot is
   the safer trade. The hub therefore never pushes while pristine (`rev` 0), or for a no-op edit.
 
+## A3. Hub -> device complication config (additive, design `docs/specs/2026-07-27-hub-app-and-home-complications-design.md` §4/§6)
+
+Which small renderers ("complications") occupy a face's slot grid, and in what order. Home is the only
+face today: six slots on a 62 px pitch, the clock spanning two. Persisted in NVS (`c_home`) and applied
+by the device **live, with no restart** — the load-bearing difference from §A2. Parsed by
+`hub_parse_comps`, encoded by `BeaconHubKit/Complications.swift`.
+
+```json
+{"v":1,"comps":{"rev":1,"slots":{"home":["clock","fin.sp500","ice","agents"]}}}
+{"v":1,"cmd":"comps_ack","rev":1,"ok":true,"count":4}
+{"v":1,"cmd":"comps_ack","rev":1,"ok":false,"err":"malformed"}
+```
+
+- **Single frame, not chunked.** The worst case (2 faces × 6 one-slot entries at max length) is 437 B
+  against `HUB_FRAME_MAX` (1024) — 42.7%. If `comps` ever outgrows the ceiling it chunks exactly like §B2;
+  nothing here forecloses that.
+- Caps: `slots` carries at most **2** faces (`COMP_FACES_MAX`; only `"home"` exists); per face, up to
+  **6** entries (`COMP_SLOTS_MAX`) — but capacity is in **slot units**, not entry count, since the clock
+  costs 2. Each entry is `id` (≤ **11** chars) or `id.arg` (`arg` ≤ **15** chars); `.` is the only
+  separator. Charset for both `id` and `arg`: `[a-z0-9_-]` — no character in it is JSON-escapable, so
+  character caps bound bytes exactly (unlike `SessionDetailsFrame`'s free-form text fields, this frame
+  needs no encode-measure-shrink loop). `rev` is a monotonic hub counter, echoed in the ack; a stale ack
+  (for a rev the user has since edited past) is ignored, exactly as `pagesAck`/`configAck` already are.
+- `count` in the ack is **placements applied, not slot units** — 4 placements can occupy 5 slots when one
+  of them is the clock.
+- The catalog (`COMP_CATALOG` in `core/complications.cpp`, mirrored by `ComplicationCatalog` in
+  `BeaconHubKit`) is the **single** home of each id's `size` (1 or 2 slot units) and `takesArg`. Neither
+  lives on the device's LVGL-coupled renderer registry (`ui/comps/comp_registry.h`) nor is re-derived by
+  the hub UI — a fact duplicated in a second place is a fact that drifts.
+
+  | id | size | takes arg | owning page |
+  |---|---|---|---|
+  | `clock` | 2 | no | *(core)* |
+  | `fin` | 1 | yes (ticker id) | `markets` |
+  | `ice` | 1 | no | `ice` |
+  | `agents` | 1 | no | `agents` |
+  | `usage` | 1 | yes (provider id) | `agents` |
+  | `weather` | 1 | no | *(core)* |
+  | `sonos` | 1 | no | `sonos` |
+  | `chart` | 2 | yes (ticker id) | `chart` — **Phase 2**: no Phase 1 firmware answers a renderer for it |
+
+- **Resolution rules** (device `comp_list_resolve`, pure + host-tested): an unknown id is dropped and the
+  remaining entries compact upward; duplicate ids collapse to the **first** occurrence regardless of arg
+  (one instance per id — Home can show exactly one ticker, one usage provider, one sparkline); an entry
+  that does not fit the remaining slot units is dropped and the walk **continues** (a later 1-slot entry
+  may still place where an earlier 2-slot one did not — never degraded to a smaller size); over capacity
+  the tail truncates (`err` has no `too_many_slots` — over-cap is not an error). `owner` above is **hub
+  metadata only** — the device never consults it, so a complication survives its owning page being
+  hidden or disabled. The general rule: **a complication may only read a record the device already
+  maintains for reasons independent of the page list; a complication must never be the thing that causes
+  a fetch.**
+- **Explicitly empty vs. everything-unknown** (rule the pages frame does not need): an explicitly empty
+  request (`"home":[]` on the wire) is honoured and resolves to zero placements — a legitimate, if
+  austere, blank face (the hub warns before sending it). A **non-empty** request that resolves to zero
+  (every entry was unknown/invalid/didn't fit) falls back to the compiled default instead. The device
+  distinguishes these by whether the wire array itself was empty, not by the resolved count — a request
+  of several unknown ids also resolves to zero and must behave differently.
+- **A face this frame does not carry is not an error** — the one place this parser's shape diverges from
+  `hub_parse_pages`: an absent `"list"` there is malformed, but an absent face key here means the frame
+  simply has nothing to say about that face, and the device does nothing (no ack). An unknown **face**
+  key (a second host face a newer hub knows and this firmware does not) is dropped the same way an
+  unknown page id is; other faces still apply.
+- `err` ∈ {`malformed`}. There is deliberately no `too_many_slots`.
+- **Does not restart.** `carousel_apply_comps` persists NVS then hands the resolved list to a
+  mutex-guarded pending holder; the next LVGL tick (Core 1, gated on the carousel not mid-scroll) tears
+  down and rebuilds only the Home complication stack's children — never the page objects `carousel_apply_pages`
+  restarts for. The ack is therefore reliable (the link never drops), unlike `pagesAck`. Idempotent on
+  every reconnect exactly like pages: an identical re-push no-ops (no rebuild, no flicker).
+- Push order on `central.onReady`: **tickers → comps → pages**. Comps before pages so that if the page
+  push restarts the device, the complication blob is already persisted and the device boots correct.
+- Migration: NVS `c_home` absent ⇒ the compiled default `clock,fin.sp500,ice,agents`, reproducing today's
+  Home exactly. `ComplicationStore` starts pristine (`BeaconCompRev` 0) and never pushes until the first
+  edit — an untouched hub changes nothing. Old firmware + new hub: `on_frame()` finds no known key and
+  drops the `comps` frame exactly as it drops `sdetail`/`sessions` on older builds; Home renders its
+  compiled layout. No version bump either direction.
+
 ## B. Device -> hub commands + hub acks (FROZEN, `tech.md` §7.1)
 
 ```json

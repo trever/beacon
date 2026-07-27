@@ -255,6 +255,63 @@ size_t hub_build_pages_ack(char* buf, size_t cap, uint32_t rev, bool ok, const c
   return finish_frame(doc, buf, cap);
 }
 
+data_err_t hub_parse_comps(const char* json, size_t len, uint32_t* rev,
+                           const char* face_id, comp_list_t* out, bool* explicit_empty,
+                           const char** err_out) {
+  static const char* E_MALFORMED = "malformed";
+  if (out) memset(out, 0, sizeof(*out));
+  if (explicit_empty) *explicit_empty = false;
+  if (!face_id || !*face_id)                           { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, json, len))                 { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  if ((doc["v"] | 0) != 1)                              { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  JsonVariantConst c = doc["comps"];
+  if (!c.is<JsonObjectConst>())                         { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  if (!c["rev"].is<uint32_t>() && !c["rev"].is<int>())  { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  JsonVariantConst slots = c["slots"];
+  if (!slots.is<JsonObjectConst>())                     { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+  // NOT `c["rev"] | 0`: ArduinoJson's operator| deduces T=int from the literal 0, and is<int>() is false
+  // for a value above INT32_MAX (e.g. the worst-case uint32 rev), silently falling back to the default
+  // (0) instead of the real value. .as<uint32_t>() extracts the full range validated above.
+  if (rev) *rev = c["rev"].as<uint32_t>();
+
+  // This frame simply does not carry `face_id` -- NOT an error (the pages analogy breaks here: an
+  // absent "list" is malformed for pages, but an absent face here just means nothing to do).
+  JsonVariantConst arrV = slots[face_id];
+  if (arrV.isNull()) return ERR_NONE;
+  if (!arrV.is<JsonArrayConst>())                       { if (err_out) *err_out = E_MALFORMED; return ERR_PARSE; }
+
+  JsonArrayConst arr = arrV.as<JsonArrayConst>();
+  if (explicit_empty) *explicit_empty = (arr.size() == 0);   // rule 5: distinct from *out ending up empty
+
+  comp_list_t tmp; memset(&tmp, 0, sizeof(tmp));
+  for (JsonVariantConst e : arr) {
+    if (tmp.count >= COMP_SLOTS_MAX) break;              // structural cap; resolve truncates semantically too
+    if (!e.is<const char*>()) continue;                   // a non-string entry: drop, don't fail the frame
+    const char* raw = e.as<const char*>();
+    char id[COMP_ID_LEN], arg[COMP_ARG_LEN];
+    if (!comp_entry_split(raw, id, sizeof(id), arg, sizeof(arg))) continue;   // unsplittable: drop
+    snprintf(tmp.ids[tmp.count],  COMP_ID_LEN,  "%s", id);
+    snprintf(tmp.args[tmp.count], COMP_ARG_LEN, "%s", arg);
+    tmp.count++;
+  }
+  if (out) *out = tmp;
+  return ERR_NONE;
+}
+
+size_t hub_build_comps_ack(char* buf, size_t cap, uint32_t rev, bool ok, const char* err, int count) {
+  if (!buf || cap == 0) return 0;
+  JsonDocument doc;
+  doc["v"] = 1;
+  doc["cmd"] = "comps_ack";
+  doc["rev"] = rev;
+  doc["ok"] = ok;
+  if (ok) doc["count"] = count;
+  else    doc["err"] = (err && *err) ? err : "malformed";
+  return finish_frame(doc, buf, cap);
+}
+
 bool hub_parse_loc(const char* json, size_t len, hub_loc_t* out) {
   JsonDocument doc;
   if (deserializeJson(doc, json, len)) return false;   // not valid JSON

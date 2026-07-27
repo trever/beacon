@@ -78,6 +78,15 @@ final class HubViewModel: ObservableObject {
     @Published var appliedPageOpts: [String: [String: String]] = [:]
     var pagesDirty: Bool { enabledPageIDs != appliedPageIDs || enabledPageOpts != appliedPageOpts }
 
+    // Home's six-slot complication assignment (design §4). Face id -> wire strings ("clock",
+    // "fin.sp500", ...) -- the same raw shape ComplicationStore persists, so WS-3's editor and
+    // AppDelegate never have to translate between two representations.
+    @Published var compSlots: [String: [String]] = [:]
+    /// The assignment last known to be on the device; Apply is enabled only when compSlots differs.
+    @Published var appliedCompSlots: [String: [String]] = [:]
+    @Published var compSync: String?          // transient status under the Apply button
+    var compsDirty: Bool { compSlots != appliedCompSlots }
+
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}
     var onRequestLoginItem: (Bool) -> Void = { _ in }   // desired on/off; truth re-read async
@@ -90,6 +99,8 @@ final class HubViewModel: ObservableObject {
     var onApplyPages: ([String], [String: [String: String]]) -> Void = { _, _ in }   // push (restarts device)
     var onRevertPages: () -> Void = {}                // discard staged edits, back to what the device runs
     var onOpenPages: () -> Void = {}                  // open the page designer window
+    var onApplyComps: ([String: [String]]) -> Void = { _ in }   // push (applies live, no restart)
+    var onRevertComps: () -> Void = {}                // discard staged edits, back to what the device runs
     var onApplyTickerEdit: ([TickerRow]) -> Void = { _ in }   // issue #92: B4 editor commits the desired list
     var onOpenTickerEditor: () -> Void = {}                    // issue #92: open the dedicated editor window
     // issue #92: editor calls this with a query; AppDelegate runs Binance(local) + Yahoo(live) and delivers

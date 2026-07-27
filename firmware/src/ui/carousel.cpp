@@ -294,6 +294,8 @@ static int active_index_of(const char* id) {
   return -1;
 }
 
+bool carousel_has_page(const char* id) { return active_index_of(id) >= 0; }
+
 bool carousel_page_opt(const char* page_id, const char* key, char* out, size_t cap) {
   if (out && cap) out[0] = '\0';
   if (!page_id || !key) return false;
