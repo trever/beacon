@@ -30,6 +30,17 @@ struct DevicePreview: View {
     /// 40 px of the device's 466 px panel.
     private var inset: CGFloat { size * (40.0 / 466.0) }
 
+    /// The instrument the chart page is configured to follow. Resolved from the ticker list so the card
+    /// changes when you change the selection -- it used to say "S&P 500" whatever was picked, which made
+    /// two different instruments look identical.
+    private var chartLabel: String {
+        let sym = model.pageRows.first { $0.id == "chart" }?.opts["sym"] ?? "sp500"
+        if let t = model.tickerRows.first(where: { $0.id == sym }) {
+            return t.name.isEmpty ? t.sym : t.name
+        }
+        return sym
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
@@ -48,7 +59,7 @@ struct DevicePreview: View {
         switch pageID {
         case "home":     HomeSketch(model: model, size: size)
         case "agents":   AgentsSketch(model: model, size: size)
-        case "chart":    ChartSketch(size: size)
+        case "chart":    ChartSketch(size: size, label: chartLabel)
         case "ice":      IceSketch(size: size)
         case "markets":  MarketsSketch(model: model, size: size)
         case "settings": SettingsSketch(size: size)
@@ -84,8 +95,9 @@ private struct HomeSketch: View {
             }
             eyebrow(Date().formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()), size)
             Spacer(minLength: 0)
-            miniRow("S&P", "7,411.98", "+0.05%", up: true)
-            miniRow("D4 RIN", "$2.4345", "+0.19%", up: true)
+            // Device-plane values the hub never sees; shown as placeholders, not invented numbers.
+            miniRow("S&P", "—.——", "", up: true)
+            miniRow("D4 RIN", "—.——", "", up: true)
             Spacer(minLength: 0)
             HStack(spacing: size * 0.03) {
                 Circle().fill(sessionColor).frame(width: size * 0.03, height: size * 0.03)
@@ -173,13 +185,17 @@ private struct AgentsSketch: View {
 
 private struct ChartSketch: View {
     let size: CGFloat
-    /// Representative shape only: intraday series are fetched by the DEVICE, never seen by the hub.
+    let label: String
+    /// Shape only. Intraday series are fetched by the DEVICE and never reach the hub, so there is no
+    /// real line to draw -- the figures are struck out as a sample rather than shown as if live, which
+    /// previously made two different instruments look like the same chart.
     private let pts: [CGFloat] = [0.42, 0.38, 0.5, 0.46, 0.58, 0.55, 0.66, 0.62, 0.74, 0.7, 0.82, 0.86]
     var body: some View {
         VStack(alignment: .leading, spacing: size * 0.02) {
-            eyebrow("S&P 500", size)
-            hero("7,411.98", size)
-            Text("+3.68  +0.05%").font(.system(size: size * 0.04)).foregroundStyle(BeaconPalette.ink)
+            eyebrow(label, size)
+            hero("—.——", size, color: BeaconPalette.inkDim)
+            Text("sample shape · live on device").font(.system(size: size * 0.036))
+                .foregroundStyle(BeaconPalette.inkDim)
             Spacer(minLength: 0)
             GeometryReader { geo in
                 Path { p in
@@ -189,7 +205,8 @@ private struct ChartSketch: View {
                         i == 0 ? p.move(to: .init(x: x, y: y)) : p.addLine(to: .init(x: x, y: y))
                     }
                 }
-                .stroke(BeaconPalette.ink, style: .init(lineWidth: 1.5, lineJoin: .round))
+                .stroke(BeaconPalette.inkDim, style: .init(lineWidth: 1.5, lineJoin: .round,
+                                                          dash: [size * 0.02, size * 0.02]))
             }
             .frame(height: size * 0.30)
         }
@@ -202,14 +219,11 @@ private struct IceSketch: View {
     var body: some View {
         VStack(alignment: .leading, spacing: size * 0.022) {
             eyebrow("D4 RIN", size)
-            hero("$2.4345", size)
-            HStack(spacing: size * 0.015) {
-                Image(systemName: "arrow.up.right").font(.system(size: size * 0.04, weight: .bold))
-                Text("0.19%").font(.system(size: size * 0.042))
-            }
-            .foregroundStyle(BeaconPalette.ink)
+            hero("—.——", size, color: BeaconPalette.inkDim)
+            Text("live on device").font(.system(size: size * 0.036))
+                .foregroundStyle(BeaconPalette.inkDim)
             Spacer(minLength: 0)
-            ForEach(["Dec26  $2.4345", "Mar27  $2.4610"], id: \.self) { r in
+            ForEach(["Dec26", "Mar27"], id: \.self) { r in
                 HStack {
                     Text(r).font(.system(size: size * 0.038)).foregroundStyle(BeaconPalette.inkDim)
                     Spacer()
