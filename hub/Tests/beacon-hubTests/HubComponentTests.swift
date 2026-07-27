@@ -121,11 +121,9 @@ final class HubComponentTests: XCTestCase {
             provider: ProviderToggle(id: "claude", label: "Claude", supportsUsage: true, supportsBuddy: true,
                                       usageOn: true, buddyOn: true))
 
-        // Deprecated compat layer (DeckUI.swift) -- must still be constructible; the deprecation is a
-        // warning, not a compile failure, and the plan requires every existing call site to keep working.
-        let module = Module(padding: 0) { Text("module") }
-        let deckButton = DeckButton(title: "Legacy", kind: .primary) {}
-        let toggleRow = ToggleRow(icon: "bell", title: "Legacy toggle", isOn: .constant(true))
+        // DeckUI.swift (the deprecated compat layer: `Module`, `DeckButton`, `ToggleRow`) is gone as of
+        // WS-9 (plan SS11): the deprecation-warning count reached 0, meaning no production call site
+        // still used it, so it was deleted rather than kept around for this test to construct.
 
         // The assertions below are almost all "this field round-trips" -- the coverage this test provides
         // is the CONSTRUCTION above compiling at all from a different file in the same module (plan SS3's
@@ -154,8 +152,5 @@ final class HubComponentTests: XCTestCase {
         XCTAssertEqual(footer.channels.first?.id, "pages")
         XCTAssertEqual(glassPanel.size, 160)
         XCTAssertEqual(providerRowGroup.provider.id, "claude")
-        XCTAssertEqual(module.padding, 0)
-        XCTAssertEqual(deckButton.kind, .primary)
-        XCTAssertEqual(toggleRow.title, "Legacy toggle")
     }
 }

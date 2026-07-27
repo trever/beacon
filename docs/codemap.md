@@ -2,7 +2,9 @@
 
 > **What this is:** a concern => file index, plus end-to-end traces of the five data paths. Read this
 > before touching code so you edit the right file the first time. Verified against the tree at
-> `bbf0774` (2026-07-27, WS-4 of the home-complications build).
+> `6aa21d0` (2026-07-27, WS-9 convergence pass of the hub-visual-system build,
+> `docs/plans/2026-07-27-hub-visual-system-plan.md`) for the hub section; the firmware section was last
+> re-verified at `bbf0774` (WS-4 of the home-complications build) and is unchanged since.
 >
 > **Companions:** `AGENTS.md` (conventions) · `docs/tech.md` (NFRs + frozen contracts) · `DESIGN.md`
 > (visual system) · `hub/CONTRACT.md` (wire schema) · `docs/recipes.md` (step-by-step task playbooks)
@@ -18,7 +20,7 @@
 | Themes | **1** (editorial; six removed 2026-07-26 to reclaim flash) | `firmware/src/ui/theme_catalog.h` `THEME_COUNT` |
 | Home complications | 7 renderers compiled (`clock`, `fin`, `ice`, `agents`, `usage`, `weather`, `sonos`); `chart` is in the catalog with no renderer yet (Phase 2) | `firmware/src/ui/comps/comp_registry.cpp` `COMP_REGISTRY[]` |
 | Firmware host tests | 38 suites / 295 cases | `firmware/test/test_*/` |
-| Hub tests | 416 cases | `hub/Tests/` |
+| Hub tests | 489 cases | `hub/Tests/` |
 | Device->hub commands | 6 (`permission`, `open`, `config_ack`, `report`, `pages_ack`, `comps_ack`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
 | Hub->device blocks | 7 (`usage`, `buddy`, `loc` share the status frame; `sessions`, `config`, `pages` and `comps` are standalone frames) | `hub/CONTRACT.md` §A/§B2/§A3 |
 | Hub providers | 3 (claude, codex, omp) | `hub/Sources/beacon-hub/AppDelegate.swift` `startProviders()` |
@@ -140,11 +142,25 @@ menubar agent. Anything you want tested belongs in the kit.
 | Usage poll loop across providers | `UsagePoller.swift` |
 | Claude token refresh ladder | `ClaudeTokenRefresher.swift` |
 | Menubar menu + view model | `MenubarController.swift`, `HubViewModel.swift` |
-| Settings window / panels / ticker editor | `SettingsPanel.swift`, `HubPanel.swift`, `TickerEditorView.swift` |
+| Menu-bar popover (usage cards, provider toggles, quick actions) | `HubPanel.swift` |
+| Shared design tokens (spacing/type/colour/radius/shape/motion) + row/surface component layer | `HubStyle.swift`, `HubRows.swift`, `HubSurfaces.swift` |
+| Device-glass frame (bezel/shadow/selection ring) + the device's own miniature render (palette, type scale, bundled fonts, per-page sketches) | `DeviceGlass.swift`, `DevicePreview.swift` |
+| Settings window chrome: `NavigationSplitView` sidebar, per-destination title, dirty state, close-confirmation sheet policy | `SettingsTabs.swift`, `SettingsWindowController.swift`, `SettingsCloseDecision.swift` |
+| Pages destination (carousel band, tile grid, per-page inspector) + inspector column-width tiering | `PageDesignerView.swift`, `PageDesignerInspector.swift`, `PageDesignerChartPopover.swift`, `InspectorTier.swift` |
+| Home's complication inspector (six-slot editor, palette grid) | `ComplicationEditorView.swift` |
+| Sources/Device/General settings tabs; Sonos account settings; ticker editor | `SourcesTab.swift`, `DeviceTab.swift`, `GeneralTab.swift`, `SonosSettingsView.swift`, `TickerEditorView.swift` |
 | Per-provider hooks install | `HooksInstaller.swift` |
 | Tap-to-open focus tiers (Warp url > editor reuse > bundle open) | `SessionFocus.swift` |
 | CoreLocation fix => `loc` frame | `LocationProvider.swift` |
 | Login item (`SMAppService`) | `LoginItem.swift` |
+
+`SettingsPanel.swift` no longer exists — deleted by the hub-visual-system WS-0/WS-9 pass
+(`docs/plans/2026-07-27-hub-visual-system-plan.md` §3, §10.4). Its two surviving types, `SectionHeader`
+and `StatusRow`, moved into `HubRows.swift` on the new five-state `HubState` vocabulary. `DeckUI.swift`
+(the `Module`/`DeckButton`/`ToggleRow` deprecation-compat layer WS-0 shipped so every wave's call sites
+kept compiling during the migration) was deleted in the same WS-9 pass once
+`swift build 2>&1 | grep -c "is deprecated"` reached 0 — every call site had converted to the shared
+component layer above.
 
 ---
 
@@ -297,3 +313,6 @@ Cross-check these before trusting a doc statement:
 | Python **3.13** required (`firmware/README.md`) | any 3.10-3.13 works; this machine's venv is 3.12 | `~/.beacon-pio` |
 | Buddy hook timeout "~30s" (`DESIGN.md` §Coding Buddy) | ~590 s hold for Claude/Codex, 26 s for omp | `hub/CONTRACT.md` §D |
 | Theme id is `dotmatrix`; view files are named `*_calm.cpp` | both are correct and both are load-bearing — see `docs/recipes.md` §3 | `theme_catalog.h:36` vs `views/` |
+| hub-visual-system plan §11 "definition of done" says hub tests **>= 453** (416 baseline + 12 WS-0 + 8 WS-0b + 8 WS-1 + 6 WS-2 + 3 WS-7) | actual count after every wave landed is **489** — the arithmetic undercounts later waves' own additions (WS-3/4/5/6/8 all added tests too, not just the five waves the formula names) | `hub/Tests/` (`swift test`), `docs/plans/2026-07-27-hub-visual-system-plan.md` §11 |
+| Plan §7.2's mechanical duplicate-row/tile/card/badge gate is `grep -cE "^(private )?struct .*(Row\|Card\|Tile\|Header\|Chip\|Badge): View"` | that pattern requires the conformance to read `StructName: View` with nothing between — it silently **misses every generic shared component** (`SettingsRow<Trailing: View>: View`, `StatusRow<Trailing: View>: View`, `Card<Content: View>: View`, `FooterBar<Trailing: View>: View`), i.e. most of the actual component layer. Grep for `struct \w+(Row\|Card\|Tile\|Header\|Chip\|Badge)` without anchoring to `: View` instead | `hub/Sources/beacon-hub/HubRows.swift`, `HubSurfaces.swift` |
+| Plan §2.2 says the raw-font-size exemption `> 0` applies per-file to both `DevicePreview.swift` and `DeviceGlass.swift` | `DevicePreview.swift` now has **zero** `.system(size:` sites — WS-7 centralised all font resolution (`DeviceGlassFont.resolve`) into `DeviceGlass.swift`, so `DevicePreview.swift` delegates rather than constructing fonts itself. The `> 0` guarantee holds for the pair, not for `DevicePreview.swift` alone; a future grep of that one file finding 0 is not a regression | `hub/Sources/beacon-hub/DevicePreview.swift`, `DeviceGlass.swift:201-203` |

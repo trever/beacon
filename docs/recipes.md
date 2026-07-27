@@ -350,3 +350,74 @@ Five places, in order:
 - If your complication takes an `arg` (a ticker id, a provider id, …), validate it against
   `CompLimits.allowed` **at the hub editor boundary** (`ComplicationEditor.swift`) — the device-side
   `comp_entry_valid` drop is a defence, not the first line (design §10.7).
+
+---
+
+## 12. Add a hub surface (a row, card, tile, button, badge or status line in `beacon-hub`)
+
+The hub visual system (`docs/specs/2026-07-27-hub-visual-system-design.md`,
+`docs/plans/2026-07-27-hub-visual-system-plan.md`) replaced ten hand-rolled row types, five status-glyph
+vocabularies and 154 raw `.system(size:)` sites with one token layer and one component layer. The whole
+point of that project was structural, not stylistic: **the shared layer is `internal`, so nothing new
+needs a private reimplementation.** Before writing a view in `hub/Sources/beacon-hub/`, in order:
+
+1. **Read the token file.** `HubStyle.swift` (~200 lines) is spacing (`HubSpace`), type (`HubType`),
+   colour (`HubColor`, plus `HubDynamic.color(light:dark:)` for a light/dark fill you can't express as a
+   token), corner radius/shape (`HubRadius`, `HubShape`), stroke (`HubStroke`), control metrics
+   (`HubControlMetrics`) and motion (`HubMotion.animation(_:reduceMotion:)`). Every number in a new view
+   — padding, a font, a colour, a corner, a duration — should resolve to one of these, not a literal.
+2. **Pick from the component table, not from memory.** `HubRows.swift` (rows: `SectionHeader`,
+   `SettingsRow`, `StatusRow`, `StatusLine`, `ListRow`, `RowSeparator`, plus the one status vocabulary
+   `HubState`) and `HubSurfaces.swift` (surfaces: `Card`, `EmptyState`, `LoadingState`, `CatalogTile`,
+   `HubButton`, `IconButton`, `HubBadge`, `FooterBar`) are the full roster. `Tests/beacon-hubTests/HubComponentTests.swift`
+   constructs every one of them from outside its own file and is the fastest way to see a working call
+   site for each — it is runnable documentation, not just a compile check.
+   - A toggle or a labelled control in a settings-style list -> `SettingsRow` (one trailing control; a
+     row that needs two controls is two rows).
+   - A pass/fail/pending check -> `StatusRow` (inside a zero-padding `Card(padding: .rows)` row stack) or
+     `StatusLine` (bare, for a mixed-content card or an inline compact badge — see
+     `SonosSettingsView.swift`'s own comment on why it did not reuse `StatusRow` there).
+   - A pickable item in a popover, menu or search result list -> `ListRow`.
+   - A grouped surface -> `Card`; "nothing here" -> `EmptyState`; "loading" -> `LoadingState` (has the
+     150 ms guard built in — do not add your own delay).
+   - A small capsule label -> `HubBadge`. Badges are labels, never containers; do not put a `ForEach`
+     inside one.
+3. **Never declare a new row, tile, card or badge type.** If none of the above fits, that is a gap in the
+   shared layer, not a licence to build a file-local one — the exact mistake (a comment that used to sit
+   at `PageDesignerView.swift:740`, explaining that `SettingsPanel.swift`'s `ProviderRow` was `private`
+   and off-limits to edit — the line is gone now that the file has been converted, but the reasoning is
+   worth knowing) that produced the original ten-row, five-vocabulary mess this project spent nine
+   workstreams undoing. Stop and widen
+   `HubRows.swift`/`HubSurfaces.swift` instead (a small, single-owner change), or — if the shape is
+   genuinely one-of-a-kind content (not a settings/list row at all, e.g. `HubPanel.swift`'s `WindowRow`,
+   a usage-figure-plus-progress-bar visualisation) — leave it `private` to its own file and write down
+   *why* it is not one of the shared shapes, the way `HubPanel.swift:203` and `TickerEditorView.swift:9`
+   do. An undocumented file-local row/card/tile/badge is a review defect, not a style nit.
+4. **Never write `.system(size:)`.** The only two files where a raw font size is allowed are
+   `DeviceGlass.swift` and `DevicePreview.swift` — they render the *device's* face, which does not scale
+   with the Mac's text-size setting by design (design §6.1). Every other file resolves a font through
+   `HubType`. Same rule for corner radii: every rounded shape in hub chrome is `HubShape.control`,
+   `HubShape.card` or `HubShape.pill` (built from `HubRadius`), never a literal `RoundedRectangle(cornerRadius: 8)`.
+5. **Check your gate before you call it done:**
+   ```bash
+   cd hub
+   grep -c "\.system(size:" Sources/beacon-hub/<your file>       # 0
+   grep -cE "cornerRadius:\s*[0-9]" Sources/beacon-hub/<your file>  # 0
+   grep -cE "struct \w+(Row|Card|Tile|Header|Chip|Badge)\b" Sources/beacon-hub/<your file>  # any hit,
+                                                       # read it -- a plain data model (e.g. `PageRow`,
+                                                       # `Identifiable`/`Equatable`, no `View` conformance)
+                                                       # is fine; a new `View` is not, unless documented
+                                                       # LOCAL BY DECISION
+   swift build 2>&1 | grep -c "is deprecated"                     # must not go up
+   swift test 2>&1 | grep -E "^Executed [0-9]+ tests"              # 0 failures
+   ```
+   The middle grep needs the trailing `\b`, and needs a human to read each hit rather than trust the
+   count alone, for two reasons that cut opposite ways. It **misses** a real duplicate: the plan's own
+   §7.2 gate, `grep -cE "struct .*(Row|Card|Tile|Header|Chip|Badge): View"`, requires the `View`
+   conformance clause immediately after the type name, so it silently skips every generic shared
+   component (`SettingsRow<Trailing: View>: View`, `Card<Content: View>: View`) — nearly the whole
+   component layer. And without `\b` it **over-fires**: `struct \w+(Row|Card|...)` alone matches
+   `ProviderRowGroup` (a legitimate composed type, not a redefinition) because `Row` appears mid-word.
+   The form above fixes the over-firing; there is no cheap one-liner that also catches the generic case,
+   so a hit still needs a second's read to tell "a new `View` shape" from "a data model that happens to
+   be named `...Row`" (`HubViewModel.swift`'s `PageRow`, for instance, is the latter and is fine).
