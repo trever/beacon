@@ -1179,22 +1179,27 @@ top-level doc directory.**
 
 ---
 
-## 9. Open items — settle these with the owner before dispatching WS-0
+## 9. Open items — settled 2026-07-27, before WS-0 was dispatched
 
-Everything else in this plan is decided. These three are not, and each blocks or reshapes a workstream.
+All three are now decided. Each entry keeps the original question so a reviewer can overturn a call on
+purpose rather than by accident.
 
 1. **D-1: does this project add the `what:"device"` report, or does art ship without an exact-IP peer
    restriction?** This plan assumes it adds it, because the hub *also* needs the device's IP to choose
    which of its own interfaces to advertise, so the alternative is not "slightly weaker security" but
    "cannot build the URL reliably on a multi-homed Mac". The cost is ~60 lines across
    `hub_report.cpp` / `hub_task.cpp` / `Protocol.swift` plus tests, and it makes OTA's Phase 0 smaller.
-   The only thing to confirm is that album art is allowed to open the frame OTA's plan expected to own.
-   **Recommend: yes, as specified in WS-0.**
+   **SETTLED: yes — album art opens the frame, carrying `ip` only, exactly as WS-0 specifies.** OTA's
+   Phase 0 widens the same frame additively with `fw`/`slot`/`slotsz`/`appsz`/`hatch`/`pend`. This is the
+   established extend-rather-than-create pattern (`sessions`, `sdetail`, `sonos`, `comps`, `pages` each
+   landed the same way), and the ordering is arbitrary — whichever project shipped first would own it.
 2. **The Settings toggle's default.** Design §11 Q4 recommends the toggle but does not say which way it
-   ships. **Recommend: default ON.** Art is the feature; a default-off toggle means nobody sees it, and
-   the duty-cycle concern (design §7.1) is already mitigated to strictly-tighter-than-OTA on every axis.
-   Confirm, because the opposite choice changes WS-4's first-run behaviour and the Settings copy.
-3. **Does the hub's `gen` need to survive a hub relaunch?** This plan says no (D-2 makes it unnecessary,
-   and the reconnect rule republishes anyway). If the owner wants `gen` monotonic across relaunches for
-   log-readability, it is one `UserDefaults` integer in WS-4 — but D-2's `!=` rule stays regardless,
-   because it is what makes the device correct when the counter *does* reset.
+   ships. **SETTLED: default ON,** confirmed by the owner. Art is the feature; a default-off toggle means
+   nobody sees it, and the duty-cycle concern (design §7.1) is already mitigated to
+   strictly-tighter-than-OTA on every axis. WS-4 ships first-run with art enabled; the toggle exists for
+   the network-conscious case, not as a gate on the feature.
+3. **Does the hub's `gen` need to survive a hub relaunch?** **SETTLED: no.** D-2 makes persistence
+   unnecessary (the device compares `gen` by inequality, never by ordering) and the reconnect rule
+   republishes regardless, so a relaunched hub converges on its own. D-2's `!=` rule stays either way —
+   it is precisely what makes the device correct when the counter *does* reset, so persisting `gen`
+   would buy log-readability and nothing else.
