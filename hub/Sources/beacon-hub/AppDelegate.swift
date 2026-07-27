@@ -71,9 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let compStore = ComplicationStore()    // Home's six-slot complication assignment (+ monotonic rev)
     private var reportAssembler = ReportAssembler()   // reassembles device->hub ticker report chunks (#105)
     private let tickerSearch = TickerSearch()        // Binance(cached) + Yahoo(live) discovery (issue #92 B4)
-    private lazy var tickerEditor = TickerEditorWindowController(model: menubar.viewModel)
     private lazy var settingsWindow = SettingsWindowController(model: menubar.viewModel)
-    private lazy var pageDesigner = PageDesignerWindowController(model: menubar.viewModel)
     private var binanceCandidates: [TickerCandidate] = []   // warmed-once cache for local Binance filtering
 
     // A single ephemeral session (15s timeout) shared by every provider's usage source (#64).
@@ -581,7 +579,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menubar.onRetryPairing = { [weak self] in self?.central.retryPairing() }
         menubar.viewModel.onApplyPages = { [weak self] ids, opts in self?.applyPageEdit(ids: ids, opts: opts) }
-        menubar.viewModel.onOpenPages = { [weak self] in self?.pageDesigner.show() }
+        // onOpenPages (formerly -> PageDesignerWindowController.show()) is deliberately not wired: the page
+        // designer is the Pages tab now, not a separate window to open (WS-2, design §2.2). HubViewModel
+        // keeps the closure (default no-op) since it is out of WS-2's file boundary to edit HubViewModel.swift.
         // Revert re-seeds the editor from the store, which is the list the device is running.
         menubar.viewModel.onRevertPages = { [weak self] in
             guard let self else { return }
@@ -802,10 +802,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // --- ticker config (issue #92) ---
 
     // Wire the B4 editor: seed it with the persisted list, warm the Binance universe once for local
-    // filtering, route the open action, and provide the merged search hook (Binance local + Yahoo live).
+    // filtering, and provide the merged search hook (Binance local + Yahoo live). onOpenTickerEditor
+    // (formerly -> TickerEditorWindowController.show()) is deliberately not wired: the editor is the Device
+    // tab's ticker section now, not a separate window to open (WS-2, design §3.4).
     private func startTickerEditor() {
         menubar.setTickerRows(tickerStore.current.rows)
-        menubar.onOpenTickerEditor = { [weak self] in self?.tickerEditor.show() }
         menubar.setTickerSearch { [weak self] query, completion in self?.searchTickers(query, completion) }
         menubar.setTickerValidate { [weak self] row, completion in self?.tickerSearch.validate(row, completion: completion) }
 
