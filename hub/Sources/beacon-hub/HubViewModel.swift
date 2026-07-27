@@ -16,6 +16,17 @@ enum CheckState: Equatable { case checking, ok, bad }
 
 // One provider's settings-row state (design 2026-07-19, extended 2026-07-20). Capabilities gate which
 // toggles render; `hooks`/`installing`/`note` drive the per-provider setup line blended into the row.
+// One row in the device-pages editor. Order in the array IS the device order; `enabled` decides whether
+// the id is sent at all. `pinned` marks settings, which the device force-appends anyway -- showing it as
+// removable would be a lie.
+struct PageRow: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let detail: String
+    let pinned: Bool
+    var enabled: Bool
+}
+
 struct ProviderToggle: Identifiable, Equatable {
     let id: String
     let label: String
@@ -48,6 +59,13 @@ final class HubViewModel: ObservableObject {
     // One dynamic card per registered provider (design 2026-07-19): the Usage / Coding Buddy toggles the
     // menubar shows, each gated by the provider's declared capabilities. Backed by ProviderSettings.
     @Published var providers: [ProviderToggle] = []
+    @Published var pageRows: [PageRow] = []
+    /// The list last known to be on the device; Apply is enabled only when pageRows differ from it.
+    @Published var appliedPageIDs: [String] = []
+    @Published var pageSync: String?          // transient status under the Apply button
+
+    var enabledPageIDs: [String] { pageRows.filter(\.enabled).map(\.id) }
+    var pagesDirty: Bool { enabledPageIDs != appliedPageIDs }
 
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}
@@ -58,6 +76,7 @@ final class HubViewModel: ObservableObject {
     var onInstallProviderHooks: (String) -> Void = { _ in }   // install the named provider's hooks
     var onToggleDontShow: (Bool) -> Void = { _ in }           // persist first-run auto-open suppression
     var onRetryPairing: () -> Void = {}
+    var onApplyPages: ([String]) -> Void = { _ in }   // push the edited page list (restarts the device)
     var onApplyTickerEdit: ([TickerRow]) -> Void = { _ in }   // issue #92: B4 editor commits the desired list
     var onOpenTickerEditor: () -> Void = {}                    // issue #92: open the dedicated editor window
     // issue #92: editor calls this with a query; AppDelegate runs Binance(local) + Yahoo(live) and delivers

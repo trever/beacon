@@ -84,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startLoginItem()
         startLocation()
         startTickerEditor()
+        menubar.setPages(ids: pageStore.current.ids)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
         // and on-change frames only, never the 30s heartbeat.
@@ -367,6 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.handle(cmd) }
         }
         menubar.onRetryPairing = { [weak self] in self?.central.retryPairing() }
+        menubar.viewModel.onApplyPages = { [weak self] ids in self?.applyPageEdit(ids: ids) }
         menubar.onApplyTickerEdit = { [weak self] rows in self?.applyTickerEdit(rows) }
         central.start()
     }
@@ -421,9 +423,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // rev we are tracking. The device restarts immediately after acking, so the link drops here.
             guard rev == UInt32(pageStore.current.rev) else { break }
             if ok {
-                NSLog("[beacon-hub] pages rev=%u applied (%d pages); device is restarting", rev, count ?? 0)
+                menubar.setPageSync("Applied \(count ?? 0) pages. The Beacon is restarting.")
             } else {
-                NSLog("[beacon-hub] pages rev=%u REJECTED: %@", rev, err ?? "unknown")
+                menubar.setPageSync("The Beacon rejected the list: \(err ?? "unknown")")
             }
         case .configAck(let rev, let ok, let count, let err):
             // Ignore stale acks: a later edit already bumped our rev, so an ack for an older push no
@@ -642,6 +644,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let before = pageStore.current
         let after = pageStore.set(ids: ids)
         guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
+        menubar.setPages(ids: after.ids)                // the edit is now the applied baseline
+        guard central.isConnected else {
+            menubar.setPageSync("Saved. The Beacon picks this up next time it connects.")
+            return
+        }
+        menubar.setPageSync("Sent - the Beacon is restarting…")
         pushPageConfig()
     }
 
