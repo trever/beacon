@@ -4,12 +4,22 @@ import BeaconHubKit
 
 // One-shot localhost HTTP listener for the Sonos OAuth redirect (design 2026-07-26-sonos-now-playing-plan,
 // RFC 8252 §7.3 loopback-redirect pattern -- the right shape for a menubar app with no custom URL scheme
-// registered). The browser hits http://127.0.0.1:<fixed port>/callback?code=...&state=..., we grab the
+// registered). The browser hits http://localhost:<fixed port>/callback?code=...&state=..., we grab the
 // query string, answer with a "you can close this" page, and shut the listener down. Fixed (not
 // ephemeral) port so the exact redirect URI can be registered once in the Sonos developer console -- see
 // SonosOAuth.redirectURI. Deliberately its own tiny listener, not a route on LocalIngestServer: it needs
 // GET + query-string parsing (the ingest server only ever does POST + JSON bodies) and it lives for one
 // request during a manual `sonos-authorize` run, not for the app's lifetime.
+//
+// Binding: "localhost" resolves to BOTH ::1 and 127.0.0.1 on macOS, and browsers commonly race IPv6
+// first. Pinning `requiredLocalEndpoint` to 127.0.0.1 (the old code) binds ONLY the IPv4 loopback --
+// an IPv6-first browser then hits a closed port on ::1 and the flow hangs silently until the timeout.
+// Empirically verified (throwaway harness, since Network.framework's actual behavior here is not
+// obvious from the docs): a single NWListener created via `NWListener(using:on:)` with
+// `requiredInterfaceType = .loopback` and NO `requiredLocalEndpoint` pin accepts both a 127.0.0.1 and a
+// ::1 connection on the same fixed port, while a connection attempt from a real LAN address on this
+// machine gets an immediate kernel-level "connection refused" (i.e. nothing is bound on that interface
+// at all -- this is not an application-level filter on an otherwise-open wildcard bind).
 final class SonosLoopbackServer {
     static let port: UInt16 = 53912
     static let callbackPath = "/callback"
@@ -27,8 +37,10 @@ final class SonosLoopbackServer {
         self.completion = completion
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: Self.port)!)
-        guard let l = try? NWListener(using: params) else {
+        // requiredInterfaceType = .loopback (not a requiredLocalEndpoint pinned to 127.0.0.1) is what
+        // makes this accept connections on both 127.0.0.1 and ::1 -- see the empirical note above.
+        params.requiredInterfaceType = .loopback
+        guard let port = NWEndpoint.Port(rawValue: Self.port), let l = try? NWListener(using: params, on: port) else {
             finish(.failure(.loopbackBindFailed))
             return
         }
@@ -191,7 +203,7 @@ enum SonosAuthorizer {
         case .placeholderClientID:
             return "the Client ID is still the placeholder -- set it in Settings (or SONOS_CLIENT_ID) with your integration's Client ID from https://integration.sonos.com/"
         case .loopbackBindFailed:
-            return "could not open a local listener on 127.0.0.1:\(SonosLoopbackServer.port)"
+            return "could not open a local listener on localhost:\(SonosLoopbackServer.port)"
         case .timedOut:
             return "no redirect received in time"
         case .malformedCallback:

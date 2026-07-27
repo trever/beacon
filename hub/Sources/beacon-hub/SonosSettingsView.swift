@@ -251,7 +251,7 @@ struct SonosSettingsSection: View {
         case .noClientSecret:       return "No client secret stored."
         case .placeholderClientID:  return "Client ID is still the placeholder."
         case .loopbackBindFailed:
-            return "Could not open a local listener on 127.0.0.1:\(SonosLoopbackServer.port). Is something else using that port?"
+            return "Could not open a local listener on localhost:\(SonosLoopbackServer.port). Is something else using that port?"
         case .timedOut:            return "Timed out waiting for you to approve in the browser."
         case .malformedCallback:   return "The Sonos redirect was missing expected data. Try again."
         case .stateMismatch:       return "Security check failed (state mismatch). Try again."

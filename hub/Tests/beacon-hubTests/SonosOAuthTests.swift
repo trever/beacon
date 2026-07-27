@@ -23,7 +23,9 @@ final class SonosOAuthTests: XCTestCase {
     }
 
     func testRedirectURIUsesFixedLoopbackPortAndPath() {
-        XCTAssertEqual(SonosOAuth.redirectURI, "http://127.0.0.1:\(SonosLoopbackServer.port)\(SonosLoopbackServer.callbackPath)")
+        // Host must be exactly "localhost" -- Sonos's redirect-URI registration refuses a raw IP address,
+        // so this string has to match the registered "http://localhost:53912/callback" byte for byte.
+        XCTAssertEqual(SonosOAuth.redirectURI, "http://localhost:\(SonosLoopbackServer.port)\(SonosLoopbackServer.callbackPath)")
     }
 
     func testParseTokenResponseValid() {

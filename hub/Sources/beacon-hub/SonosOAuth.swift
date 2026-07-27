@@ -23,8 +23,13 @@ enum SonosOAuth {
     static let tokenEndpoint = "https://api.sonos.com/login/v3/oauth/access"
     // Fixed (not ephemeral) loopback port + path, registered once as this integration's sole redirect URI
     // (RFC 8252 §7.3's loopback-redirect pattern -- the right shape for a menubar app with no custom URL
-    // scheme registered). See SonosLoopbackServer for the listener side.
-    static var redirectURI: String { "http://127.0.0.1:\(SonosLoopbackServer.port)\(SonosLoopbackServer.callbackPath)" }
+    // scheme registered). Host is "localhost", not "127.0.0.1": Sonos's redirect-URI registration refuses a
+    // raw IP address, and redirect_uri is compared as an exact string both at authorize time and again at
+    // token exchange (see `exchange` below) -- so this string must match the registered
+    // "http://localhost:53912/callback" byte for byte. SonosLoopbackServer binds loopback on both address
+    // families so that whichever one "localhost" resolves to on the browser's side (macOS returns both
+    // ::1 and 127.0.0.1, and browsers commonly try IPv6 first) still lands on a live listener.
+    static var redirectURI: String { "http://localhost:\(SonosLoopbackServer.port)\(SonosLoopbackServer.callbackPath)" }
     // playback-control-all is the narrowest scope that can still read now-playing metadata; the Sonos
     // Control API has no separate read-only scope as of this writing.
     static let scope = "playback-control-all"
