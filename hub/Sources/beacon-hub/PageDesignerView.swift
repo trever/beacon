@@ -2,37 +2,39 @@ import SwiftUI
 import AppKit
 import BeaconHubKit
 
-// The device's page set, laid out as composition (design §3.2, plan §6): an ordered carousel of what's
-// ON the Beacon up top, the full catalog as a grid below it, a right-hand inspector for the selected
-// page's own options -- and, when Home is selected, the six-slot complication editor.
+// The device's page set, laid out as ONE elastic composition column beside a bounded inspector (design
+// 2026-07-27-hub-visual-system SS5.1, plan WS-2): what is ON the Beacon (draggable, reorderable) stacked
+// directly above the full AVAILABLE catalog, an `HSplitView` away from the selected page's own options --
+// and, when Home is selected, the six-slot complication editor.
+//
+// The carousel and the catalog used to be three horizontal zones (a full-bleed band above a fixed-width
+// grid beside an inspector) separated only because the interaction was dragging BETWEEN them. Stacked in
+// one column they are two vertical zones, and the drag becomes a short vertical gesture inside a single
+// column instead of a diagonal haul from a left-hand grid up into a band spanning the whole window.
 //
 // Editing STAGES for pages (applying restarts the Beacon, ~5 s) and for complications (applying is live,
 // no restart) independently, but one "Save & push" button commits both: complications first, pages
-// second (design §7's push order -- so if the page push restarts the device, the complication blob is
+// second (design SS7's push order -- so if the page push restarts the device, the complication blob is
 // already persisted and the device boots correct). The footer shows a line per dirty channel so neither
-// verb is silently folded into the other (design §10.3).
+// verb is silently folded into the other (design SS3.11).
 struct PageDesignerView: View {
     @ObservedObject var model: HubViewModel
     @State private var selection: String?
     @State private var targetedCardIndex: Int?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// The enabled strip's card width; the device-glass preview inside it is `cardW - 30` so a 3 pt bezel
+    /// on each side still clears the card's own edge with a little breathing room either side.
     private let cardW: CGFloat = 150
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            enabledCarousel
-            Divider()
-            HStack(spacing: 0) {
-                availableGrid
-                Divider()
+            HSplitView {
+                composition
                 inspector
             }
-            Divider()
             footer
         }
-        .frame(minWidth: 780, minHeight: 620)
         .onAppear {
             if selection == nil {
                 selection = model.pageRows.first(where: \.enabled)?.id ?? model.pageRows.first?.id
@@ -40,47 +42,77 @@ struct PageDesignerView: View {
         }
     }
 
-    // --- header ---
+    // --- composition: the enabled strip and the AVAILABLE catalog, one elastic column (design SS5.1) ---
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("On the Beacon").font(.system(size: 15, weight: .semibold))
-                Text("Drag to reorder or add pages. Select a page to edit its options on the right.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("\(model.enabledPageIDs.count) of \(model.pageRows.count) enabled")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .padding(.horizontal, 7).padding(.vertical, 3)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
+    private var composition: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            compositionHeader
+            enabledCarousel
+            disclaimerLine
+            Divider()
+            availableSection
         }
-        .padding(.horizontal, 18).padding(.vertical, 14)
+        // Width only: `HSplitView` (an NSSplitView bridge) already stretches each pane to the full split
+        // height on its own, and design SS5.3 reserves an infinite-height frame for the ONE pane that
+        // should absorb slack by growing its content -- the composition column absorbs slack by giving
+        // its catalog grid more COLUMNS, not by stretching a fixed-height view taller.
+        .frame(minWidth: 380, maxWidth: .infinity)
     }
 
-    // --- the enabled carousel: device order, draggable, reorderable ---
+    private var compositionHeader: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("On the Beacon").font(HubType.pane).foregroundStyle(HubColor.inkPrimary)
+            Spacer()
+            enabledCountBadge
+        }
+        .padding(.horizontal, HubSpace.l).padding(.top, HubSpace.m).padding(.bottom, HubSpace.s)
+    }
+
+    private var enabledCountBadge: some View {
+        Text("\(model.enabledPageIDs.count) of \(model.pageRows.count) enabled")
+            .font(HubType.caption).monospacedDigit()
+            .foregroundStyle(HubColor.inkSecondary)
+            .padding(.horizontal, HubSpace.s).padding(.vertical, HubSpace.hair)
+            .background(HubColor.fillControl, in: HubShape.pill)
+    }
+
+    // design SS6.3's honesty-string rule: this is the HUB talking about the device, so it lives in hub ink
+    // below the strip, once -- never inside a device-glass panel (contract C3).
+    private var disclaimerLine: some View {
+        Text("Previews are approximations \u{2014} the Beacon renders these itself.")
+            .font(HubType.caption).foregroundStyle(HubColor.inkSecondary)
+            .padding(.horizontal, HubSpace.l).padding(.bottom, HubSpace.s)
+    }
+
+    // --- the enabled strip: device order, draggable, reorderable (design SS3.5: no full-bleed fill) ---
 
     private var enabledRows: [PageRow] { model.pageRows.filter(\.enabled) }
 
     private var enabledCarousel: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 16) {
+                HStack(spacing: HubSpace.l) {
                     ForEach(Array(enabledRows.enumerated()), id: \.element.id) { pair in
                         carouselCard(index: pair.offset, row: pair.element)
                     }
                     appendDropZone
                 }
-                .padding(.horizontal, 18).padding(.vertical, 18)
+                .padding(.horizontal, HubSpace.l).padding(.vertical, HubSpace.m)
             }
-            // Single-parameter onChange: the package deploys to macOS 13, where the two-parameter
-            // overload does not exist.
+            // Single-parameter onChange: the package deploys to macOS 13 (design SS9.1), where the
+            // two-parameter overload does not exist.
             .onChange(of: enabledRows.map(\.id)) { _ in
-                if let sel = selection { withAnimation { proxy.scrollTo(sel, anchor: .center) } }
+                if let sel = selection {
+                    withAnimation(HubMotion.animation(HubMotion.normal, reduceMotion: reduceMotion)) {
+                        proxy.scrollTo(sel, anchor: .center)
+                    }
+                }
             }
         }
-        .frame(height: 230)
-        .background(Color(nsColor: .underPageBackgroundColor))
+        .frame(height: 200)
+        // design SS3.5: the strip takes NO fill -- it sits on the window background, bounded by hairlines
+        // (the Divider below the header, and `disclaimerLine`'s own Divider that follows) top and bottom,
+        // exactly like a toolbar-adjacent band. The device-glass cards carry the visual weight instead.
     }
 
     private func carouselCard(index: Int, row: PageRow) -> some View {
@@ -101,10 +133,10 @@ struct PageDesignerView: View {
     }
 
     private var appendDropZone: some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(Color.secondary.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+        HubShape.card
+            .strokeBorder(HubColor.lineHairline, style: StrokeStyle(lineWidth: HubStroke.hairline, dash: [5, 4]))
             .frame(width: 60, height: 150)
-            .overlay(Image(systemName: "plus").font(.system(size: 14)).foregroundStyle(.secondary))
+            .overlay(Image(systemName: "plus").foregroundStyle(HubColor.inkSecondary))
             .dropDestination(for: String.self) { items, _ in
                 guard let id = items.first else { return false }
                 placeOnCarousel(id: id, atEnabledIndex: nil)
@@ -112,21 +144,23 @@ struct PageDesignerView: View {
             }
     }
 
-    // --- the available grid: the full catalog, greyed where already enabled ---
+    // --- the AVAILABLE catalog: the full page set, greyed where already enabled (design SS3.7) ---
 
-    private var availableGrid: some View {
+    private var availableSection: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("AVAILABLE").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: HubSpace.m) {
+                Text("AVAILABLE").hubEyebrow().foregroundStyle(HubColor.inkSecondary)
+                // Trap (plan WS-2 #1): `.adaptive(minimum: 110)` gives exactly three columns at 380 pt --
+                // 110*3 + 10*2 + HubSpace.l*2 = 382. The 10 pt gutter below is that exact contract; it is
+                // not `HubSpace.s`/`HubSpace.m` and must not be "simplified" onto the ladder.
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 10)], spacing: 10) {
                     ForEach(model.pageRows) { row in
                         availableTile(row)
                     }
                 }
             }
-            .padding(16)
+            .padding(HubSpace.l)
         }
-        .frame(width: 300)
         .dropDestination(for: String.self) { items, _ in
             guard let id = items.first else { return false }
             disablePage(id)
@@ -135,20 +169,21 @@ struct PageDesignerView: View {
     }
 
     private func availableTile(_ row: PageRow) -> some View {
-        AvailableTile(row: row, isSelected: selection == row.id)
-            .onTapGesture {
-                selection = row.id
-                if !row.enabled { placeOnCarousel(id: row.id, atEnabledIndex: nil) }
-            }
-            .draggable(row.id)
+        CatalogTile(title: row.title, detail: row.detail, isEnabled: row.enabled,
+                    isSelected: selection == row.id) {
+            selection = row.id
+            if !row.enabled { placeOnCarousel(id: row.id, atEnabledIndex: nil) }
+        }
+        .draggable(row.id)
     }
 
-    // --- inspector ---
+    // --- inspector: bounded, top-aligned, never stretched (design SS5.2) ---
 
     @ViewBuilder private var inspector: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             if let id = selection, let row = model.pageRows.first(where: { $0.id == id }) {
                 inspectorHeader(row)
+                    .padding(.horizontal, HubSpace.l).padding(.top, HubSpace.m).padding(.bottom, HubSpace.s)
                 Divider()
                 if row.id == CompLimits.homeFace {
                     ComplicationEditorView(model: model)
@@ -157,56 +192,56 @@ struct PageDesignerView: View {
                 }
                 Spacer(minLength: 0)
             } else {
-                Spacer()
-                Text("Select a page").font(.system(size: 12)).foregroundStyle(.secondary)
-                Spacer()
+                Spacer(minLength: 0)
+                EmptyState(systemImage: "list.bullet.rectangle", title: "Select a page",
+                           message: "Choose a page to edit its options.")
+                Spacer(minLength: 0)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(minWidth: 260, idealWidth: 280, maxWidth: 320, alignment: .topLeading)
     }
 
     private func inspectorHeader(_ row: PageRow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(row.title).font(.system(size: 13, weight: .semibold))
-                if row.pinned {
-                    Text("always on").font(.system(size: 9)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.14), in: Capsule())
-                }
-                if !row.enabled {
-                    Text("hidden").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Color.black.opacity(0.55), in: Capsule())
-                }
+        VStack(alignment: .leading, spacing: HubSpace.xs) {
+            HStack(spacing: HubSpace.s) {
+                Text(row.title).font(HubType.pane).foregroundStyle(HubColor.inkPrimary)
+                if row.pinned { HubBadge("always on") }
+                if !row.enabled { HubBadge("hidden") }
             }
-            Text(row.detail).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(row.detail).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
         }
     }
 
-    // --- footer: two independent staging channels, one commit button (design §10.3, plan §13 item 4) ---
+    // --- footer: two independent staging channels, one commit button (design SS3.11) ---
 
     private var footer: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) { footerLines }
-            Spacer()
-            if model.pagesDirty || model.compsDirty {
-                DeckButton(title: "Revert") { revertAll() }
-            }
-            DeckButton(title: "Save & push") { saveAll() }
-                .disabled(!(model.pagesDirty || model.compsDirty))
-                .opacity((model.pagesDirty || model.compsDirty) ? 1 : 0.4)
+        FooterBar(channels: footerChannels) {
+            AnyView(footerButtons)
         }
-        .padding(.horizontal, 18).padding(.vertical, 12)
     }
 
-    @ViewBuilder private var footerLines: some View {
-        if pagesLine == nil && compsLine == nil {
-            statusLine("The Beacon is running this configuration.", dirty: false)
+    @ViewBuilder private var footerButtons: some View {
+        HStack(spacing: HubSpace.s) {
+            if model.pagesDirty || model.compsDirty {
+                HubButton(title: "Revert", kind: .secondary) { revertAll() }
+            }
+            HubButton(title: "Save & push", kind: .primary, prominent: true,
+                      isEnabled: model.pagesDirty || model.compsDirty) { saveAll() }
         }
-        if let pagesLine { statusLine(pagesLine, dirty: model.pagesDirty && model.pageSync == nil) }
-        if let compsLine { statusLine(compsLine, dirty: model.compsDirty && model.compSync == nil) }
+    }
+
+    private var footerChannels: [FooterBar<AnyView>.Channel] {
+        var channels: [FooterBar<AnyView>.Channel] = []
+        if pagesLine == nil && compsLine == nil {
+            channels.append(.init("status", text: "The Beacon is running this configuration.", isDirty: false))
+        }
+        if let pagesLine {
+            channels.append(.init("pages", text: pagesLine, isDirty: model.pagesDirty && model.pageSync == nil))
+        }
+        if let compsLine {
+            channels.append(.init("comps", text: compsLine, isDirty: model.compsDirty && model.compSync == nil))
+        }
+        return channels
     }
 
     // A live sync message (post-action confirmation, e.g. "Sent…"/"Saved…") always wins over the dirty
@@ -222,17 +257,9 @@ struct PageDesignerView: View {
         return nil
     }
 
-    private func statusLine(_ text: String, dirty: Bool) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(dirty ? Color.orange : Color.clear).frame(width: 6, height: 6)
-            Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    // Comps first, pages second (design §7 / plan §13 item 4): the cheap non-restarting push lands
-    // before the one that restarts the device, so if the page push reboots it, the complication blob is
-    // already persisted and the device boots showing the right assignment.
+    // Comps first, pages second (design SS7 / plan item 13): the cheap non-restarting push lands before
+    // the one that restarts the device, so if the page push reboots it, the complication blob is already
+    // persisted and the device boots showing the right assignment.
     private func saveAll() {
         if model.compsDirty { model.onApplyComps(model.compSlots) }
         if model.pagesDirty { model.onApplyPages(model.enabledPageIDs, model.enabledPageOpts) }
@@ -245,6 +272,9 @@ struct PageDesignerView: View {
 
     // --- page mutations (mirrors the array-level move(_:) the old carousel used; not pure-kit material --
     // BeaconHubKit.ComplicationEditor owns the RULES that actually need host-testing, per the brief) ---
+    //
+    // This block is UNCHANGED layout logic (plan WS-2 "what already exists," do not rewrite): only the
+    // surrounding view tree moved.
 
     /// Enable `id` (if it wasn't already) and move it to `targetIndex` among the ENABLED subset (nil =
     /// append at the end). `targetIndex` is a position in the enabled list AS CURRENTLY DISPLAYED -- i.e.
@@ -283,7 +313,7 @@ struct PageDesignerView: View {
     }
 
     /// The chevron buttons' path: swap `id` with its enabled-subset neighbour. Kept as the keyboard/
-    /// accessibility equivalent to dragging (design §3.3) -- drag-and-drop with no non-pointer equivalent
+    /// accessibility equivalent to dragging (design SS3.3) -- drag-and-drop with no non-pointer equivalent
     /// is a regression.
     private func moveEnabled(id: String, delta: Int) {
         let ids = enabledRows.map(\.id)
@@ -292,14 +322,19 @@ struct PageDesignerView: View {
         guard ids.indices.contains(target) else { return }
         guard let a = model.pageRows.firstIndex(where: { $0.id == id }),
               let b = model.pageRows.firstIndex(where: { $0.id == ids[target] }) else { return }
-        withAnimation(.easeInOut(duration: 0.18)) { model.pageRows.swapAt(a, b) }
+        withAnimation(HubMotion.animation(HubMotion.normal, reduceMotion: reduceMotion)) {
+            model.pageRows.swapAt(a, b)
+        }
         model.pageSync = nil
     }
 }
 
-// One enabled page: its panel preview, name, and reorder/remove controls. `settings` is pinned (no
-// remove affordance, no drag-out) -- `PageLimits.alwaysID` already encodes this and the device
-// force-appends it regardless, so showing it as removable would be a lie.
+// One enabled page: its device-glass preview, name, and reorder/remove controls (design SS6.2). Title,
+// reorder chevrons and remove button sit BELOW the glass on the window background -- the old remove `x`
+// was a white-on-black circle drawn ON TOP of the panel, hub chrome painted onto device content, which is
+// exactly the lie SS6 exists to prevent. `settings` is pinned (no remove affordance, no drag-out) --
+// `PageLimits.alwaysID` already encodes this and the device force-appends it regardless, so showing it as
+// removable would be a lie.
 private struct CarouselCard: View {
     @ObservedObject var model: HubViewModel
     let row: PageRow
@@ -311,619 +346,32 @@ private struct CarouselCard: View {
     let onMove: (Int) -> Void
     let onDisable: () -> Void
 
+    private var previewSize: CGFloat { width - 30 }
+
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack(alignment: .topTrailing) {
-                DevicePreview(pageID: row.id, model: model, size: width - 30)
+        VStack(spacing: HubSpace.s) {
+            DeviceGlassPanel(size: previewSize, isSelected: isSelected || isTargeted) {
+                DevicePreview(pageID: row.id, model: model, size: previewSize)
+            }
+
+            HStack(spacing: HubSpace.xs) {
+                Text(row.title).font(HubType.bodyEmph).foregroundStyle(HubColor.inkPrimary).lineLimit(1)
+                if row.pinned { HubBadge("always on") }
+                Spacer(minLength: HubSpace.xs)
                 if !row.pinned {
-                    Button(action: onDisable) {
-                        Image(systemName: "xmark.circle.fill").font(.system(size: 15))
-                            .foregroundStyle(.white, Color.black.opacity(0.55))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(6)
-                    .help("Remove from the Beacon")
-                }
-            }
-            .padding(.top, 4)
-
-            HStack(spacing: 5) {
-                Text(row.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                if row.pinned {
-                    Text("always on").font(.system(size: 8)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 4).padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                    IconButton(systemImage: "xmark.circle.fill", label: "Remove \(row.title) from the Beacon",
+                               action: onDisable)
                 }
             }
 
-            HStack(spacing: 6) {
-                arrow("chevron.left", enabled: index > 0) { onMove(-1) }
-                arrow("chevron.right", enabled: true) { onMove(1) }
+            HStack(spacing: HubSpace.xs) {
+                IconButton(systemImage: "chevron.left", label: "Move \(row.title) earlier",
+                           isEnabled: index > 0) { onMove(-1) }
+                IconButton(systemImage: "chevron.right", label: "Move \(row.title) later") { onMove(1) }
             }
-            .padding(.bottom, 4)
         }
         .frame(width: width)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(borderColor, lineWidth: (isSelected || isTargeted) ? 2 : 1)
-        )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-    }
-
-    private var borderColor: Color {
-        if isTargeted { return Color.accentColor }
-        if isSelected { return Color.accentColor.opacity(0.7) }
-        return Color.secondary.opacity(0.18)
-    }
-
-    private func arrow(_ name: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: name).font(.system(size: 10, weight: .semibold)).frame(width: 20, height: 18)
-        }
-        .buttonStyle(.borderless).disabled(!enabled).opacity(enabled ? 0.75 : 0.2)
-    }
-}
-
-// One catalog entry in the "AVAILABLE" grid: greyed + marked when already on the Beacon (design §3.2).
-// Tapping a disabled tile enables it (appends to the end of the carousel) -- the accessible/no-drag
-// equivalent of dragging it up. Tapping an already-enabled tile just selects it in the inspector.
-private struct AvailableTile: View {
-    let row: PageRow
-    let isSelected: Bool
-
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(row.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
-            Text(row.detail).font(.system(size: 9)).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).lineLimit(2)
-            if row.enabled {
-                Text("on the Beacon").font(.system(size: 8, weight: .semibold)).foregroundStyle(.green)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 10).padding(.horizontal, 6)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor.opacity(0.7) : Color.secondary.opacity(0.18),
-                              lineWidth: isSelected ? 2 : 1)
-        )
-        .opacity(row.enabled ? 0.55 : 1)
-        .contentShape(Rectangle())
-    }
-}
-
-// Per-page settings shown in the inspector. Only chart/sonos/agents have anything today; everything else
-// (including pinned `settings`) says so plainly rather than showing an empty well that reads like
-// something failed to load. `home` never reaches this view -- PageDesignerView routes it straight to
-// ComplicationEditorView instead.
-private struct PageOptions: View {
-    @ObservedObject var model: HubViewModel
-    let row: PageRow
-
-    @State private var showPicker = false
-    @State private var capMessage: String?
-    // Defect 2: the room picker's own async listing state -- separate from SonosRoomListResult (a
-    // provider-vocabulary type with no notion of "in flight") so the popover can show a spinner between
-    // opening and the first completion. Fetched fresh every time the popover opens (see sonosRoomButton
-    // below) rather than cached, so a topology change (a speaker coming back online, a room renamed) shows
-    // up without the user having to quit and reopen Beacon Hub.
-    @State private var roomFetch: SonosRoomFetchState = .idle
-    // The selected room, mirrored into local @State from model.onLoadSonosRoom() -- see the file-level
-    // comment below on why this does NOT live in row.opts/PageConfigStore. Seeded on appear and updated
-    // optimistically the instant a selection is made (onSetSonosRoom applies immediately; there is no
-    // @Published to observe here since SonosRoomStore is a plain UserDefaults wrapper, not part of
-    // HubViewModel's published state).
-    @State private var currentRoom: String = ""
-
-    var body: some View {
-        Group {
-            if row.id == "chart" { chartInstrumentButton }
-            else if row.id == "sonos" { sonosRoomButton }
-            else if row.id == "agents" { AgentProviderRows(model: model) }
-            else { none }
-        }
-        .onAppear { if row.id == "sonos" { currentRoom = model.onLoadSonosRoom() ?? "" } }
-        // PageDesignerWindowController builds this window once and reuses it across opens (same as
-        // SettingsWindowController), so onAppear above only ever fires the first time. Nothing else in
-        // this build mutates the room besides this exact picker (which already updates `currentRoom`
-        // locally the instant a selection is made), so this is defense-in-depth rather than a fix for a
-        // demonstrated bug here -- re-deriving on every refocus keeps this view honest the same way
-        // SonosSettingsView does, in case that ever changes.
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            if row.id == "sonos" { currentRoom = model.onLoadSonosRoom() ?? "" }
-        }
-    }
-
-    private var none: some View {
-        Text("No options").font(.system(size: 11)).foregroundStyle(.secondary.opacity(0.6))
-    }
-
-    // --- Sonos room ---
-    // Deliberately NOT `row.opts["room"]`/PageConfigStore, unlike chart.sym: a page-designer regression
-    // found that HubViewModel.enabledPageOpts filters opts by `enabled` before AppDelegate.applyPageEdit
-    // ever sees them, so a DISABLED Sonos page would silently drop its room the next time any page edit
-    // was saved. The room is PROVIDER state (which room SonosProvider polls), not page-presentation state
-    // (whether/what the device shows) -- so it is read from and written straight through SonosRoomStore via
-    // model.onLoadSonosRoom/onSetSonosRoom (AppDelegate wires the write through SonosProvider.setSelectedRoom
-    // so the group cache still invalidates), independent of Save & push and of whether this page is enabled.
-    //
-    // The WIDGET also changed, separately: a picker populated from the real household/group list, instead
-    // of free text (previously deferred because listing meant either reusing fetchHouseholdIfNeeded/
-    // fetchGroups -- which call noteOutcome and would have shared poll-gate/backoff state with
-    // SonosGateTests -- or duplicating the fetch path). SonosProvider.fetchAvailableRooms (called here via
-    // model.onFetchSonosRooms) resolves that: a separate, read-only listing that reuses the same HTTP calls
-    // and SonosAPI parsers but never touches the gate. The name matches the Sonos Control API's GROUP name
-    // (case-insensitive; SonosAPI.findGroup also falls back to a player name inside that group).
-
-    /// The stored room when it is not in the freshly-fetched list -- mirrors `orphan` below for the chart
-    /// instrument: an offline speaker or a room renamed in the Sonos app must not silently vanish from the
-    /// picker just because this fetch does not currently see it. Nil (nothing to mark) while the fetch
-    /// hasn't produced a room list yet, so this never contradicts a `.loading`/`.failed`/`.notAuthorized`
-    /// state by claiming something is "not in the current groups" before groups were even fetched.
-    private var roomOrphan: String? {
-        guard !currentRoom.isEmpty, case .loaded(let names) = roomFetch,
-              !names.contains(where: { $0.name == currentRoom })
-        else { return nil }
-        return currentRoom
-    }
-
-    private var roomLabel: String {
-        currentRoom.isEmpty ? "Choose room" : currentRoom
-    }
-
-    private var sonosRoomButton: some View {
-        Button {
-            showPicker = true
-            fetchRooms()
-        } label: {
-            HStack(spacing: 4) {
-                Text(roomLabel).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(!row.enabled)
-        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
-            SonosRoomPopover(fetch: roomFetch, currentRoom: currentRoom, orphan: roomOrphan,
-                             retry: fetchRooms, select: selectRoom)
-        }
-    }
-
-    private func fetchRooms() {
-        roomFetch = .loading
-        model.onFetchSonosRooms { result in
-            Task { @MainActor in
-                switch result {
-                case .notAuthorized: roomFetch = .notAuthorized
-                case .failed(let reason): roomFetch = .failed(reason)
-                case .rooms(let names): roomFetch = .loaded(names)
-                }
-            }
-        }
-    }
-
-    // Applies immediately (unlike the chart's setSym, which only stages into pageRows.opts for Save &
-    // push): a room change is meant to take effect on SonosProvider's very next poll tick, not wait for a
-    // device restart -- see SonosProvider.setSelectedRoom's own doc comment. Optimistic local update first
-    // so the button label reflects the pick without waiting on anything async.
-    private func selectRoom(_ name: String) {
-        currentRoom = name
-        model.onSetSonosRoom(name.isEmpty ? nil : name)
-        showPicker = false
-    }
-
-    // The chart follows a TICKER ID from the configured list, not a typed symbol: the device resolves
-    // the Yahoo symbol and display name from that row, so there is nothing free-form to mistype. Picking
-    // a symbol not yet in the list mints + pushes a new row first (see ChartInstrumentSelection).
-    // Binance rows are excluded -- the chart fetch speaks the Yahoo API only.
-    private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
-
-    /// The stored instrument, when it is no longer in the ticker list. Offered as its own (marked) entry
-    /// so it round-trips: silently resolving it to a DIFFERENT instrument would make the picker read as
-    /// though the user had chosen that one, and one Save & push later it would be true. A search pick
-    /// never touches this on its own -- only an explicit tap in the popover changes `opts["sym"]`.
-    private var orphan: String? {
-        guard let sym = row.opts["sym"], !sym.isEmpty,
-              !eligible.contains(where: { $0.id == sym }) else { return nil }
-        return sym
-    }
-
-    /// Matches CHART_TICKER_ID in the firmware: what the device falls back to when no option is set.
-    private var defaultSym: String {
-        eligible.contains { $0.id == "sp500" } ? "sp500" : (eligible.first?.id ?? "")
-    }
-
-    private var currentID: String { row.opts["sym"] ?? defaultSym }
-
-    private var currentLabel: String {
-        if let orphan, orphan == currentID { return "\(orphan) (not in list)" }
-        if let t = eligible.first(where: { $0.id == currentID }) { return t.name.isEmpty ? t.sym : t.name }
-        return currentID.isEmpty ? "Choose instrument" : currentID
-    }
-
-    // A compact button (not a native Picker) so the card can open a popover with a search field instead of
-    // being limited to the 8-ish rows already in the ticker list.
-    private var chartInstrumentButton: some View {
-        Button {
-            capMessage = nil
-            showPicker = true
-        } label: {
-            HStack(spacing: 4) {
-                Text(currentLabel).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .disabled(!row.enabled)
-        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
-            ChartInstrumentPopover(model: model, currentID: currentID, orphan: orphan,
-                                   capMessage: capMessage, select: select)
-        }
-    }
-
-    /// Resolve what picking `candidate` means (already in the list / a brand-new instrument / the list
-    /// already at the device's cap) via the pure ChartInstrumentSelection, then apply it. Adding pushes
-    /// the ticker config immediately -- model.onApplyTickerEdit persists + pushes, exactly like the
-    /// standalone ticker editor's Add -- so one tap both adds the row and stages the chart option; the
-    /// page card's own "Save & push" still gates the PAGE change (and re-pushes tickers first; see
-    /// AppDelegate.applyPageEdit).
-    private func select(_ candidate: TickerRow) {
-        switch ChartInstrumentSelection.resolve(candidate: candidate, currentList: model.tickerRows) {
-        case .setExisting(let sym):
-            setSym(sym)
-            showPicker = false
-        case .addAndSet(let newRow):
-            model.onApplyTickerEdit(model.tickerRows + [newRow])
-            setSym(newRow.id)
-            showPicker = false
-        case .tooManyTickers:
-            capMessage = "Ticker list is full (\(ChartInstrumentSelection.maxTickers)). Remove one to add another."
-        }
-    }
-
-    private func setSym(_ id: String) {
-        guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
-        model.pageRows[i].opts["sym"] = id
-        model.pageSync = nil
-    }
-}
-
-/// Search-and-pick surface for the Chart page's instrument. An empty query browses the user's current
-/// Yahoo tickers (what the old Picker showed); typing switches to a live, debounced Yahoo search across
-/// every instrument Yahoo Finance knows about. `select` is the only way this view affects anything --
-/// it never mutates HubViewModel itself.
-private struct ChartInstrumentPopover: View {
-    @ObservedObject var model: HubViewModel
-    let currentID: String
-    let orphan: String?
-    let capMessage: String?
-    let select: (TickerRow) -> Void
-
-    @State private var query = ""
-    @State private var results: [TickerCandidate] = []
-    @State private var searching = false
-    @State private var searchTask: Task<Void, Never>?
-
-    private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            searchField
-            if let capMessage {
-                Text(capMessage).font(.system(size: 10)).foregroundStyle(.orange)
-            }
-            if let orphan {
-                Text("Currently set to \(orphan), which is not in the ticker list.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            resultsList
-        }
-        .padding(10)
-        .frame(width: 300, height: 320, alignment: .top)
-        .onDisappear { searchTask?.cancel() }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
-            TextField("Search any Yahoo symbol", text: $query)
-                .textFieldStyle(.plain).font(.system(size: 12))
-                .onChange(of: query) { runSearch($0) }
-            if searching { ProgressView().controlSize(.mini) }
-        }
-        .padding(.horizontal, 8).padding(.vertical, 6)
-        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-    }
-
-    // Debounce ~300ms, same cadence as TickerEditorView's search: cancel the prior task, sleep, then call
-    // the Yahoo hook and filter to Yahoo-only results (the chart fetch speaks the Yahoo API only).
-    private func runSearch(_ text: String) {
-        searchTask?.cancel()
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { results = []; searching = false; return }
-        guard let onSearchTickers = model.onSearchTickers else { return }
-        searching = true
-        searchTask = Task {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
-            onSearchTickers(trimmed) { merged in
-                Task { @MainActor in
-                    guard !Task.isCancelled else { return }
-                    results = ChartInstrumentSearch.yahooOnly(merged)
-                    searching = false
-                }
-            }
-        }
-    }
-
-    private var resultsList: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                if query.isEmpty { existingRows } else { searchRows }
-            }
-        }
-    }
-
-    @ViewBuilder private var existingRows: some View {
-        if eligible.isEmpty {
-            Text("No Yahoo tickers yet. Type to search Yahoo Finance.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-        } else {
-            ForEach(eligible, id: \.id) { t in
-                InstrumentRow(name: t.name.isEmpty ? t.sym : t.name, sym: t.sym, tag: nil,
-                             isCurrent: t.id == currentID) { select(t) }
-                Divider()
-            }
-        }
-    }
-
-    @ViewBuilder private var searchRows: some View {
-        if results.isEmpty {
-            Text(searching ? "Searching…" : "No matches.")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
-        } else {
-            ForEach(results, id: \.row.id) { c in
-                InstrumentRow(name: c.row.name.isEmpty ? c.row.sym : c.row.name, sym: c.row.sym,
-                             tag: c.exchange, isCurrent: c.row.id == currentID) { select(c.row) }
-                Divider()
-            }
-        }
-    }
-}
-
-private struct InstrumentRow: View {
-    let name: String
-    let sym: String
-    let tag: String?
-    let isCurrent: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    HStack(spacing: 6) {
-                        Text(sym).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                        if let tag, !tag.isEmpty {
-                            Text(tag).font(.system(size: 9)).foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                Spacer(minLength: 6)
-                if isCurrent {
-                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
-                }
-            }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-// Projected (not copied) provider rows for the Agents inspector (design §3.1): bound to the SAME
-// model.providers / model.onInstallProviderHooks / model.onSetProviderUsage / model.onSetProviderBuddy
-// the Sources tab renders. Coding-buddy-on holds real tool calls on your Mac whether or not any page
-// shows them, so hiding the Agents page must not read as disarming it -- the honesty line below says so.
-// (A visually distinct, file-local rendering of the same store/intents: SettingsPanel.swift's ProviderRow
-// is `private` to that file, and it is off-limits to edit for this workstream.)
-private struct AgentProviderRows: View {
-    @ObservedObject var model: HubViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(model.providers.enumerated()), id: \.element.id) { pair in
-                if pair.offset > 0 { Divider() }
-                AgentProviderRow(model: model, provider: pair.element)
-            }
-            Text("Also applies while this page is hidden.")
-                .font(.system(size: 9)).foregroundStyle(.secondary)
-        }
-    }
-}
-
-private struct AgentProviderRow: View {
-    @ObservedObject var model: HubViewModel
-    let provider: ProviderToggle
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(provider.label).font(.system(size: 11, weight: .medium))
-                Spacer()
-                setupChip
-            }
-            HStack(spacing: 16) {
-                toggleRow("Usage", supported: provider.supportsUsage, isOn: usageBinding)
-                toggleRow("Coding buddy", supported: provider.supportsBuddy, isOn: buddyBinding)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder private var setupChip: some View {
-        switch (provider.installing, provider.hooks) {
-        case (true, _):
-            Text("Setting up\u{2026}").font(.system(size: 10)).foregroundStyle(.secondary)
-        case (false, .ok):
-            Text("Ready").font(.system(size: 10, weight: .medium)).foregroundStyle(.green)
-        case (false, .checking):
-            EmptyView()
-        case (false, .bad):
-            DeckButton(title: "Set up") { model.onInstallProviderHooks(provider.id) }
-        }
-    }
-
-    private func toggleRow(_ label: String, supported: Bool, isOn: Binding<Bool>) -> some View {
-        HStack(spacing: 5) {
-            Text(label).font(.system(size: 10)).foregroundStyle(.secondary)
-            if supported {
-                Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch).controlSize(.mini)
-            } else {
-                Text("\u{2014}").font(.system(size: 10)).foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private var usageBinding: Binding<Bool> {
-        Binding(get: { model.providers.first { $0.id == provider.id }?.usageOn ?? true },
-                set: { on in
-                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].usageOn = on }
-                    model.onSetProviderUsage(provider.id, on)
-                })
-    }
-    private var buddyBinding: Binding<Bool> {
-        Binding(get: { model.providers.first { $0.id == provider.id }?.buddyOn ?? true },
-                set: { on in
-                    if let i = model.providers.firstIndex(where: { $0.id == provider.id }) { model.providers[i].buddyOn = on }
-                    model.onSetProviderBuddy(provider.id, on)
-                })
-    }
-}
-
-// The room picker's own in-flight state (Defect 2): SonosRoomListResult (SonosProvider.swift) is a
-// completed-outcome vocabulary with no notion of "request sent, no answer yet" -- that is purely a UI
-// concern, so it is modeled here rather than growing the provider's type for a UI-only state.
-private enum SonosRoomFetchState: Equatable {
-    case idle
-    case loading
-    case notAuthorized
-    case failed(String)
-    // WS-0b widened SonosRoomListResult.rooms from [String] to [SonosRoomSummary] (BeaconHubKit) so a row
-    // carries more than a bare name; this compile-only carve-out follows suit rather than re-deriving
-    // names locally. WS-2 (wave 1) is what actually renders the added depth -- this file changes nothing
-    // about how it looks.
-    case loaded([SonosRoomSummary])
-}
-
-/// Room-picker popover for the Sonos page (Defect 2): replaces the old free-text field. Every state the
-/// requirements call for gets its own inline explanation rather than an empty/blank-looking popover --
-/// "not yet authorized," "fetching," "fetch failed" (with Retry), and "zero rooms" are each handled
-/// explicitly so the user is never looking at a mysteriously empty list wondering if something broke.
-private struct SonosRoomPopover: View {
-    let fetch: SonosRoomFetchState
-    let currentRoom: String
-    let orphan: String?
-    let retry: () -> Void
-    let select: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            content
-        }
-        .frame(width: 260, alignment: .top)
-    }
-
-    @ViewBuilder private var content: some View {
-        switch fetch {
-        case .idle, .loading:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Loading rooms\u{2026}").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            .padding(10)
-        case .notAuthorized:
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Sonos is not connected.").font(.system(size: 11, weight: .medium))
-                Text("Open Settings and authorize with Sonos to list your rooms.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-                // Not the same check as `orphan` (that compares against a fetched list, which does not
-                // exist in this state) -- just surfacing whatever is already saved so the user is never
-                // left wondering whether picking a room earlier "took."
-                if !currentRoom.isEmpty { storedRoomNotice(currentRoom) }
-            }
-            .padding(10)
-        case .failed(let reason):
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Could not load rooms.").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
-                Text(reason).font(.system(size: 10)).foregroundStyle(.secondary)
-                Button("Retry", action: retry).font(.system(size: 11)).buttonStyle(.link)
-                if !currentRoom.isEmpty { storedRoomNotice(currentRoom) }
-            }
-            .padding(10)
-        case .loaded(let names):
-            if names.isEmpty && orphan == nil {
-                Text("No rooms found in your Sonos household.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .padding(10)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        // The stored room always sorts first when it is not part of the fetched list, so
-                        // picking it back (or picking something else instead) is one visible tap either way.
-                        if let orphan {
-                            RoomRow(name: "\(orphan) (not in current groups)", isCurrent: true) { select(orphan) }
-                            Divider()
-                        }
-                        // WS-0b compile-only carve-out: `name` is now a SonosRoomSummary, not a String --
-                        // `.name` is read out immediately so this row still shows (and acts on) a bare
-                        // room name, unchanged in appearance. WS-2 is what actually renders the added
-                        // depth (player count / playback), via BeaconHubKit.SonosRoomList.menuTitle.
-                        ForEach(names, id: \.name) { room in
-                            RoomRow(name: room.name, isCurrent: room.name == currentRoom) { select(room.name) }
-                            Divider()
-                        }
-                    }
-                }
-                .frame(maxHeight: 240)
-            }
-        }
-    }
-
-    private func storedRoomNotice(_ room: String) -> some View {
-        Text("Currently set to \(room).").font(.system(size: 10)).foregroundStyle(.secondary)
-    }
-}
-
-private struct RoomRow: View {
-    let name: String
-    let isCurrent: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
-                Spacer(minLength: 6)
-                if isCurrent {
-                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
-                }
-            }
-            .padding(.horizontal, 8).padding(.vertical, 6)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 }
