@@ -19,3 +19,11 @@ int hub_emit_report(HubLink* link, const ticker_runtime_t* rows, int count) {
   link->flush();                                        // push the final chunk out promptly
   return parts;
 }
+
+bool hub_emit_device_report(HubLink* link, const char* ip) {
+  if (!link) return true;
+  char buf[HUB_FRAME_MAX];
+  size_t n = hub_build_device_report(buf, sizeof(buf), ip);
+  if (!n) return false;                                 // serialize failed (should not happen; defensive)
+  return link->send(buf, n);
+}

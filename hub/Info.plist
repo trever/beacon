@@ -22,6 +22,11 @@
        for requestWhenInUseAuthorization() or TCC silently denies. Denied => the device keeps IP geolocation. -->
   <key>NSLocationWhenInUseUsageDescription</key>
   <string>Beacon Hub reads your Mac's location once to show an accurate place name and time zone on your Beacon device.</string>
+  <!-- Local network (album art plan WS-0, D-1): macOS 15+ TCC gates any LAN listener/connection behind
+       this key, or the OS silently blocks it instead of prompting. Needed for LanAssetServer (album art,
+       later OTA) to serve bytes to the device over the LAN. -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Beacon Hub serves album art and firmware images to your Beacon device over your local network. Nothing leaves your Mac except the images themselves.</string>
   <!-- Menubar agent: no Dock icon. (Runtime also sets .accessory.) -->
   <key>LSUIElement</key>
   <true/>

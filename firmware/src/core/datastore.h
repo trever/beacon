@@ -22,6 +22,15 @@ void ds_set_usage(const usage_rec_t* r);
 void ds_set_buddy(const buddy_rec_t* r);
 void ds_set_sonos(const sonos_rec_t* r);   // Sonos now-playing (hub-plane, phase 1 text only)
 
+// Sonos album art (D-3): a SEPARATE record from sonos_rec_t/ds_set_sonos, so an ordinary "sonos" text
+// heartbeat can never touch it. ds_publish_sonos_art sets gen/idx/have verbatim -- no ordering check, no
+// clamping (D-2: gen is an identity, compared by the caller with `!=`, not `>`). ds_clear_sonos_art (S2)
+// sets ONLY have=false; it does not touch gen/idx/seen_gen. ds_sonos_art_seen is Core 1's ack after it
+// re-points the lv_img to buf[idx] (the swap protocol's ack half, design §4.3 rule 4/5).
+void ds_publish_sonos_art(uint32_t gen, uint8_t idx);
+void ds_clear_sonos_art(void);
+void ds_sonos_art_seen(uint32_t gen);
+
 // Reseed the finance slots from a new ticker set (A5 live re-apply): set the new count and, per slot,
 // the new id + ST_LOADING with value/change zeroed. Called after a validated hub config swap.
 void ds_reseed_finance(const char ids[][FIN_ID_LEN], int count);
@@ -49,6 +58,7 @@ uint8_t          ds_get_finance_count(void);
 usage_rec_t      ds_get_usage(void);
 buddy_rec_t      ds_get_buddy(void);
 sonos_rec_t      ds_get_sonos(void);
+sonos_art_rec_t  ds_get_sonos_art(void);
 
 // Staleness sweep (~1/s from a Core-0 timer). For each record: if state==ST_LIVE and
 // record_age_s(hdr, now) >= stale_s(source), promote to ST_STALE. Inclusive boundary.

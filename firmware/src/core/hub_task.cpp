@@ -6,10 +6,12 @@
 #include "core/location.h"
 #include "core/timekeep.h"
 #include "core/complications.h"
+#include "core/net.h"       // net_is_up() -- gates the device report's "ip" key (D-1)
 #include "config/ticker_table.h"
 #include "ui/carousel.h"   // carousel_apply_pages, carousel_apply_comps
 #include "util/log.h"
 #include <Arduino.h>
+#include <WiFi.h>           // WiFi.localIP() for the device report (D-1)
 #include <esp_heap_caps.h>
 #include <string.h>
 
@@ -137,6 +139,20 @@ static bool send_ticker_report(void) {
   return true;
 }
 
+// Snapshot the device's current LAN IP and emit it as the `what:"device"` report (D-1). WiFi.localIP()/
+// String allocate, so this is fine on Core-0 (which already owns WiFi) but must never run on Core-1 --
+// same rule net.cpp documents for WiFi.SSID()/localIP(). IP is omitted (not "") when WiFi is down.
+// g_link null (native) => true (no-op success), mirroring send_ticker_report.
+static bool send_device_report(void) {
+  if (!g_link) return true;
+  String ip_str;
+  const char* ip = nullptr;
+  if (net_is_up()) { ip_str = WiFi.localIP().toString(); ip = ip_str.c_str(); }
+  bool ok = hub_emit_device_report(g_link, ip);
+  if (ok) LOGI("hub: device report sent (ip=%s)", ip ? ip : "(none)");
+  return ok;
+}
+
 // A config frame (chunked ticker snapshot, design §3.3). Parse => accumulate => on the last part
 // persist+swap the table, reseed the DataStore finance slots, then ack. Fail closed: any error keeps
 // the current list and acks ok:false. The scheduler/UI pick up the swap via ticker_table_gen().
@@ -186,8 +202,13 @@ static void apply_ack(const hub_ack_t& ack) {
 // staleness ages hub data on the same epoch as P1 (one epoch).
 static void on_frame(const char* json, size_t len) {
   if (!s_reported) {                 // first inbound frame this connection proves the central is listening
-    s_reported = send_ticker_report();   // latch only on full success; emit BEFORE dispatch (on_frame has
-                                         // early returns for ack/config below). A failed send retries next frame.
+    // Both reports latch TOGETHER (D-1): a connection is not "reported" until the ticker list AND the
+    // device's own IP have both landed. Each call runs regardless of the other's outcome (no short-
+    // circuit) so a transient failure in one does not skip the other this pass; a false from either
+    // means neither latches, and both retry on the next inbound frame this connection.
+    bool tickers_ok = send_ticker_report();
+    bool device_ok  = send_device_report();
+    s_reported = tickers_ok && device_ok;   // emit BEFORE dispatch (on_frame has early returns below)
   }
   if (frame_has(json, len, "\"ack\"") || frame_has(json, len, "\"err\"")) {
     hub_ack_t ack;

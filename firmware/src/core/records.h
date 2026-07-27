@@ -136,6 +136,37 @@ typedef struct {
   bool         playing;         // absent on the wire => false
 } sonos_rec_t;
 
+// --- Sonos album art (FR-SONOS phase 2, hub-plane) --- design docs/specs/2026-07-27-sonos-album-art-
+// design.md §2/§4, plan docs/plans/2026-07-27-sonos-album-art-plan.md §3 D-1..D-9. Wire "sart"
+// (CONTRACT.md §A4): S1 {"gen":N,"url":"..."} art available, S2 {"gen":N} no art this track.
+// Raw big-endian RGB565, no image decoder on the device ever (plan settled #1); tile is fixed 200x200
+// (settled #2) so the buffer size is a compile-time constant, never carried on the wire (design §2.3).
+#define SONOS_TILE_W      200
+#define SONOS_TILE_H      200
+#define SONOS_TILE_BYTES  (SONOS_TILE_W * SONOS_TILE_H * 2)   /* 80000 */
+#define SONOS_ART_URL_LEN 97    /* 96 chars + NUL (CONTRACT §A4 cap) */
+#define SONOS_ART_ERR_LEN 16    /* 15 chars + NUL (sart_stat err cap; longest defined value today is
+                                    "conn_refused" at 12 chars -- this leaves headroom) */
+// D-3: this is a SEPARATE record from sonos_rec_t, not a few extra fields bolted onto it.
+// hub_parse_sonos is documented as a FULL SNAPSHOT -- every call fills *out fresh from a bare stack
+// struct (hub_task.cpp), so any field living inside sonos_rec_t would be silently zeroed by every
+// ordinary ~5s "sonos" heartbeat. That would make the tile flicker away for no reason. Keeping art in
+// its own record is also what lets "absence of a sart frame must never mean clear the art" (design
+// §2.3) hold: only an explicit S2, via ds_clear_sonos_art(), may clear `have`.
+// D-2: `gen` is an opaque tile IDENTITY, never an ordering. The hub's `gen` counter lives in memory and
+// resets to a small value on every hub relaunch, so a device already holding a higher `gen` can
+// legitimately be handed a numerically SMALLER one next. The device (and Core 1's re-point check) MUST
+// compare with `gen != seen_gen`, never `gen > seen_gen` -- under `>` a post-relaunch hub would be
+// ignored forever. uint32 wrap is a non-issue under the same `!=` rule.
+typedef struct {
+  uint32_t gen;       // hub-minted tile identity; 0 = no art has ever been published
+  uint32_t seen_gen;  // Core 1 writes this back after re-pointing the lv_img to buf[idx] (the ack half
+                      // of the cross-core swap protocol; Core 0 must not overwrite the back buffer until
+                      // this catches up to `gen`, or a bounded timeout elapses)
+  uint8_t  idx;       // which buffer (0 or 1) the record currently points at
+  bool     have;      // a complete, length-verified tile is present in buf[idx]
+} sonos_art_rec_t;
+
 // --- AI usage (FR-USAGE, hub-plane) — mirrors tech.md §7.1/§7.2 BLE JSON ---
 typedef struct {
   int16_t  pct;                // 0..100; -1 = null/unavailable (JSON null)
