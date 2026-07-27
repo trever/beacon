@@ -12,13 +12,13 @@
 ## 0. Verify before and after
 
 ```bash
-cd firmware && ~/.beacon-pio/bin/pio test -e native      # 29 suites / 185 cases, ~25 s
+cd firmware && ~/.beacon-pio/bin/pio test -e native      # 38 suites / 295 cases, ~20 s
 cd firmware && ~/.beacon-pio/bin/pio run -e beacon       # compile for ESP32-S3 (~2 min cold, ~10 s warm)
-cd hub && swift build && swift test                      # 204 cases, ~1 s
+cd hub && swift build && swift test                      # 416 cases, ~1 s
 ```
 
-Both suites are green at `4850e04`. If a suite is red before your change, say so rather than
-absorbing it.
+Both suites are green at `bbf0774` (2026-07-27, WS-4 of the home-complications build). If a suite is
+red before your change, say so rather than absorbing it.
 
 **Pass `-e beacon`.** A bare `pio run` also builds `[env:native]`, which has no `main()` and always
 reports `FAILED` — ignore-able noise that reads like a broken build. The first ESP32 build downloads
@@ -293,3 +293,60 @@ comparable. Needs `pip install pyserial pillow numpy`. Don't hold the port open 
 - **Commits** are Conventional Commits with scope `firmware`/`hub`/`docs`/`ci`; branches are
   `<type>/<issue#>-<kebab-summary>`. See `CONTRIBUTING.md`.
 - **Docs reflect current state, not history** — edit the statement, don't append a changelog.
+
+---
+
+## 11. Add a Home complication
+
+A complication is a Phase-1 renderer occupying 1 or 2 of Home's six slots (`docs/specs/2026-07-27-hub-
+app-and-home-complications-design.md` §4-§5; `docs/plans/2026-07-27-home-complications-plan.md` §3-§4).
+Five places, in order:
+
+1. **`firmware/src/core/complications.cpp`** — add a row to `COMP_CATALOG[]`: `{ id, size, takes_arg }`.
+   This is the **one and only** home of `size`/`takes_arg` (plan §13 item 1, settled) — do not restate
+   either on `complication_t` in `comp_registry.h`, and do not let the resolver or the stack re-derive
+   them; `comp_stack.cpp`'s `catalog_size()` and `comp_list_resolve()` both read this array. `id` <= 11
+   chars, `[a-z0-9_-]`.
+2. **`firmware/src/ui/comps/comp_<id>.cpp`** — the renderer. One file, file-static widget pointers,
+   exactly `{build, update}` — the same one-instance-per-id contract a view uses
+   (`screens/views/CONVENTIONS.md`); no `comp_inst_t`, never create an object in `update()`. Position
+   every element at the container-LOCAL offsets in `comp_registry.h`'s table — don't re-derive them or
+   hardcode the page-absolute equivalent. If your renderer is shape A (name/value/change, optionally a
+   trend glyph) or shape B (icon + two lines), reuse `comp_build_shape_a`/`comp_build_shape_b` from
+   `comp_common.h` rather than laying the widgets out by hand — that duplication is exactly what the
+   2026-07-27 convergence sweep collapsed out of `comp_fin`/`comp_ice`/`comp_usage`/`comp_weather` and
+   `comp_agents`/`comp_sonos`. Handle every non-live state via `state_view.h` (`sv_status`/`sv_dim`/
+   `sv_placeholder`), and use `txt_set`/`txt_color`/`hidden_set` (`screens/screen_common.h`) so the
+   500 ms tick stays diff-aware.
+3. **`firmware/src/ui/comps/comp_registry.cpp`** — add the `extern const complication_t comp_<id>_reg`
+   and append it to `COMP_REGISTRY[]`. `comp_find(id)` walks this array; an id present in
+   `COMP_CATALOG` but absent here (no renderer yet, e.g. `chart` in Phase 1) is a **supported** state —
+   the resolver just drops it.
+4. **`hub/Sources/BeaconHubKit/Complications.swift`** — add the matching row to `ComplicationCatalog.all`
+   (id, owner, label, size, takesArg). The hub's copy is a **preview with no compiler check against the
+   device's** (the same class of drift `PageCatalog` already carries) — a checked-in fixture test
+   (`ComplicationsTests.swift`) is the mitigation until Phase 3's device-reported registry; keep it in
+   sync by hand until then. The device's registry always wins on a mismatch (design §6.4) — never add a
+   wire field for size to "fix" this from the hub side.
+5. **Tests** — `firmware/test/test_comp_list/`: extend the catalog-shape assertions if resolution rules
+   are affected. Hub: extend the `ComplicationCatalog` fixture test with the new row, including its size.
+   There is no `ui/comps/*.cpp` native test (LVGL-coupled, not host-linkable, `platformio.ini`'s native
+   `build_src_filter` excludes the whole directory) — `test_comp_geom` covers only the shared geometry
+   constants, not a specific renderer's pixels; prove those on hardware (`env:capture`, recipe §9).
+
+### Traps
+- **A complication may only read a record the device already maintains for reasons independent of the
+  page list. A complication must never be the thing that causes a fetch** (`hub/CONTRACT.md` §A3). If
+  your data isn't already in `DataStore` for some other reason, this is the wrong recipe.
+- **`owner` is hub metadata, never a gate.** `comp_list_resolve` does not consult it, and neither may
+  your renderer or the registry — the entire point of a complication is surviving its owning page being
+  hidden. Do not add an `owner`-driven early return.
+- **Not tappable in Phase 1** (design §9.2, provisional) — `comp_stack.cpp` clears
+  `LV_OBJ_FLAG_CLICKABLE` on every container; don't add a click handler that implies otherwise.
+- **The separator rule is the STACK's decision, not the renderer's** (`comp_stack.cpp`
+  `build_containers`): none at slot 1, one at local y 0 otherwise. Don't draw your own.
+- **One instance per id, enforced at the hub editor**, not on the device — `comp_list_resolve`'s
+  duplicate-collapse rule (first occurrence wins) is the device-side backstop, not the primary UX.
+- If your complication takes an `arg` (a ticker id, a provider id, …), validate it against
+  `CompLimits.allowed` **at the hub editor boundary** (`ComplicationEditor.swift`) — the device-side
+  `comp_entry_valid` drop is a defence, not the first line (design §10.7).

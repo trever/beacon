@@ -7,7 +7,11 @@
 // pct < 0 means null/unavailable (JSON null) -- NEVER feed it to a bar/gauge; here there is no bar at
 // all (Phase 1 complications are plain text), but the same rule applies to the text: render "--", not a
 // negative percent.
+// build() is shared with comp_fin/comp_ice/comp_weather via comp_common.h (convergence sweep, plan §10
+// item 1): all four are shape-A rows (name/value/change), usage/weather just pass icon=NULL since
+// neither makes a trend claim.
 #include "ui/comps/comp_registry.h"
+#include "ui/comps/comp_common.h"
 #include "core/comp_state.h"
 #include "ui/screens/screen_common.h"
 #include "ui/screens/views/view_common.h"
@@ -15,25 +19,11 @@
 #include "ui/state_view.h"
 #include "core/datastore.h"
 #include <string.h>
-#include <ctype.h>
 
 static lv_obj_t *s_name, *s_val, *s_pct;
 
 static void build(lv_obj_t* slot) {
-  s_name = lv_label_create(slot);
-  lv_obj_add_style(s_name, &S.slot, 0);
-  lv_label_set_text(s_name, "--");
-  lv_obj_align(s_name, LV_ALIGN_TOP_LEFT, 0, 18);
-
-  s_val = lv_label_create(slot);
-  lv_obj_add_style(s_val, &S.display, 0);
-  lv_label_set_text(s_val, "--");
-  lv_obj_align(s_val, LV_ALIGN_TOP_RIGHT, 0, 10);
-
-  s_pct = lv_label_create(slot);
-  lv_obj_add_style(s_pct, &S.slot, 0);
-  lv_label_set_text(s_pct, "");
-  lv_obj_align(s_pct, LV_ALIGN_TOP_RIGHT, 0, 40);
+  comp_build_shape_a(slot, "--", &s_name, &s_val, &s_pct, nullptr);
 }
 
 static const usage_provider_t* find_provider(const usage_rec_t* u, const char* arg) {
@@ -43,25 +33,15 @@ static const usage_provider_t* find_provider(const usage_rec_t* u, const char* a
 }
 
 static void update(void) {
-  const beacon_theme_t* t = theme_active();
   usage_rec_t u = ds_get_usage();
+  if (comp_render_status_row(s_name, s_val, s_pct, "USAGE", &u.hdr)) return;
 
-  char sbuf[24];
-  if (sv_status(sbuf, sizeof(sbuf), &u.hdr, now_s())) {
-    txt_set(s_name, "USAGE");
-    txt_set(s_val, "--");
-    txt_set(s_pct, sbuf);
-    txt_color(s_pct, sv_severe(u.hdr.state) ? t->down : t->ink_dim);
-    return;
-  }
-
+  const beacon_theme_t* t = theme_active();
   char arg[COMP_ARG_LEN];
   bool has_arg = comp_arg("usage", arg, sizeof(arg));
   const usage_provider_t* p = has_arg ? find_provider(&u, arg) : nullptr;
   if (!p) {
-    char up[COMP_ARG_LEN]; size_t k = 0;
-    for (; has_arg && arg[k] && k + 1 < sizeof(up); k++) up[k] = (char)toupper((unsigned char)arg[k]);
-    up[k] = '\0';
+    char up[COMP_ARG_LEN]; comp_str_upper(up, sizeof(up), has_arg ? arg : "");
     txt_set(s_name, has_arg ? up : "USAGE");
     txt_set(s_val, "--");
     txt_set(s_pct, "not in list");
@@ -69,9 +49,7 @@ static void update(void) {
     return;
   }
 
-  char up[USAGE_LABEL_LEN]; size_t k = 0;
-  for (; p->label[k] && k + 1 < sizeof(up); k++) up[k] = (char)toupper((unsigned char)p->label[k]);
-  up[k] = '\0';
+  char up[USAGE_LABEL_LEN]; comp_str_upper(up, sizeof(up), p->label);
   txt_set(s_name, up);
 
   lv_color_t val_c = p->stale ? t->ink_dim : t->ink;

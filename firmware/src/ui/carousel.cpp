@@ -76,12 +76,25 @@ static void load_active_pages(void) {
   for (uint8_t i = 0; i < resolved.count; i++) {
     const screen_module_t* m = registry_lookup(resolved.ids[i]);
     if (!m) continue;                      // resolve already filtered, belt and braces
+#if BEACON_FORCE_NO_AGENTS
+    if (strcmp(resolved.ids[i], "agents") == 0) continue;   // RAM-only skip -- see flag comment below
+#endif
     MODULES[COUNT] = m;
     snprintf(s_active_ids[COUNT], PAGE_ID_LEN, "%s", resolved.ids[i]);
     snprintf(s_active_opts[COUNT], PAGE_OPTS_LEN, "%s", resolved.opts[i]);
     COUNT++;
   }
 }
+
+// On-hardware automated substitute for the manual half of plan §8 criterion 3 (the Agents-page-hidden
+// precondition for Home's prompt takeover): WS-4's bench session has no scripted way to drag the Agents
+// page out of the active set in the hub's Settings window (that is real user configuration and stays
+// human-hands, like every other page/complication drag -- see this plan section's header). This flag
+// instead drops "agents" from the in-RAM MODULES[]/COUNT this boot builds screens from, AFTER the normal
+// NVS-backed resolve above -- it never calls nvs_set_bytes, so the persisted "pages" NVS key some real
+// hub configured is untouched and a normal `-e beacon` boot (flag undefined => this block compiles out)
+// sees the user's actual list again. Paired with dev_seed.cpp's BEACON_CAP_BUDDY=1 (also RAM-only, also
+// restores on a normal reboot) to seed a present prompt without a real Claude Code hook round-trip.
 
 // Headroom above COMP_CATALOG_N (8 today: clock/fin/ice/agents/usage/weather/sonos/chart) -- generous
 // enough that a future catalog addition does not need this bumped, but COMP_CATALOG_N is an extern
@@ -268,9 +281,45 @@ static void autoswipe_cb(lv_timer_t*) {
 }
 #endif
 
+#if BEACON_COMPS_STRESS
+// On-hardware automated substitute for the manual half of the plan §8 exit gate ("drag-save 20x while
+// continuously swiping the carousel, deliberately trying to land an apply inside a scroll animation and
+// inside the s_settling recenter window"). WS-4's bench session cannot script a finger dragging inside
+// the hub's Settings window or physically swiping the device -- but the RISK that stress is checking for
+// (lv_obj_clean firing from the tick timer while a scroll animation or the s_settling recenter is in
+// flight) has nothing to do with where the "comps" value came from. This calls carousel_apply_comps()
+// -- the EXACT function hub_task.cpp's on_comps() calls for a real hub push, including the NVS
+// persist-before-apply -- on a timer faster than tick_cb's 500ms, alternating between two different
+// valid 6-slot assignments so every firing is a real change. Paired with BEACON_PERF's autoswipe (both
+// flags are set together in env:compstress), applies land while the pager is mid-scroll-animation and
+// inside scrollend_cb's s_settling window essentially every cycle -- no finger required. NOT shipped;
+// env:beacon is byte-for-byte unaffected (this whole block compiles out when the flag is unset).
+static bool s_stress_toggle = false;
+static void compstress_cb(lv_timer_t*) {
+  comp_list_t want;
+  comp_list_deserialize(s_stress_toggle ? "clock,fin.sp500,ice,agents"
+                                        : "clock,usage.codex,weather,sonos", &want);
+  s_stress_toggle = !s_stress_toggle;
+  bool changed = false;
+  uint8_t n = carousel_apply_comps(&want, false, &changed);
+  LOGI("compstress: requested toggle=%d -> %u placements resolved, changed=%d",
+       (int)!s_stress_toggle, (unsigned)n, changed);
+}
+#endif
+
 void carousel_init(void) {
   load_active_pages();   // MODULES/COUNT are runtime state now; resolve before any page is created.
   load_active_comps();   // comp_state's active list; resolve before Home's build() reads it.
+#if BEACON_RESTORE_DEFAULT_COMPS
+  // One-shot bench cleanup (WS-4, not shipped): writes NVS "c_home" back to the compiled default,
+  // undoing env:compstress's real (by design) carousel_apply_comps() writes from the live-rebuild
+  // stress run. Flash once, confirm, then flash back to a flag-free env:beacon build.
+  { const comp_face_t* f = home_face(); if (f) {
+      comp_list_t def; comp_list_deserialize(f->default_slots, &def);
+      bool changed = false; carousel_apply_comps(&def, false, &changed);
+      LOGI("restore: c_home reset to default (changed=%d)", changed);
+  } }
+#endif
   lv_obj_set_style_bg_color(lv_scr_act(), lv_color_black(), 0);
   lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
 
@@ -332,6 +381,9 @@ void carousel_init(void) {
   carousel_apply_rotate();   // arm auto-rotate from the persisted interval
 #if BEACON_PERF
   lv_timer_create(autoswipe_cb, 700, NULL);   // continuous scroll load; see autoswipe_cb
+#endif
+#if BEACON_COMPS_STRESS
+  lv_timer_create(compstress_cb, 300, NULL);   // faster than tick_cb's 500ms; see compstress_cb
 #endif
 }
 

@@ -1,8 +1,8 @@
 # Beacon — code map
 
-> **What this is:** a concern => file index, plus end-to-end traces of the four data paths. Read this
+> **What this is:** a concern => file index, plus end-to-end traces of the five data paths. Read this
 > before touching code so you edit the right file the first time. Verified against the tree at
-> `4850e04` (2026-07-26).
+> `bbf0774` (2026-07-27, WS-4 of the home-complications build).
 >
 > **Companions:** `AGENTS.md` (conventions) · `docs/tech.md` (NFRs + frozen contracts) · `DESIGN.md`
 > (visual system) · `hub/CONTRACT.md` (wire schema) · `docs/recipes.md` (step-by-step task playbooks)
@@ -14,13 +14,13 @@
 
 | Thing | Count | Source of truth |
 |---|---|---|
-| Carousel screens | 7 (home, finance, chart, ice, usage, buddy, settings) | `firmware/src/ui/carousel.cpp` `MODULES[]` |
+| Carousel screens | 7 compiled (`home`, `markets`, `chart`, `ice`, `agents`, `sonos`, `settings`); hub selects which are active/ordered | `firmware/src/ui/carousel.cpp` `REGISTRY[]` / `MODULES[]` |
 | Themes | **1** (editorial; six removed 2026-07-26 to reclaim flash) | `firmware/src/ui/theme_catalog.h` `THEME_COUNT` |
-| Per-theme views | 7 (7 screens x 1 theme) | `firmware/src/ui/screens/views/` |
-| Firmware host tests | 33 suites / 204 cases | `firmware/test/test_*/` |
-| Hub tests | 216 cases | `hub/Tests/` |
-| Device->hub commands | 4 (`permission`, `open`, `config_ack`, `report`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
-| Hub->device blocks | 5 (`usage`, `buddy`, `loc` share the status frame; `sessions` and `config` are standalone frames) | `hub/CONTRACT.md` §A/§B2 |
+| Home complications | 7 renderers compiled (`clock`, `fin`, `ice`, `agents`, `usage`, `weather`, `sonos`); `chart` is in the catalog with no renderer yet (Phase 2) | `firmware/src/ui/comps/comp_registry.cpp` `COMP_REGISTRY[]` |
+| Firmware host tests | 38 suites / 295 cases | `firmware/test/test_*/` |
+| Hub tests | 416 cases | `hub/Tests/` |
+| Device->hub commands | 6 (`permission`, `open`, `config_ack`, `report`, `pages_ack`, `comps_ack`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
+| Hub->device blocks | 7 (`usage`, `buddy`, `loc` share the status frame; `sessions`, `config`, `pages` and `comps` are standalone frames) | `hub/CONTRACT.md` §A/§B2/§A3 |
 | Hub providers | 3 (claude, codex, omp) | `hub/Sources/beacon-hub/AppDelegate.swift` `startProviders()` |
 
 Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8]` in `carousel.cpp`),
@@ -64,6 +64,8 @@ Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8
 | RTC + NTP + tz; `now_s()`/`uptime_s()` definitions | `timekeep.cpp`, `tz_map.cpp` |
 | Location precedence (hub > NVS > IP geo) | `location.cpp` |
 | Pure idle-phase decision (host-tested) | `idle.cpp` |
+| **Complication wire contract**: `comp_list_t`, `COMP_CATALOG` (the one home of `size`/`takes_arg`), resolve/serialize/validate (host-tested) | `complications.{h,cpp}` |
+| Active/pending complication-assignment holder (mutex-guarded, LVGL-free, host-tested) | `comp_state.{h,cpp}` |
 
 ### UI (`src/ui/`)
 | Concern | File |
@@ -90,6 +92,11 @@ Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8
 | Overlays: pairing passkey, wifi manager, theme picker, about, duration | `pair_overlay.cpp`, `wifi_panel.cpp`, `theme_panel.cpp`, `about_panel.cpp`, `duration_panel.cpp` |
 | Screenshot harness (`env:capture`) | `capture.cpp` + `tools/capture/grab.py` |
 | Fake-data seeder (`BEACON_DEV=1`) | `dev_seed.cpp` |
+| Home complication stack: root + per-placement containers, live rebuild (`comp_stack_apply`, LVGL-thread only) | `comps/comp_stack.{h,cpp}` |
+| Complication renderer contract + registry + the six-slot geometry constants | `comps/comp_registry.{h,cpp}` |
+| The 7 renderers (`clock`/`fin`/`ice`/`agents`/`usage`/`weather`/`sonos`); `chart` has no renderer yet (Phase 2) | `comps/comp_<id>.cpp` |
+| Shared build/update helpers the renderers converge on (shape-A/shape-B construction, the value+trend row, non-live short-circuit, uppercase-copy) | `comps/comp_common.{h,cpp}` |
+| The Approve/Deny permission-prompt card, shared by Home's takeover and the Agents screen | `screens/views/prompt_card.h` |
 
 ### Fetch (`src/fetch/`)
 `weather.cpp`/`parse_weather.cpp` (Open-Meteo) · `finance.cpp`/`parse_finance.cpp` (Yahoo + Binance
@@ -228,6 +235,28 @@ shows S&P when Nasdaq was selected" investigation, `docs/plans/2026-07-26-chart-
   (`series.cpp:30`). `hub/CONTRACT.md`'s own JSON example used to say `symbol` here, which is what misled
   this investigation in the first place -- fixed 2026-07-26 (`hub/CONTRACT.md:109`).
 
+### F. Complication config (hub -> device) — Home's six-slot assignment
+
+```
+hub:    ComplicationEditorView -> AppDelegate.applyCompEdit(slots) -> ComplicationStore.set (bumps rev,
+        UserDefaults keys BeaconCompRev/BeaconCompSlots) -> pushCompConfig() -> send
+device: hub_parse_comps (hub_proto.cpp) -> comp_list_resolve against COMP_CATALOG filtered by comp_find()
+        -> carousel_apply_comps: comp_list_equal decides `changed`
+        -> unchanged (idempotent re-push on reconnect): comps_ack only, no rebuild
+        -> changed: nvs_set_bytes("c_home") PERSISTED BEFORE the rebuild -> comp_state_set_pending
+        -> comp_stack_apply() (carousel.cpp tick_cb, LVGL thread only, gated on !s_settling, no-op if
+           equal to the active list) -> lv_obj_clean(stack root) + rebuild -> comps_ack
+device (boot): carousel_init() -> load_active_comps() [NVS "c_home", absent => the compiled default
+        `clock,fin.sp500,ice,agents`] runs before Home's build(), same ordering load_active_pages() uses.
+```
+
+Unlike pages, a complication push **never restarts the device** — that is the whole point of the
+pending/active split in `comp_state.{h,cpp}`. Push order on `central.onReady` is **tickers -> comps ->
+pages**, so a page push's restart (if any) lands after the complication blob is already persisted.
+`owner` in `ui/comps/comp_registry.h`'s `complication_t` is hub metadata only, never consulted by
+`comp_list_resolve` or any renderer — a complication survives its owning page being hidden by design
+(`docs/specs/2026-07-27-hub-app-and-home-complications-design.md` §4.4).
+
 ---
 
 ## 5. Test topology
@@ -238,7 +267,7 @@ listed in `platformio.ini`'s `build_src_filter` to be linked into test binaries 
 the usual "undefined symbol" in a new suite.
 
 ```bash
-~/.beacon-pio/bin/pio test -e native                      # all 29 suites
+~/.beacon-pio/bin/pio test -e native                      # all 38 suites
 ~/.beacon-pio/bin/pio test -e native -f "*test_hub_proto*" # one
 ```
 

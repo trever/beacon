@@ -224,8 +224,9 @@ longer carries it.
 
 Today that is invisible (no page, no display). The moment a **Sonos complication can live on Home while the
 Sonos page is hidden**, it is a dead complication. Fix: the room moves out of "opts of enabled pages" into
-the Sonos **source** store, pushed to the provider on change regardless of page state, and the page's
-`opts["room"]` becomes a mirror the device reads for its page header. This is required for §4.4 to hold, and
+the Sonos **source** store, pushed to the provider on change regardless of page state. The room lives solely
+in that store (`SonosRoomStore` / `SonosProvider.setSelectedRoom`) and never rides `opts` at all — there is
+no mirror key, and the device's Sonos page header does not read one. This is required for §4.4 to hold, and
 it is called out here rather than discovered during implementation.
 
 ---

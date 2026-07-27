@@ -2,8 +2,12 @@
 // SonosRoomStore/SonosProvider.setSelectedRoom on the hub, never on the wire here; plan §1 item 1/§9.2).
 // New content, shape B like agents: icon + track / "artist . room". There is no lucide glyph for
 // music/audio in the compiled 12-codepoint subset (ui/fonts/icons.h, MANIFEST.md) -- ICON_ZAP is reused
-// as a generic "now playing" cue rather than regenerating the font subset for this workstream.
+// as a generic "now playing" cue rather than regenerating the font subset for this workstream (bench
+// item, plan §10 item 4 / WS-4 return -- kept as-is, see WS-4's report on the flash cost of the
+// alternative). build() is shared with comp_agents via comp_common.h (convergence sweep, plan §10 item
+// 1): both are shape-B rows (icon + two lines).
 #include "ui/comps/comp_registry.h"
+#include "ui/comps/comp_common.h"
 #include "ui/screens/screen_common.h"
 #include "ui/screens/views/view_common.h"
 #include "ui/fonts/icons.h"
@@ -15,27 +19,7 @@
 static lv_obj_t *s_icon, *s_line1, *s_line2;
 
 static void build(lv_obj_t* slot) {
-  const beacon_theme_t* t = theme_active();
-
-  s_icon = lv_label_create(slot);
-  lv_obj_set_style_text_font(s_icon, t->f_icon, 0);
-  lv_obj_set_style_text_color(s_icon, t->ink_dim, 0);
-  lv_label_set_text(s_icon, ICON_ZAP);
-  lv_obj_align(s_icon, LV_ALIGN_TOP_LEFT, 0, 18);
-
-  s_line1 = lv_label_create(slot);
-  lv_obj_add_style(s_line1, &S.body, 0);
-  lv_label_set_long_mode(s_line1, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(s_line1, SCREEN_W - 2 * SAFE_INSET - 30);
-  lv_label_set_text(s_line1, "--");
-  lv_obj_align(s_line1, LV_ALIGN_TOP_LEFT, 26, 14);
-
-  s_line2 = lv_label_create(slot);
-  lv_obj_add_style(s_line2, &S.slot, 0);
-  lv_label_set_long_mode(s_line2, LV_LABEL_LONG_DOT);
-  lv_obj_set_width(s_line2, SCREEN_W - 2 * SAFE_INSET - 30);
-  lv_label_set_text(s_line2, "");
-  lv_obj_align(s_line2, LV_ALIGN_TOP_LEFT, 26, 40);
+  comp_build_shape_b(slot, ICON_ZAP, &s_icon, &s_line1, &s_line2);
 }
 
 static void update(void) {
