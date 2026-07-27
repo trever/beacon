@@ -71,6 +71,22 @@ final class SonosAPITests: XCTestCase {
         XCTAssertNil(SonosAPI.findGroup(room: "Bedroom", in: response))
     }
 
+    // Regression pinning the exact real-world case a live user hit: their stored room is "Master Bathroom
+    // Speaker" (the PLAYER's name -- a physical unit can be named more specifically than its room), while
+    // Sonos names the standalone GROUP after the room itself, "Master Bathroom" (no "Speaker" suffix). This
+    // is exactly the group-name-vs-player-name mismatch the player-name fallback exists for, and it
+    // resolves correctly: the exact-group-name check misses ("master bathroom" != "master bathroom
+    // speaker"), then the player-name fallback matches "Master Bathroom Speaker" to its player entry and
+    // finds the group containing that player id. Investigated because a broken fallback here would have
+    // been a second, independent reason the device's Sonos page could stay empty even after Defect 1 (the
+    // poll-gate bug) was fixed -- it is not broken; findGroup's player-name fallback works as documented.
+    func testFindGroupResolvesPlayerNamedDifferentlyFromItsStandaloneGroup() {
+        let response = SonosAPI.GroupsResponse(
+            groups: [SonosAPI.Group(id: "g1", name: "Master Bathroom", playerIds: ["p1"])],
+            players: [SonosAPI.Player(id: "p1", name: "Master Bathroom Speaker")])
+        XCTAssertEqual(SonosAPI.findGroup(room: "Master Bathroom Speaker", in: response)?.id, "g1")
+    }
+
     // --- playback metadata ---
 
     func testParsePlaybackMetadataFullTrack() {

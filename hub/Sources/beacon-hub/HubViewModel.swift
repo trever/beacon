@@ -94,6 +94,19 @@ final class HubViewModel: ObservableObject {
     }
     var onDisconnectSonos: () -> Void = {}
     var onClearSonosSecret: () -> Void = {}
+    // Defect 2 (Page Designer room picker): AppDelegate wires this to SonosProvider.fetchAvailableRooms,
+    // a READ-ONLY listing that never calls noteOutcome and never touches the poll gate/backoff
+    // SonosGateTests pins (see that method's doc comment). completion always lands on the main actor.
+    var onFetchSonosRooms: (@escaping (SonosRoomListResult) -> Void) -> Void = { completion in
+        completion(.notAuthorized)
+    }
+    // The selected room is PROVIDER state (SonosRoomStore), not page-presentation state -- unlike
+    // chart.sym it must not ride PageRow.opts/PageConfigStore, whose opts are filtered by `enabled`
+    // (enabledPageOpts above) and would let a disabled Sonos page silently clear it. Pull-based read +
+    // immediate-apply write (through SonosProvider.setSelectedRoom, so the group cache still invalidates),
+    // independent of Save & push and of whether the Sonos page is currently enabled.
+    var onLoadSonosRoom: () -> String? = { nil }
+    var onSetSonosRoom: (String?) -> Void = { _ in }
 
     // Intent closures, populated by MenubarController (weakly, so VM<->controller is not a retain cycle).
     var onToggleMute: () -> Void = {}

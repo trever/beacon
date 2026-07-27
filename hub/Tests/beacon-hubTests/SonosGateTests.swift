@@ -63,4 +63,35 @@ final class SonosGateTests: XCTestCase {
         XCTAssertFalse(p.shouldPoll(now: now.addingTimeInterval(5)),
                       "a 20s server-directed Retry-After must not be undercut by the base interval")
     }
+
+    // The live bug this suite was written to catch: the app launches with no credentials, gates on
+    // .terminal(.missingCredential) for the full 900s cap, then the user authorizes successfully in
+    // Settings. Without an explicit reset, the provider would sit out the whole cap even though the
+    // credential problem is now fixed -- resetForCredentialChange is the fix, and this pins that it
+    // clears the SAME way `.live` does, immediately, not just once the window lapses.
+    func testCredentialChangeClearsTheGate() {
+        let p = SonosProvider()
+        let now = Date()
+        p.noteOutcome(.terminal(reason: "Sonos not connected - run sonos-authorize", kind: .missingCredential))
+        XCTAssertFalse(p.shouldPoll(now: now), "sanity: the terminal gate is in effect before the reset")
+
+        p.resetForCredentialChange()
+        XCTAssertTrue(p.shouldPoll(now: now),
+                     "a credential change must clear the gate immediately, not wait out the 900s cap")
+    }
+
+    // resetForCredentialChange must not itself become a way to dodge a genuinely bad credential: if the
+    // Keychain still has no credential (or a still-bad one) at the moment of the reset, the very next tick
+    // re-terminals and re-gates on its own -- this is not a permanent bypass, just a one-shot recheck.
+    func testCredentialChangeDoesNotPreventReGatingOnAStillBadCredential() {
+        let p = SonosProvider()
+        let now = Date()
+        p.noteOutcome(.terminal(reason: "x", kind: .other))
+        p.resetForCredentialChange()
+        XCTAssertTrue(p.shouldPoll(now: now), "the reset itself must clear the gate")
+
+        // Simulate the very next tick finding the credential still bad (no Keychain write happened).
+        p.noteOutcome(.terminal(reason: "still bad", kind: .missingCredential))
+        XCTAssertFalse(p.shouldPoll(now: now), "a still-bad credential must re-gate exactly like any other terminal")
+    }
 }

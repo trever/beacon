@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import BeaconHubKit
 
 // Sonos setup section for Settings (design 2026-07-26-sonos-setup-ui): Client ID + secret + authorize +
@@ -42,6 +43,18 @@ struct SonosSettingsSection: View {
             }
         }
         .onAppear { refresh() }
+        // SettingsWindowController builds this window ONCE and reuses it for the app's lifetime
+        // (isReleasedWhenClosed = false) -- onAppear above only ever fires the first time this view is
+        // inserted into that window's hierarchy, never again on a later reopen. Without this, a Settings
+        // window that happened to first appear before Client ID/secret/authorization were set (e.g. the
+        // first-run auto-open, or a race with AppDelegate's Sonos wiring) would show that stale snapshot
+        // FOREVER, even after the user genuinely configures and authorizes Sonos through some other means
+        // (the CLI's set-sonos-secret/sonos-authorize, run from a Terminal while the hub is already
+        // running) -- there would be nothing left to trigger a re-read. Re-deriving on every
+        // didBecomeKeyNotification re-checks truth each time this window (or the app) regains focus,
+        // mirroring the existing "re-check on refocus" idiom AppDelegate.applicationDidBecomeActive already
+        // uses for provider hooks. Cheap: these are local Keychain/UserDefaults reads, same as onAppear.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in refresh() }
         .alert("Disconnect Sonos?", isPresented: $confirmDisconnect) {
             Button("Cancel", role: .cancel) {}
             Button("Disconnect", role: .destructive) { model.onDisconnectSonos(); refresh() }

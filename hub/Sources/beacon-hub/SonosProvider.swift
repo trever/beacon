@@ -13,6 +13,16 @@ struct SonosNowPlaying: Equatable {
     let playing: Bool
 }
 
+// Outcome of a read-only room/group listing fetch (Defect 2: backs the Page Designer's room PICKER, which
+// replaces the free-text field). Deliberately its own vocabulary, not ProviderOutcome: this is reported
+// straight to a UI completion handler, never through noteOutcome, and never touches fails/backoffUntil --
+// see SonosProvider.fetchAvailableRooms's doc comment for why.
+enum SonosRoomListResult: Equatable {
+    case notAuthorized       // no secret and/or no OAuth credential yet
+    case failed(String)      // reached Sonos (or tried to) and it did not work; message is display-ready
+    case rooms([String])     // group names, in whatever order the API returned them; may be empty
+}
+
 // Resolves the Sonos household/groups, polls the selected room's playback metadata, and reports a
 // normalized SonosNowPlaying via `onUpdate` whenever it changes (design 2026-07-26-sonos-now-playing-plan
 // steps 3-4). Owns its own OAuth refresh (mirrors ClaudeTokenRefresher's direct-refresh idiom) and its own
@@ -126,6 +136,33 @@ final class SonosProvider {
     func shouldPoll(now: Date) -> Bool {
         gateLock.lock(); defer { gateLock.unlock() }
         return !(backoffUntil.map { now < $0 } ?? false)
+    }
+
+    // Explicit "credentials changed, re-evaluate now" reset (the live bug: authorizing successfully in
+    // Settings -- or the CLI's set-sonos-secret + sonos-authorize, if the running hub notices -- must not
+    // sit out whatever gate a PRIOR missing/bad credential already raised, nor wait for the timer's next
+    // fire or an app restart). This is deliberately NOT a weakening of the terminal-vs-transient
+    // classification or the backoff curve itself: SonosOutcomeClassifier and UsagePollDecision are
+    // untouched, and a credential that is STILL bad simply re-terminals on the very next tick and re-gates
+    // itself immediately, exactly as SonosGateTests' "terminal gates the next poll" pins. What this clears
+    // is the CONSEQUENCE of a gate raised before the credential problem was fixed -- the same fails=0/
+    // backoffUntil=nil reset `.live` already performs -- triggered by an event (a credential just changed)
+    // the gate has no way to observe on its own. See testCredentialChangeClearsTheGate in SonosGateTests.
+    func resetForCredentialChange() {
+        gateLock.lock()
+        fails = 0
+        backoffUntil = nil
+        gateLock.unlock()
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Drop everything cached under the OLD credential/topology so the very next tick re-reads
+            // Keychain and re-resolves the household/group from scratch, instead of replaying a
+            // now-stale/nil credential or a group cache keyed off a room that never resolved before.
+            self.cachedCredential = nil
+            self.householdId = nil
+            self.groupCache = nil
+            self.tick()   // don't wait for the timer's next fire (up to `interval` seconds away)
+        }
     }
 
     // --- poll pipeline ---
@@ -312,5 +349,72 @@ final class SonosProvider {
         lastSent = np
         let cb = onUpdate
         DispatchQueue.main.async { cb?(np.room, np.track, np.artist, np.album, np.playing) }
+    }
+
+    // --- room listing (Defect 2: read-only, UI-only; never calls noteOutcome or touches the poll gate) ---
+
+    // Lists the household's current group/room names, for the Page Designer's room PICKER (which replaces
+    // the old free-text field). Deliberately does NOT reuse fetchHouseholdIfNeeded/fetchGroups above: those
+    // two call noteOutcome on every non-success, and sharing them here would mean a UI-triggered listing
+    // (fired whenever the picker popover opens) mutates the SAME poll-gate/backoff state SonosGateTests
+    // pins -- a transient blip while the popover happens to be open would gate the REAL background poller
+    // too, and conversely opening the picker while the poller is mid-backoff would ram straight through it.
+    // This performs the identical two HTTP calls and reuses the identical SonosAPI parsers, but only ever
+    // reports through `completion` -- it is read-only from the gate's point of view. Completion always
+    // lands on the main actor (the picker is SwiftUI @State-driven).
+    func fetchAvailableRooms(completion: @escaping (SonosRoomListResult) -> Void) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard SonosKeychain.readSecret() != nil, let cred = self.credential() else {
+                self.deliverRoomList(.notAuthorized, completion)
+                return
+            }
+            guard !cred.isExpired(at: Date()) else {
+                // The background poller already refreshes transparently on its own cadence; the picker
+                // does not duplicate that dance, it just reports the current state plainly.
+                self.deliverRoomList(.failed("Sonos session expired - reauthorize in Settings"), completion)
+                return
+            }
+            self.fetchHouseholdForRoomList(completion: completion)
+        }
+    }
+
+    private func fetchHouseholdForRoomList(completion: @escaping (SonosRoomListResult) -> Void) {
+        api(path: "households") { [weak self] result in
+            guard let self else { return }
+            self.queue.async {
+                guard result.status == 200, result.networkError == nil, let data = result.data,
+                      let households = SonosAPI.parseHouseholds(data), let household = households.first
+                else {
+                    self.deliverRoomList(.failed(Self.describeRoomListFailure(result)), completion)
+                    return
+                }
+                self.fetchGroupsForRoomList(householdId: household.id, completion: completion)
+            }
+        }
+    }
+
+    private func fetchGroupsForRoomList(householdId: String, completion: @escaping (SonosRoomListResult) -> Void) {
+        api(path: "households/\(householdId)/groups") { [weak self] result in
+            guard let self else { return }
+            self.queue.async {
+                guard result.status == 200, result.networkError == nil, let data = result.data,
+                      let parsed = SonosAPI.parseGroups(data)
+                else {
+                    self.deliverRoomList(.failed(Self.describeRoomListFailure(result)), completion)
+                    return
+                }
+                self.deliverRoomList(.rooms(parsed.groups.map(\.name)), completion)
+            }
+        }
+    }
+
+    private static func describeRoomListFailure(_ r: APIResult) -> String {
+        if let networkError = r.networkError { return "Network error: \(networkError)" }
+        return "Sonos returned an error (HTTP \(r.status))"
+    }
+
+    private func deliverRoomList(_ result: SonosRoomListResult, _ completion: @escaping (SonosRoomListResult) -> Void) {
+        DispatchQueue.main.async { completion(result) }
     }
 }

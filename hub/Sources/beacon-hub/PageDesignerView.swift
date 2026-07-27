@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import BeaconHubKit
 
 // The device's page set, laid out the way the device lays it out: a horizontal run of panels you scroll
@@ -202,38 +203,116 @@ private struct PageOptions: View {
 
     @State private var showPicker = false
     @State private var capMessage: String?
+    // Defect 2: the room picker's own async listing state -- separate from SonosRoomListResult (a
+    // provider-vocabulary type with no notion of "in flight") so the popover can show a spinner between
+    // opening and the first completion. Fetched fresh every time the popover opens (see sonosRoomButton
+    // below) rather than cached, so a topology change (a speaker coming back online, a room renamed) shows
+    // up without the user having to quit and reopen Beacon Hub.
+    @State private var roomFetch: SonosRoomFetchState = .idle
+    // The selected room, mirrored into local @State from model.onLoadSonosRoom() -- see the file-level
+    // comment below on why this does NOT live in row.opts/PageConfigStore. Seeded on appear and updated
+    // optimistically the instant a selection is made (onSetSonosRoom applies immediately; there is no
+    // @Published to observe here since SonosRoomStore is a plain UserDefaults wrapper, not part of
+    // HubViewModel's published state).
+    @State private var currentRoom: String = ""
 
     var body: some View {
         Group {
             if row.id == "chart" { chartInstrumentButton }
-            else if row.id == "sonos" { sonosRoomField }
+            else if row.id == "sonos" { sonosRoomButton }
             else { none }
         }
         .frame(height: 24)
+        .onAppear { if row.id == "sonos" { currentRoom = model.onLoadSonosRoom() ?? "" } }
+        // PageDesignerWindowController builds this window once and reuses it across opens (same as
+        // SettingsWindowController), so onAppear above only ever fires the first time. Nothing else in
+        // this build mutates the room besides this exact picker (which already updates `currentRoom`
+        // locally the instant a selection is made), so this is defense-in-depth rather than a fix for a
+        // demonstrated bug here -- re-deriving on every refocus keeps this view honest the same way
+        // SonosSettingsView does, in case that ever changes.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            if row.id == "sonos" { currentRoom = model.onLoadSonosRoom() ?? "" }
+        }
     }
 
     private var none: some View {
         Text("No options").font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
     }
 
-    // The Sonos room this page follows (opts["room"]), same plumbing as chart.sym (CONTRACT.md §A2: "The
-    // opts plumbing is generic and already end to end; only the Sonos room-picker UI is new"). Free text
-    // rather than a resolved picker: SonosProvider does not expose its household/group topology today, and
-    // building that lookup would mean sharing its poll-gate/backoff state (SonosGateTests) with a
-    // UI-driven fetch -- a new provider surface, not wiring. The name matches the Sonos Control API's
-    // room/group name (case-insensitive; SonosAPI.findGroup matches by group name or player name).
-    private var sonosRoomField: some View {
-        TextField("Room name", text: Binding(get: { row.opts["room"] ?? "" }, set: setRoom))
-            .textFieldStyle(.plain).font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .disabled(!row.enabled)
+    // --- Sonos room ---
+    // Deliberately NOT `row.opts["room"]`/PageConfigStore, unlike chart.sym: a page-designer regression
+    // found that HubViewModel.enabledPageOpts filters opts by `enabled` before AppDelegate.applyPageEdit
+    // ever sees them, so a DISABLED Sonos page would silently drop its room the next time any page edit
+    // was saved. The room is PROVIDER state (which room SonosProvider polls), not page-presentation state
+    // (whether/what the device shows) -- so it is read from and written straight through SonosRoomStore via
+    // model.onLoadSonosRoom/onSetSonosRoom (AppDelegate wires the write through SonosProvider.setSelectedRoom
+    // so the group cache still invalidates), independent of Save & push and of whether this page is enabled.
+    //
+    // The WIDGET also changed, separately: a picker populated from the real household/group list, instead
+    // of free text (previously deferred because listing meant either reusing fetchHouseholdIfNeeded/
+    // fetchGroups -- which call noteOutcome and would have shared poll-gate/backoff state with
+    // SonosGateTests -- or duplicating the fetch path). SonosProvider.fetchAvailableRooms (called here via
+    // model.onFetchSonosRooms) resolves that: a separate, read-only listing that reuses the same HTTP calls
+    // and SonosAPI parsers but never touches the gate. The name matches the Sonos Control API's GROUP name
+    // (case-insensitive; SonosAPI.findGroup also falls back to a player name inside that group).
+
+    /// The stored room when it is not in the freshly-fetched list -- mirrors `orphan` below for the chart
+    /// instrument: an offline speaker or a room renamed in the Sonos app must not silently vanish from the
+    /// picker just because this fetch does not currently see it. Nil (nothing to mark) while the fetch
+    /// hasn't produced a room list yet, so this never contradicts a `.loading`/`.failed`/`.notAuthorized`
+    /// state by claiming something is "not in the current groups" before groups were even fetched.
+    private var roomOrphan: String? {
+        guard !currentRoom.isEmpty, case .loaded(let names) = roomFetch, !names.contains(currentRoom)
+        else { return nil }
+        return currentRoom
     }
 
-    private func setRoom(_ value: String) {
-        guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
-        model.pageRows[i].opts["room"] = value
-        model.pageSync = nil
+    private var roomLabel: String {
+        currentRoom.isEmpty ? "Choose room" : currentRoom
+    }
+
+    private var sonosRoomButton: some View {
+        Button {
+            showPicker = true
+            fetchRooms()
+        } label: {
+            HStack(spacing: 4) {
+                Text(roomLabel).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!row.enabled)
+        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
+            SonosRoomPopover(fetch: roomFetch, currentRoom: currentRoom, orphan: roomOrphan,
+                             retry: fetchRooms, select: selectRoom)
+        }
+    }
+
+    private func fetchRooms() {
+        roomFetch = .loading
+        model.onFetchSonosRooms { result in
+            Task { @MainActor in
+                switch result {
+                case .notAuthorized: roomFetch = .notAuthorized
+                case .failed(let reason): roomFetch = .failed(reason)
+                case .rooms(let names): roomFetch = .loaded(names)
+                }
+            }
+        }
+    }
+
+    // Applies immediately (unlike the chart's setSym, which only stages into pageRows.opts for Save &
+    // push): a room change is meant to take effect on SonosProvider's very next poll tick, not wait for a
+    // device restart -- see SonosProvider.setSelectedRoom's own doc comment. Optimistic local update first
+    // so the button label reflects the pick without waiting on anything async.
+    private func selectRoom(_ name: String) {
+        currentRoom = name
+        model.onSetSonosRoom(name.isEmpty ? nil : name)
+        showPicker = false
     }
 
     // The chart follows a TICKER ID from the configured list, not a typed symbol: the device resolves
@@ -439,6 +518,113 @@ private struct InstrumentRow: View {
                         }
                     }
                 }
+                Spacer(minLength: 6)
+                if isCurrent {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// The room picker's own in-flight state (Defect 2): SonosRoomListResult (SonosProvider.swift) is a
+// completed-outcome vocabulary with no notion of "request sent, no answer yet" -- that is purely a UI
+// concern, so it is modeled here rather than growing the provider's type for a UI-only state.
+private enum SonosRoomFetchState: Equatable {
+    case idle
+    case loading
+    case notAuthorized
+    case failed(String)
+    case loaded([String])
+}
+
+/// Room-picker popover for the Sonos page (Defect 2): replaces the old free-text field. Every state the
+/// requirements call for gets its own inline explanation rather than an empty/blank-looking popover --
+/// "not yet authorized," "fetching," "fetch failed" (with Retry), and "zero rooms" are each handled
+/// explicitly so the user is never looking at a mysteriously empty list wondering if something broke.
+private struct SonosRoomPopover: View {
+    let fetch: SonosRoomFetchState
+    let currentRoom: String
+    let orphan: String?
+    let retry: () -> Void
+    let select: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            content
+        }
+        .frame(width: 260, alignment: .top)
+    }
+
+    @ViewBuilder private var content: some View {
+        switch fetch {
+        case .idle, .loading:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading rooms\u{2026}").font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+            .padding(10)
+        case .notAuthorized:
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sonos is not connected.").font(.system(size: 11, weight: .medium))
+                Text("Open Settings and authorize with Sonos to list your rooms.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                // Not the same check as `orphan` (that compares against a fetched list, which does not
+                // exist in this state) -- just surfacing whatever is already saved so the user is never
+                // left wondering whether picking a room earlier "took."
+                if !currentRoom.isEmpty { storedRoomNotice(currentRoom) }
+            }
+            .padding(10)
+        case .failed(let reason):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Could not load rooms.").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+                Text(reason).font(.system(size: 10)).foregroundStyle(.secondary)
+                Button("Retry", action: retry).font(.system(size: 11)).buttonStyle(.link)
+                if !currentRoom.isEmpty { storedRoomNotice(currentRoom) }
+            }
+            .padding(10)
+        case .loaded(let names):
+            if names.isEmpty && orphan == nil {
+                Text("No rooms found in your Sonos household.")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .padding(10)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        // The stored room always sorts first when it is not part of the fetched list, so
+                        // picking it back (or picking something else instead) is one visible tap either way.
+                        if let orphan {
+                            RoomRow(name: "\(orphan) (not in current groups)", isCurrent: true) { select(orphan) }
+                            Divider()
+                        }
+                        ForEach(names, id: \.self) { name in
+                            RoomRow(name: name, isCurrent: name == currentRoom) { select(name) }
+                            Divider()
+                        }
+                    }
+                }
+                .frame(maxHeight: 240)
+            }
+        }
+    }
+
+    private func storedRoomNotice(_ room: String) -> some View {
+        Text("Currently set to \(room).").font(.system(size: 10)).foregroundStyle(.secondary)
+    }
+}
+
+private struct RoomRow: View {
+    let name: String
+    let isCurrent: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
                 Spacer(minLength: 6)
                 if isCurrent {
                     Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
