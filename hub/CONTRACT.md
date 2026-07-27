@@ -100,13 +100,49 @@ Optional `sdetail` block (additive `v:1` extension). A **standalone** frame, joi
 - Old firmware ignores the unknown frame; new firmware treats absent detail as "no content yet" and
   falls back to the `sessions` `label`. No version bump.
 
+Optional `sonos` block (additive `v:1` extension, design
+`docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md` §3). A **standalone** frame, like
+`sdetail` -- not a field on the status frame or on `pages`. Carries the Sonos now-playing state the hub
+has already resolved (room, track, artist, album, play state); the device never talks to Sonos and never
+holds a token, per the credentials-never-reach-the-device rule (`AGENTS.md`, `docs/tech.md`) -- the same
+reason AI usage was normalized to percentages instead of shipping a token.
+
+```json
+{"v":1,"sonos":{"room":"Kitchen","track":"Black Hole Sun","artist":"Soundgarden","album":"Superunknown","playing":true}}
+```
+
+- Sent on change and on (re)connect, exactly like `sessions`/`sdetail`.
+- Caps: `room` ≤ **20** chars; `track` ≤ **40**; `artist` ≤ **32**; `album` ≤ **32**. `playing` is a bool.
+- Absent fields are omitted, not null, matching `sdetail`'s rule; a missing `playing` reads as false on
+  the device -- there is no separate wire state for "unknown".
+- **Char caps do not bound bytes** (same reasoning as `sdetail`, worse in practice): `track`/`artist`/
+  `album` are free-form text off the Sonos API, where one `"` costs two bytes escaped, an emoji four, and
+  a control character six as `\uXXXX`. Worse than `sdetail`'s case: a single Swift `Character` can be an
+  *extended grapheme cluster* -- e.g. a ZWJ-joined emoji sequence -- that alone runs to dozens of bytes,
+  so counting characters against the cap is not enough even before escaping is considered. The hub
+  (`BeaconHubKit/Protocol.swift SonosFrame`) reuses `SessionDetailsFrame`'s encode-measure-shrink loop
+  rather than a second implementation of it: it encodes, measures, and while over `HUB_FRAME_MAX` trims
+  the longest of `album`, then `artist`, then `track`, then `room` last, one Character at a time (never a
+  byte or a Unicode scalar, so a multi-byte/multi-scalar grapheme cluster is never split into invalid
+  UTF-8). `room` is trimmed last because it is what tells a multi-speaker household's pages apart.
+  Measured worst case: every field filled to its cap with a ZWJ family-emoji grapheme cluster
+  (`"👨‍👩‍👧‍👦"`, 1 Character / 25 UTF-8 bytes) encodes to 3177 B pre-shrink; the loop trims it to
+  1002 B, under the 1024 B ceiling.
+- `room` here is the room actually playing, distinct from the page's own `opts["room"]` below (the room
+  the user asked this page to follow) -- normally the same value, but they can disagree briefly, e.g. the
+  configured room just went offline and the hub is still resolving the next poll.
+- The room to follow is carried as a per-page option, `opts["room"]`, on the `sonos` entry in the `pages`
+  list (§A2) -- the same mechanism `chart.sym` already uses. The `opts` plumbing is generic and already
+  end to end; only the Sonos room-picker UI is new.
+- Old firmware ignores the unknown frame (additive, no version bump).
+
 ## A2. Hub -> device page config (additive, design `docs/specs/2026-07-26-hub-as-controller-and-sonos-design.md`)
 
 Which screens the device shows, and in what order. Persisted in NVS and applied by the device; the page
 set is no longer compiled in. Parsed by `hub_parse_pages`, encoded by `BeaconHubKit/PageConfig.swift`.
 
 ```json
-{"v":1,"pages":{"rev":3,"list":[{"id":"home"},{"id":"chart","opts":{"symbol":"sp500"}},{"id":"agents"}]}}
+{"v":1,"pages":{"rev":3,"list":[{"id":"home"},{"id":"chart","opts":{"sym":"sp500"}},{"id":"agents"}]}}
 {"v":1,"cmd":"pages_ack","rev":3,"ok":true,"count":4}
 {"v":1,"cmd":"pages_ack","rev":3,"ok":false,"err":"too_many_pages"}
 ```

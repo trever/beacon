@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var codex: HookBuddyProvider?              // typed ref for drain + device-connected
     private var omp: HookBuddyProvider?                // typed ref for drain + device-connected
     private var poller: UsagePoller!                   // built once providers exist
+    private var sonos: SonosProvider?                   // Sonos OAuth + polling (design 2026-07-26-sonos-now-playing-plan)
     private let location = LocationProvider()
     private let tickerStore = TickerConfigStore()   // desired ticker list + monotonic rev (issue #92)
     private let pageStore = PageConfigStore()      // which device pages, in what order (+ monotonic rev)
@@ -41,6 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buddy = BuddyState()
     private var sessions: [Session] = []
     private var sessionDetails: [SessionDetail] = []   // resent on (re)connect alongside `sessions`
+    // Latest normalized Sonos now-playing (resent on reconnect, same as sessions/sessionDetails above);
+    // nil until the poller has resolved a room and gotten a live result at least once.
+    private var sonosNowPlaying: (room: String, track: String?, artist: String?, album: String?, playing: Bool)?
     private var lastFix: Loc?   // most recent CoreLocation fix (issue #54); rides the (re)connect full frame
     private var heartbeat: Timer?
 
@@ -85,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startLoginItem()
         startLocation()
         startTickerEditor()
+        startSonos()
         menubar.setPages(ids: pageStore.current.ids, opts: pageStore.current.opts)
 
         // Heartbeat resends the full frame WITHOUT loc (issue #54): location rides the (re)connect frame
@@ -346,6 +351,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pushMenubarUsage()   // a usage toggle re-includes/excludes the provider's card immediately
     }
 
+    // --- sonos (OAuth + polling provider; the BLE frame encoder is owned by a separate agent) ---
+
+    private func startSonos() {
+        let sonos = SonosProvider(session: usageSession)
+        sonos.onUpdate = { [weak self] room, track, artist, album, playing in
+            Task { @MainActor in
+                self?.sonosNowPlaying = (room, track, artist, album, playing)
+                self?.pushSonosFrame()
+            }
+        }
+        self.sonos = sonos
+        sonos.start()
+    }
+
+    private func pushSonosFrame() {
+        guard let np = sonosNowPlaying else { return }
+        let payload = BeaconHubKit.SonosNowPlaying(room: np.room, track: np.track, artist: np.artist,
+                                                   album: np.album, playing: np.playing)
+        if let data = try? SonosFrame(payload).encoded() { central.send(data) }
+    }
+
     // --- central ---
 
     private func startCentral() {
@@ -365,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let data = try? SessionDetailsFrame(self?.sessionDetails ?? []).encoded() { self?.central.send(data) }
                 self?.pushTickerConfig()
                 self?.pushPageConfig()
+                self?.pushSonosFrame()   // resend the latest Sonos now-playing on (re)connect, same as sessions/sdetail above
             }
         }
         central.onCommand = { [weak self] cmd in
@@ -655,11 +682,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let after = pageStore.set(ids: ids, opts: opts)
         guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
         menubar.setPages(ids: after.ids, opts: after.opts)   // the edit is now the applied baseline
+        // The Sonos page's `opts["room"]` names which room SonosProvider should follow -- unlike chart.sym
+        // (device-resolved), this must also reach the hub-side provider or the page stays decorative.
+        // setSelectedRoom persists + drops the cached group so a room change takes effect on the very next
+        // poll tick rather than waiting for a restart. Absent key (page never touched) leaves it alone; an
+        // explicitly cleared field is treated as "no room selected", matching SonosProvider's own check.
+        if let room = after.opts["sonos"]?["room"] {
+            sonos?.setSelectedRoom(room.isEmpty ? nil : room)
+        }
         guard central.isConnected else {
             menubar.setPageSync("Saved. The Beacon picks this up next time it connects.")
             return
         }
         menubar.setPageSync("Sent - the Beacon is restarting…")
+        // A page save that points the chart at a just-added ticker must land on the device BEFORE the
+        // page push that restarts it -- otherwise the device could reboot with the chart id set but the
+        // ticker row not yet persisted (design 2026-07-26-yahoo-symbol-search). The chart-instrument
+        // picker already live-pushes the ticker config the moment a new symbol is chosen, but re-push here
+        // unconditionally rather than trust that earlier push landed (BLE could have dropped in between);
+        // it is a cheap idempotent re-sync, the same one that already runs on every (re)connect below in
+        // central.onReady, which is what actually guarantees convergence if the device reboots mid-sync.
+        pushTickerConfig()
         pushPageConfig()
     }
 

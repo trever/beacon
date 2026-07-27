@@ -200,9 +200,14 @@ private struct PageOptions: View {
     @ObservedObject var model: HubViewModel
     let row: PageRow
 
+    @State private var showPicker = false
+    @State private var capMessage: String?
+
     var body: some View {
         Group {
-            if row.id == "chart" { chartPicker } else { none }
+            if row.id == "chart" { chartInstrumentButton }
+            else if row.id == "sonos" { sonosRoomField }
+            else { none }
         }
         .frame(height: 24)
     }
@@ -211,44 +216,237 @@ private struct PageOptions: View {
         Text("No options").font(.system(size: 10)).foregroundStyle(.secondary.opacity(0.6))
     }
 
+    // The Sonos room this page follows (opts["room"]), same plumbing as chart.sym (CONTRACT.md §A2: "The
+    // opts plumbing is generic and already end to end; only the Sonos room-picker UI is new"). Free text
+    // rather than a resolved picker: SonosProvider does not expose its household/group topology today, and
+    // building that lookup would mean sharing its poll-gate/backoff state (SonosGateTests) with a
+    // UI-driven fetch -- a new provider surface, not wiring. The name matches the Sonos Control API's
+    // room/group name (case-insensitive; SonosAPI.findGroup matches by group name or player name).
+    private var sonosRoomField: some View {
+        TextField("Room name", text: Binding(get: { row.opts["room"] ?? "" }, set: setRoom))
+            .textFieldStyle(.plain).font(.system(size: 11, weight: .medium))
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .disabled(!row.enabled)
+    }
+
+    private func setRoom(_ value: String) {
+        guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
+        model.pageRows[i].opts["room"] = value
+        model.pageSync = nil
+    }
+
     // The chart follows a TICKER ID from the configured list, not a typed symbol: the device resolves
-    // the Yahoo symbol and display name from that row, so there is nothing free-form to mistype.
+    // the Yahoo symbol and display name from that row, so there is nothing free-form to mistype. Picking
+    // a symbol not yet in the list mints + pushes a new row first (see ChartInstrumentSelection).
     // Binance rows are excluded -- the chart fetch speaks the Yahoo API only.
     private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
 
     /// The stored instrument, when it is no longer in the ticker list. Offered as its own (marked) entry
     /// so it round-trips: silently resolving it to a DIFFERENT instrument would make the picker read as
-    /// though the user had chosen that one, and one Save & push later it would be true.
+    /// though the user had chosen that one, and one Save & push later it would be true. A search pick
+    /// never touches this on its own -- only an explicit tap in the popover changes `opts["sym"]`.
     private var orphan: String? {
         guard let sym = row.opts["sym"], !sym.isEmpty,
               !eligible.contains(where: { $0.id == sym }) else { return nil }
         return sym
     }
 
-    @ViewBuilder private var chartPicker: some View {
-        if eligible.isEmpty {
-            Text("No Yahoo tickers configured").font(.system(size: 10)).foregroundStyle(.secondary)
-        } else {
-            Picker("", selection: Binding(
-                get: { row.opts["sym"] ?? defaultSym },
-                set: { newValue in
-                    guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
-                    model.pageRows[i].opts["sym"] = newValue
-                    model.pageSync = nil
-                })) {
-                    if let orphan {
-                        Text("\(orphan) (not in ticker list)").tag(orphan)
-                    }
-                    ForEach(eligible, id: \.id) { t in
-                        Text(t.name.isEmpty ? t.sym : t.name).tag(t.id)
-                    }
-                }
-                .labelsHidden().controlSize(.small).disabled(!row.enabled)
-        }
-    }
-
     /// Matches CHART_TICKER_ID in the firmware: what the device falls back to when no option is set.
     private var defaultSym: String {
         eligible.contains { $0.id == "sp500" } ? "sp500" : (eligible.first?.id ?? "")
+    }
+
+    private var currentID: String { row.opts["sym"] ?? defaultSym }
+
+    private var currentLabel: String {
+        if let orphan, orphan == currentID { return "\(orphan) (not in list)" }
+        if let t = eligible.first(where: { $0.id == currentID }) { return t.name.isEmpty ? t.sym : t.name }
+        return currentID.isEmpty ? "Choose instrument" : currentID
+    }
+
+    // A compact button (not a native Picker) so the card can open a popover with a search field instead of
+    // being limited to the 8-ish rows already in the ticker list.
+    private var chartInstrumentButton: some View {
+        Button {
+            capMessage = nil
+            showPicker = true
+        } label: {
+            HStack(spacing: 4) {
+                Text(currentLabel).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!row.enabled)
+        .popover(isPresented: $showPicker, arrowEdge: .bottom) {
+            ChartInstrumentPopover(model: model, currentID: currentID, orphan: orphan,
+                                   capMessage: capMessage, select: select)
+        }
+    }
+
+    /// Resolve what picking `candidate` means (already in the list / a brand-new instrument / the list
+    /// already at the device's cap) via the pure ChartInstrumentSelection, then apply it. Adding pushes
+    /// the ticker config immediately -- model.onApplyTickerEdit persists + pushes, exactly like the
+    /// standalone ticker editor's Add -- so one tap both adds the row and stages the chart option; the
+    /// page card's own "Save & push" still gates the PAGE change (and re-pushes tickers first; see
+    /// AppDelegate.applyPageEdit).
+    private func select(_ candidate: TickerRow) {
+        switch ChartInstrumentSelection.resolve(candidate: candidate, currentList: model.tickerRows) {
+        case .setExisting(let sym):
+            setSym(sym)
+            showPicker = false
+        case .addAndSet(let newRow):
+            model.onApplyTickerEdit(model.tickerRows + [newRow])
+            setSym(newRow.id)
+            showPicker = false
+        case .tooManyTickers:
+            capMessage = "Ticker list is full (\(ChartInstrumentSelection.maxTickers)). Remove one to add another."
+        }
+    }
+
+    private func setSym(_ id: String) {
+        guard let i = model.pageRows.firstIndex(where: { $0.id == row.id }) else { return }
+        model.pageRows[i].opts["sym"] = id
+        model.pageSync = nil
+    }
+}
+
+/// Search-and-pick surface for the Chart page's instrument. An empty query browses the user's current
+/// Yahoo tickers (what the old Picker showed); typing switches to a live, debounced Yahoo search across
+/// every instrument Yahoo Finance knows about. `select` is the only way this view affects anything --
+/// it never mutates HubViewModel itself.
+private struct ChartInstrumentPopover: View {
+    @ObservedObject var model: HubViewModel
+    let currentID: String
+    let orphan: String?
+    let capMessage: String?
+    let select: (TickerRow) -> Void
+
+    @State private var query = ""
+    @State private var results: [TickerCandidate] = []
+    @State private var searching = false
+    @State private var searchTask: Task<Void, Never>?
+
+    private var eligible: [TickerRow] { model.tickerRows.filter { $0.src == .yahoo } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            searchField
+            if let capMessage {
+                Text(capMessage).font(.system(size: 10)).foregroundStyle(.orange)
+            }
+            if let orphan {
+                Text("Currently set to \(orphan), which is not in the ticker list.")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            resultsList
+        }
+        .padding(10)
+        .frame(width: 300, height: 320, alignment: .top)
+        .onDisappear { searchTask?.cancel() }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(.secondary)
+            TextField("Search any Yahoo symbol", text: $query)
+                .textFieldStyle(.plain).font(.system(size: 12))
+                .onChange(of: query) { runSearch($0) }
+            if searching { ProgressView().controlSize(.mini) }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+
+    // Debounce ~300ms, same cadence as TickerEditorView's search: cancel the prior task, sleep, then call
+    // the Yahoo hook and filter to Yahoo-only results (the chart fetch speaks the Yahoo API only).
+    private func runSearch(_ text: String) {
+        searchTask?.cancel()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { results = []; searching = false; return }
+        guard let onSearchTickers = model.onSearchTickers else { return }
+        searching = true
+        searchTask = Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            onSearchTickers(trimmed) { merged in
+                Task { @MainActor in
+                    guard !Task.isCancelled else { return }
+                    results = ChartInstrumentSearch.yahooOnly(merged)
+                    searching = false
+                }
+            }
+        }
+    }
+
+    private var resultsList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if query.isEmpty { existingRows } else { searchRows }
+            }
+        }
+    }
+
+    @ViewBuilder private var existingRows: some View {
+        if eligible.isEmpty {
+            Text("No Yahoo tickers yet. Type to search Yahoo Finance.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        } else {
+            ForEach(eligible, id: \.id) { t in
+                InstrumentRow(name: t.name.isEmpty ? t.sym : t.name, sym: t.sym, tag: nil,
+                             isCurrent: t.id == currentID) { select(t) }
+                Divider()
+            }
+        }
+    }
+
+    @ViewBuilder private var searchRows: some View {
+        if results.isEmpty {
+            Text(searching ? "Searching…" : "No matches.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        } else {
+            ForEach(results, id: \.row.id) { c in
+                InstrumentRow(name: c.row.name.isEmpty ? c.row.sym : c.row.name, sym: c.row.sym,
+                             tag: c.exchange, isCurrent: c.row.id == currentID) { select(c.row) }
+                Divider()
+            }
+        }
+    }
+}
+
+private struct InstrumentRow: View {
+    let name: String
+    let sym: String
+    let tag: String?
+    let isCurrent: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(sym).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                        if let tag, !tag.isEmpty {
+                            Text(tag).font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Spacer(minLength: 6)
+                if isCurrent {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(.blue)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

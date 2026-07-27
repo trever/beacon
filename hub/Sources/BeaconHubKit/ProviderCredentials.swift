@@ -44,6 +44,32 @@ public struct ClaudeCredential: Equatable {
 
 }
 
+// Sonos OAuth credential (design 2026-07-26-sonos-now-playing-plan). Same shape/semantics as
+// ClaudeCredential (nil expiresAt = never-expired; nil/empty refreshToken = absent), but Sonos has no
+// separate CLI racing this Keychain item -- beacon-hub is the sole reader AND writer, written once by
+// `sonos-authorize` and rewritten in place by the refresh path. No `preferred(cli:beacon:)` dance needed.
+public struct SonosCredential: Equatable {
+    public let accessToken: String
+    public let expiresAt: Date?      // nil when absent/unparseable; treated as never-expired.
+    public let refreshToken: String? // nil when absent/empty.
+
+    public init(accessToken: String, expiresAt: Date?, refreshToken: String?) {
+        self.accessToken = accessToken
+        self.expiresAt = expiresAt
+        self.refreshToken = refreshToken
+    }
+
+    public func isExpired(at now: Date) -> Bool {
+        guard let expiresAt else { return false }
+        return expiresAt <= now
+    }
+
+    public var refreshTokenAlive: Bool {
+        guard let refreshToken else { return false }
+        return !refreshToken.isEmpty
+    }
+}
+
 public enum ProviderCredentials {
     // The blob shape to persist a long-lived token (`claude setup-token`) into Beacon's own Keychain
     // item. No expiresAt/refreshToken: absent expiry is read as never-expiring, which is precisely what
@@ -99,5 +125,27 @@ public enum ProviderCredentials {
               let account = tokens["account_id"] as? String, !account.isEmpty
         else { return nil }
         return (token, account)
+    }
+
+    // Beacon's own Sonos OAuth cache: { sonosOAuth: { accessToken, expiresAt (epoch ms), refreshToken } }.
+    // Same JSON-object idiom as parseClaude, kept next to it for easy comparison.
+    public static func parseSonos(_ blob: Data) -> SonosCredential? {
+        guard let obj = try? JSONSerialization.jsonObject(with: blob) as? [String: Any],
+              let oauth = obj["sonosOAuth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String, !token.isEmpty
+        else { return nil }
+        let expiresAt = (oauth["expiresAt"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+        let refreshToken = (oauth["refreshToken"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return SonosCredential(accessToken: token, expiresAt: expiresAt, refreshToken: refreshToken)
+    }
+
+    // Builds the exact shape parseSonos expects, so a freshly exchanged/refreshed token round-trips
+    // through the same parser the next time it is read (mirrors ClaudeTokenRefresher.buildKeychainBlob).
+    public static func sonosBlob(accessToken: String, expiresAt: Date?, refreshToken: String?) -> Data? {
+        var oauth: [String: Any] = ["accessToken": accessToken]
+        if let expiresAt { oauth["expiresAt"] = Int64(expiresAt.timeIntervalSince1970 * 1000) }
+        if let refreshToken { oauth["refreshToken"] = refreshToken }
+        return try? JSONSerialization.data(withJSONObject: ["sonosOAuth": oauth])
     }
 }

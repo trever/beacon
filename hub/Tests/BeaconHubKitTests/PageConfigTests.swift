@@ -94,10 +94,11 @@ final class PageConfigTests: XCTestCase {
     }
 
     // A device configured by a newer hub can report a page this build has no name for; skip it rather
-    // than render a row the user can neither identify nor reorder.
+    // than render a row the user can neither identify nor reorder. (Uses "weather" as the stand-in for
+    // an unknown id -- "sonos" used to serve this role until it joined the real catalog.)
     func testEditorRowsSkipUnknownIDs() {
-        let rows = PageCatalog.editorRows(applied: ["sonos", "home"])
-        XCTAssertFalse(rows.contains { $0.entry.id == "sonos" })
+        let rows = PageCatalog.editorRows(applied: ["weather", "home"])
+        XCTAssertFalse(rows.contains { $0.entry.id == "weather" })
         XCTAssertEqual(rows.first?.entry.id, "home")
     }
 

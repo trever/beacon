@@ -108,4 +108,64 @@ final class ProviderCredentialsTests: XCTestCase {
             }
         }
     }
+
+    // --- Sonos (design 2026-07-26-sonos-now-playing-plan) ---
+
+    func testParseSonos() {
+        struct Case { let name: String; let json: String; let want: SonosCredential? }
+        let cases: [Case] = [
+            Case(name: "valid, no expiry", json: #"{"sonosOAuth":{"accessToken":"tok-123"}}"#,
+                 want: SonosCredential(accessToken: "tok-123", expiresAt: nil, refreshToken: nil)),
+            Case(name: "valid with expiry (epoch ms) and refresh token",
+                 json: #"{"sonosOAuth":{"accessToken":"tok-123","expiresAt":1773751428445,"refreshToken":"r-1"}}"#,
+                 want: SonosCredential(accessToken: "tok-123",
+                                       expiresAt: Date(timeIntervalSince1970: 1_773_751_428.445),
+                                       refreshToken: "r-1")),
+            Case(name: "non-numeric expiresAt tolerated",
+                 json: #"{"sonosOAuth":{"accessToken":"tok-123","expiresAt":"soon"}}"#,
+                 want: SonosCredential(accessToken: "tok-123", expiresAt: nil, refreshToken: nil)),
+            Case(name: "malformed json", json: "not json", want: nil),
+            Case(name: "missing sonosOAuth", json: #"{"other":{"accessToken":"t"}}"#, want: nil),
+            Case(name: "missing accessToken", json: #"{"sonosOAuth":{"refreshToken":"r"}}"#, want: nil),
+            Case(name: "empty token => absent", json: #"{"sonosOAuth":{"accessToken":""}}"#, want: nil),
+            Case(name: "refreshToken empty => absent",
+                 json: #"{"sonosOAuth":{"accessToken":"tok-123","refreshToken":""}}"#,
+                 want: SonosCredential(accessToken: "tok-123", expiresAt: nil, refreshToken: nil)),
+        ]
+        for c in cases {
+            XCTAssertEqual(ProviderCredentials.parseSonos(Data(c.json.utf8)), c.want, "case: \(c.name)")
+        }
+    }
+
+    // Round-trips through the exact shape sonosBlob builds, the same guarantee ClaudeTokenRefresher's
+    // buildKeychainBlob provides for parseClaude -- a freshly refreshed token must read back identically.
+    func testSonosBlobRoundTrips() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let blob = ProviderCredentials.sonosBlob(accessToken: "tok-1", expiresAt: now, refreshToken: "ref-1")
+        XCTAssertNotNil(blob)
+        let parsed = blob.flatMap(ProviderCredentials.parseSonos)
+        XCTAssertEqual(parsed?.accessToken, "tok-1")
+        XCTAssertEqual(parsed?.refreshToken, "ref-1")
+        XCTAssertEqual(parsed?.expiresAt?.timeIntervalSince1970 ?? 0, now.timeIntervalSince1970, accuracy: 0.001)
+    }
+
+    func testSonosBlobOmitsAbsentFields() {
+        let blob = ProviderCredentials.sonosBlob(accessToken: "tok-1", expiresAt: nil, refreshToken: nil)
+        let parsed = blob.flatMap(ProviderCredentials.parseSonos)
+        XCTAssertEqual(parsed, SonosCredential(accessToken: "tok-1", expiresAt: nil, refreshToken: nil))
+    }
+
+    func testSonosCredentialIsExpired() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        XCTAssertFalse(SonosCredential(accessToken: "t", expiresAt: nil, refreshToken: nil).isExpired(at: now))
+        XCTAssertFalse(SonosCredential(accessToken: "t", expiresAt: now.addingTimeInterval(60), refreshToken: nil).isExpired(at: now))
+        XCTAssertTrue(SonosCredential(accessToken: "t", expiresAt: now.addingTimeInterval(-60), refreshToken: nil).isExpired(at: now))
+        XCTAssertTrue(SonosCredential(accessToken: "t", expiresAt: now, refreshToken: nil).isExpired(at: now))
+    }
+
+    func testSonosRefreshTokenAlive() {
+        XCTAssertFalse(SonosCredential(accessToken: "t", expiresAt: nil, refreshToken: nil).refreshTokenAlive)
+        XCTAssertFalse(SonosCredential(accessToken: "t", expiresAt: nil, refreshToken: "").refreshTokenAlive)
+        XCTAssertTrue(SonosCredential(accessToken: "t", expiresAt: nil, refreshToken: "r").refreshTokenAlive)
+    }
 }

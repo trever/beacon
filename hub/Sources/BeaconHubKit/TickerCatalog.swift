@@ -23,10 +23,15 @@ func clampUTF8(_ s: String, _ maxBytes: Int) -> String {
 public struct TickerCandidate: Equatable {
     public var row: TickerRow
     public var sourceLabel: String
+    /// Yahoo's human-readable exchange label (e.g. "NASDAQ", "NYSE"), when the search result carried one.
+    /// nil for Binance and for any Yahoo result missing it. Lets the chart-instrument search tell same-
+    /// named lookalikes apart (design 2026-07-26-yahoo-symbol-search).
+    public var exchange: String?
 
-    public init(row: TickerRow, sourceLabel: String) {
+    public init(row: TickerRow, sourceLabel: String, exchange: String? = nil) {
         self.row = row
         self.sourceLabel = sourceLabel
+        self.exchange = exchange
     }
 }
 
@@ -123,13 +128,17 @@ public enum YahooCatalog {
             let rawName = (q["shortname"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? (q["longname"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? symbol
+            // exchDisp is Yahoo's human-readable exchange label ("NASDAQ"); exchange is the short code
+            // ("NMS") used only when exchDisp is absent. Either way it's display-only -- never part of sym.
+            let exchange = (q["exchDisp"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (q["exchange"] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let d = TickerDefaults.yahoo
             let sym = SymbolEncoding.yahooPath(symbol)
             guard sym.utf8.count <= TickerLimits.symMaxBytes else { continue }       // device can't store it
             let name = clampUTF8(rawName, TickerLimits.nameMaxBytes)                 // long company names get trimmed
             let row = TickerRow(id: TickerID.make(src: .yahoo, sym: sym), src: .yahoo, sym: sym,
                                 name: name, kind: kind, cadence: d.cadence, stale: d.stale, basis: d.basis)
-            out.append(TickerCandidate(row: row, sourceLabel: label))
+            out.append(TickerCandidate(row: row, sourceLabel: label, exchange: exchange))
         }
         return out
     }

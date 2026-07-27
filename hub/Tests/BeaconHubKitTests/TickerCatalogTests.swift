@@ -104,6 +104,22 @@ final class YahooCatalogTests: XCTestCase {
         XCTAssertTrue(YahooCatalog.map(searchJSON: Data("{}".utf8)).isEmpty)
     }
 
+    // The chart-instrument search (design 2026-07-26-yahoo-symbol-search) shows the exchange so lookalike
+    // symbols on different exchanges are distinguishable. exchDisp wins when present; exchange is the
+    // fallback; a result with neither carries a nil exchange rather than a placeholder.
+    func testExchangePrefersDisplayNameOverCode() {
+        let got = YahooCatalog.map(searchJSON: Data(#"""
+        {"quotes":[
+          {"symbol":"AAPL","shortname":"Apple Inc.","quoteType":"EQUITY","exchDisp":"NASDAQ","exchange":"NMS"},
+          {"symbol":"SHEL.L","shortname":"Shell plc","quoteType":"EQUITY","exchange":"LSE"},
+          {"symbol":"BP","shortname":"BP p.l.c.","quoteType":"EQUITY"}
+        ]}
+        """#.utf8))
+        XCTAssertEqual(got.first { $0.row.sym == "AAPL" }?.exchange, "NASDAQ")
+        XCTAssertEqual(got.first { $0.row.sym == "SHEL.L" }?.exchange, "LSE")
+        XCTAssertNil(got.first { $0.row.sym == "BP" }?.exchange)
+    }
+
     // Regression (#92): a long company name must be clamped to the device's name buffer (<=23 bytes),
     // else the device rejects the whole snapshot as "malformed". TSMC was the repro.
     func testLongNameClampedToDeviceBound() {
