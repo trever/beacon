@@ -105,7 +105,13 @@ struct ComplicationEditorView: View {
                     HubBadge("2 slots")
                 }
                 if row.isOrphan {
-                    HubBadge("unknown", tint: HubColor.stateWarn)
+                    // ink.primary, not state.warn (WS-8): `HubBadge` is text-only, no glyph slot to
+                    // offload colour onto -- exactly the "state colour alone" pattern design SS2.3 bans.
+                    // The WS-8 arithmetic contrast tests measure that `state.warn` as `type.caption` text
+                    // is ~2.1-2.3:1 in light appearance, well below the 4.5:1 floor. `stackRowSubtitle`'s
+                    // "Not in this build's catalog" line, right beside this badge, already elaborates once
+                    // the badge itself is legible, so it stays `ink.secondary`.
+                    HubBadge("unknown", tint: HubColor.inkPrimary)
                 }
                 IconButton(systemImage: "xmark.circle.fill", label: "Remove \(title)") {
                     removeRow(at: index)
@@ -157,9 +163,11 @@ struct ComplicationEditorView: View {
     @ViewBuilder private var warnings: some View {
         // Transient refusal (capacity / duplicate / invalid arg): it clears on the next successful drop,
         // so it stays an inline `type.secondary` line rather than the standing `StatusRow` treatment
-        // (plan WS-3 item 5's explicitly-allowed "may stay inline" option).
+        // (plan WS-3 item 5's explicitly-allowed "may stay inline" option) -- that allowance governs
+        // LAYOUT, not ink colour. The message is the sole explanation of why a drop was just refused, with
+        // nothing else on screen saying so, so the ink is `ink.primary` (WS-8's sole-carrier promotion).
         if let dropMessage {
-            Text(dropMessage).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+            Text(dropMessage).font(HubType.secondary).foregroundStyle(HubColor.inkPrimary)
         }
         // The blank-Home warning is a genuine standing state until the user places something, so it takes
         // the full `StatusRow` `warn` treatment -- the glyph carries the colour, the word stays
@@ -290,7 +298,11 @@ private struct ArgPickerList: View {
                 .padding(HubSpace.s)
             Divider()
             if options.isEmpty {
-                Text("Nothing to choose from yet.").font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                // ink.primary (WS-8): this line is this popover's entire content when empty -- the same
+                // "there is nothing here" headline `EmptyState.title` already renders in `ink.primary`
+                // elsewhere in the product, so this matches that established convention rather than
+                // introducing a second, dimmer way to say the same kind of thing.
+                Text("Nothing to choose from yet.").font(HubType.secondary).foregroundStyle(HubColor.inkPrimary)
                     .padding(HubSpace.s)
             } else {
                 ScrollView {

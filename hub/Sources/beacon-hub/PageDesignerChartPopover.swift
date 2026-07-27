@@ -25,7 +25,12 @@ struct ChartInstrumentPopover: View {
         VStack(alignment: .leading, spacing: HubSpace.s) {
             searchField
             if let capMessage {
-                Text(capMessage).font(HubType.caption).foregroundStyle(HubColor.stateWarn)
+                // ink.primary, not state.warn (WS-8): no glyph accompanies this line, so the colour was
+                // carrying the warning alone -- design SS2.3's banned pattern. The WS-8 arithmetic
+                // contrast tests measure `state.warn` as `type.caption` text at ~2.1-2.3:1 in light
+                // appearance, below the 4.5:1 floor this line owes as the sole explanation of why the
+                // selection did not take.
+                Text(capMessage).font(HubType.caption).foregroundStyle(HubColor.inkPrimary)
             }
             if let orphan {
                 Text("Currently set to \(orphan), which is not in the ticker list.")
@@ -84,8 +89,11 @@ struct ChartInstrumentPopover: View {
     // one) -- the same "at least two fields where a second field exists" rule the Sonos room menu follows.
     @ViewBuilder private var existingRows: some View {
         if eligible.isEmpty {
+            // ink.primary (WS-8): the entire content of this list when there is nothing eligible --
+            // matches the `EmptyState.title` convention used everywhere else in the product for the same
+            // "there is nothing here" headline, rather than a second, dimmer way to say it.
             Text("No Yahoo tickers yet. Type to search Yahoo Finance.")
-                .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                .font(HubType.secondary).foregroundStyle(HubColor.inkPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(HubSpace.s)
         } else {
             ForEach(eligible, id: \.id) { t in
@@ -99,8 +107,11 @@ struct ChartInstrumentPopover: View {
 
     @ViewBuilder private var searchRows: some View {
         if results.isEmpty {
+            // ink.primary (WS-8): same "entire content of the list" reasoning as `existingRows` above --
+            // "No matches." is the sole statement the search came up empty, and "Searching…" occupies the
+            // identical slot while a request is in flight, so both branches of this one Text share the ink.
             Text(searching ? "Searching\u{2026}" : "No matches.")
-                .font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                .font(HubType.secondary).foregroundStyle(HubColor.inkPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(HubSpace.s)
         } else {
             ForEach(results, id: \.row.id) { c in

@@ -67,8 +67,15 @@ struct GeneralTab: View {
 }
 
 #if DEBUG
-#Preview {
+#Preview("Light") {
     GeneralTab(model: HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000)))
         .frame(width: 720, height: 560)
+        .preferredColorScheme(.light)
+}
+
+#Preview("Dark") {
+    GeneralTab(model: HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000)))
+        .frame(width: 720, height: 560)
+        .preferredColorScheme(.dark)
 }
 #endif

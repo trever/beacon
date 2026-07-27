@@ -150,6 +150,115 @@ final class HubStyleTests: XCTestCase {
                 "ink.tertiary under \(appearance.rawValue)")
         }
     }
+
+    // MARK: - WS-8: the remaining SS8.1 pairings
+
+    // design SS8.1's own wording: "Includes text over fill.card, fill.selected, and the popover
+    // material." WS-0 covered `surface.content` and `fill.card`; this covers the third named backdrop.
+    // `ListRow` is the real call site -- its `primary`/`secondary` text sit over `fillSelected` whenever
+    // `isCurrent` is true (HubRows.swift).
+    func testInkPrimaryClearsAccessibleContrastOverFillSelectedInBothAppearances() {
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let selected = selectedOverWindow(appearance: appearance)
+            let primary = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.inkPrimary, appearance: appearance), over: selected)
+            XCTAssertGreaterThanOrEqual(HubColorTestSupport.contrastRatio(primary, selected), 4.5,
+                "ink.primary over fill.selected under \(appearance.rawValue)")
+        }
+    }
+
+    // Same known shortfall as `testInkSecondaryClearsAccessibleContrastInDarkAppearanceOnly` above, over
+    // the third SS8.1 backdrop: `fill.selected` composites over the same `surface.window` `fill.card`
+    // does, and neither ink token's own alpha changes by backdrop, so `ink.secondary` reproduces the
+    // identical light-appearance shortfall here. Pinning the measured value rather than asserting a bare
+    // "< 4.5" for the same reason WS-0 did: an accidental change to the measured number should be noticed,
+    // not silently absorbed as "still red, still fine."
+    func testInkSecondaryOverFillSelectedClearsInDarkAppearanceOnly() {
+        let dark = selectedOverWindow(appearance: .darkAqua)
+        let secondaryDark = HubColorTestSupport.composite(
+            HubColorTestSupport.resolve(HubColor.inkSecondary, appearance: .darkAqua), over: dark)
+        XCTAssertGreaterThanOrEqual(HubColorTestSupport.contrastRatio(secondaryDark, dark), 4.5,
+            "ink.secondary over fill.selected under darkAqua")
+
+        let light = selectedOverWindow(appearance: .aqua)
+        let secondaryLight = HubColorTestSupport.composite(
+            HubColorTestSupport.resolve(HubColor.inkSecondary, appearance: .aqua), over: light)
+        XCTAssertEqual(HubColorTestSupport.contrastRatio(secondaryLight, light), 3.83, accuracy: 0.15,
+            "ink.secondary over fill.selected under aqua -- expected the known ~3.83:1 shortfall")
+    }
+
+    // design SS8.1: "type.pane, type.figure (>= 17 pt, or >= 14 pt bold) -- 3:1". Both roles render in
+    // `ink.primary` everywhere in the product today (WS-8 moved `WindowRow.pctText` -- the one `type.figure`
+    // site that used to render in a `state.*` colour instead -- onto `ink.primary` for exactly this reason;
+    // see HubPanel.swift). `ink.primary` already clears the STRICTER 4.5:1 floor tested above, so this
+    // pins the SS8.1-specific 3:1 floor explicitly rather than leaving it as an inference from a stricter
+    // number, per the brief's "every token pairing SS8.1 names."
+    func testInkPrimaryClearsTheRelaxedLargeTextFloorInBothAppearances() {
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let backdrop = HubColorTestSupport.resolve(HubColor.surfaceContent, appearance: appearance)
+            let primary = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.inkPrimary, appearance: appearance), over: backdrop)
+            XCTAssertGreaterThanOrEqual(HubColorTestSupport.contrastRatio(primary, backdrop), 3.0,
+                "ink.primary (type.pane/type.figure floor) over surface.content under \(appearance.rawValue)")
+        }
+    }
+
+    // design SS8.1: "Icons that carry meaning -- 3:1". `state.ok`/`state.warn`/`state.error` are the glyph
+    // tints `HubState.tint` hands to every `StatusRow`/`StatusLine` icon (HubRows.swift) -- always paired
+    // with a `type.body` word already pinned at `ink.primary` (design SS2.3's "the word is ink.primary,
+    // not the state colour"; `testInkPrimaryClearsAccessibleContrastOverContentAndCardInBothAppearances`
+    // above covers that word). Design SS2.3 states explicitly that in THIS paired configuration the glyph
+    // is decoration and "the contrast requirement falls on the text, which passes" -- so this test does not
+    // assert the icon-alone floor for `state.ok`/`state.warn` (measured below and pinned as a KNOWN,
+    // explicitly-exempted shortfall, the same treatment `ink.tertiary` gets above); it exists to make that
+    // exemption traceable rather than silently unverified, and to catch a REGRESSION if either colour is
+    // ever used as text with no paired word (WS-8 found and fixed three such sites -- ComplicationEditorView's
+    // "unknown" badge, TickerEditorView's at-capacity counter, PageDesignerChartPopover's cap message --
+    // all now `ink.primary`, all covered by the same tests above rather than this one).
+    func testStateGlyphTintsMeasuredAgainstTheIconFloor() {
+        for appearance: NSAppearance.Name in [.aqua, .darkAqua] {
+            let contentBG = HubColorTestSupport.resolve(HubColor.surfaceContent, appearance: appearance)
+            let ok = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.stateOk, appearance: appearance), over: contentBG)
+            let warn = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.stateWarn, appearance: appearance), over: contentBG)
+            let error = HubColorTestSupport.composite(
+                HubColorTestSupport.resolve(HubColor.stateError, appearance: appearance), over: contentBG)
+            let okRatio = HubColorTestSupport.contrastRatio(ok, contentBG)
+            let warnRatio = HubColorTestSupport.contrastRatio(warn, contentBG)
+            let errorRatio = HubColorTestSupport.contrastRatio(error, contentBG)
+            switch appearance {
+            case .aqua:
+                // Both measured BELOW the 3:1 icon floor -- the known, design-exempted shortfall (glyph is
+                // decoration; the accompanying word carries the requirement). Pinned so a future change to
+                // NSColor.systemGreen/systemOrange, or to this token's construction, gets noticed.
+                XCTAssertLessThan(okRatio, 3.0, "state.ok icon-alone under aqua (exempted by design SS2.3)")
+                XCTAssertLessThan(warnRatio, 3.0, "state.warn icon-alone under aqua (exempted by design SS2.3)")
+                // state.error happens to clear the icon floor even alone -- not a design guarantee, just
+                // where NSColor.systemRed's luminance lands; pinned as a fact, not asserted as a promise.
+                XCTAssertGreaterThanOrEqual(errorRatio, 3.0, "state.error icon-alone under aqua")
+            case .darkAqua:
+                // All three clear the icon floor unaided in dark appearance.
+                XCTAssertGreaterThanOrEqual(okRatio, 3.0, "state.ok icon-alone under darkAqua")
+                XCTAssertGreaterThanOrEqual(warnRatio, 3.0, "state.warn icon-alone under darkAqua")
+                XCTAssertGreaterThanOrEqual(errorRatio, 3.0, "state.error icon-alone under darkAqua")
+            default:
+                XCTFail("unexpected appearance \(appearance.rawValue)")
+            }
+        }
+    }
+
+    // design SS8.1's third row, restated precisely: `ink.onAccent` (the badge glyph on a filled `accent`
+    // circle, HubPanel's `HeaderModule`) is the one "icon that carries meaning" against a NON-content
+    // backdrop already covered, by `testInkOnAccentClearsIconContrastOverAccentInBothAppearances` above --
+    // noted here only so this section's header comment is a complete map of SS8.1 to tests, not a second
+    // assertion of the same fact.
+
+    private func selectedOverWindow(appearance: NSAppearance.Name) -> HubColorTestSupport.RGBA {
+        let windowBG = HubColorTestSupport.resolve(HubColor.surfaceWindow, appearance: appearance)
+        return HubColorTestSupport.composite(
+            HubColorTestSupport.resolve(HubColor.fillSelected, appearance: appearance), over: windowBG)
+    }
 }
 
 // MARK: - Test-only colour math

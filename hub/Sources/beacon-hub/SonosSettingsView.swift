@@ -314,7 +314,7 @@ struct SonosSettingsSection: View {
 }
 
 #if DEBUG
-#Preview {
+#Preview("Light") {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.onLoadSonosSetup = {
         SonosSetupSnapshot(storedClientID: "abc123", effectiveClientID: "abc123", usingEnvOverride: false,
@@ -322,5 +322,17 @@ struct SonosSettingsSection: View {
                            status: .authorized(expiresAt: Date().addingTimeInterval(3600)))
     }
     return SonosSettingsSection(model: m).padding(HubSpace.l).frame(width: 460)
+        .preferredColorScheme(.light)
+}
+
+#Preview("Dark") {
+    let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
+    m.onLoadSonosSetup = {
+        SonosSetupSnapshot(storedClientID: "abc123", effectiveClientID: "abc123", usingEnvOverride: false,
+                           secretStored: true, secretCharCount: 44,
+                           status: .authorized(expiresAt: Date().addingTimeInterval(3600)))
+    }
+    return SonosSettingsSection(model: m).padding(HubSpace.l).frame(width: 460)
+        .preferredColorScheme(.dark)
 }
 #endif

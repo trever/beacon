@@ -84,7 +84,12 @@ private struct HeaderModule: View {
                     VStack(alignment: .leading, spacing: HubSpace.hair) {
                         Text(deviceName).font(HubType.section).foregroundStyle(HubColor.inkPrimary)
                             .lineLimit(1).minimumScaleFactor(0.7)
-                        Text(statusText).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
+                        // ink.primary (WS-8): `deviceName` above is only the device's NAME, not its link
+                        // state -- for every case but `.connected` (the only one with the redundant green
+                        // dot below), this line is the sole statement of what is happening ("Bluetooth is
+                        // off", "Pairing failed", "Searching for device…"), so it is the sole-carrier case
+                        // the WS-8 ruling promotes, not a caption under an already-stated primary fact.
+                        Text(statusText).font(HubType.secondary).foregroundStyle(HubColor.inkPrimary)
                             .lineLimit(1)
                         Text(syncText).font(HubType.secondary).foregroundStyle(HubColor.inkSecondary)
                             .lineLimit(1)
@@ -216,11 +221,20 @@ private struct WindowRow: View {
             // inside a fixed 340 pt popover holding two `ProviderCard`s side by side (plan WS-6 trap 2).
             // `lineLimit(1)` + `minimumScaleFactor(0.7)` keep "100%" from clipping at the largest text
             // size rather than exempting this site from the token.
+            //
+            // ink.primary, unconditionally (WS-8): this used to render in `color` (state.ok/warn/error)
+            // with no glyph anywhere to offload that colour onto -- exactly the "state colour alone"
+            // pattern design SS2.3 bans, and the WS-8 arithmetic contrast tests measure WHY it matters
+            // here specifically: state.ok/state.warn as TEXT measure ~2.0-2.3:1 in light appearance,
+            // below even §8.1's relaxed 3:1 floor for `type.figure`-sized text, let alone 4.5:1. The
+            // number itself is content the user reads regardless of level, so it stays legible in
+            // `ink.primary`; `color` now carries the level ONLY on `LevelBar` below, which is a
+            // decorative reinforcement of a fact the (now always-legible) number already states.
             Text(pctText)
                 .font(HubType.figure)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .foregroundStyle(color ?? HubColor.inkSecondary)
+                .foregroundStyle(HubColor.inkPrimary)
             LevelBar(fraction: usageFillFraction(window.pct), color: color)
         }
     }
@@ -312,7 +326,8 @@ private struct ActionBar: View {
             actionItem(icon: "gearshape", label: "Settings…") {
                 closeAndRun(model.onOpenSettings)
             }
-            actionItem(icon: "power", label: "Quit Beacon", tint: HubColor.stateError) {
+            actionItem(icon: "power", label: "Quit Beacon", tint: HubColor.stateError,
+                       captionTint: HubColor.inkPrimary) {
                 closeAndRun(model.onQuit)
             }
         }
@@ -322,19 +337,30 @@ private struct ActionBar: View {
     // is what makes "the button is labelled" structural rather than something a call site can skip. The
     // caption below is additive -- it keeps the row's three actions visually named, exactly as they are
     // today -- and is hidden from the accessibility tree so VoiceOver reads `IconButton`'s own label once,
-    // not the icon and the caption both. `IconButton` now takes `tint` (shared-layer gap #2, closed), so
-    // `tint` here reaches the icon itself as well as the caption -- "Quit Beacon" is `state.error` red on
-    // both, not just the caption underneath it.
+    // not the icon and the caption both. `IconButton` still takes `tint` for the ICON (shared-layer gap
+    // #2, closed).
+    //
+    // `captionTint` (WS-8) is new: the CAPTION used to share `tint` with the icon, so "Quit Beacon"'s
+    // caption rendered in `state.error` red -- exactly the "Red 10 pt text... fails contrast and reads as
+    // decoration" anti-pattern design SS3.9 already names and fixes elsewhere (its own remedy: the WORD is
+    // `ink.primary`, colour lives on the glyph beside it). The WS-8 arithmetic contrast tests measure why
+    // this specific site needed the same fix: `state.error` as `type.caption` TEXT is ~3.3-3.6:1 in light
+    // appearance, below the 4.5:1 floor `type.body`-and-smaller text owes -- even though the icon, held to
+    // the lower 3:1 "icon that carries meaning" floor, clears it. So the icon keeps `tint` (state.error);
+    // only the caption gets an independent, always-legible ink. Nil default keeps "Tickers…"/"Settings…"
+    // unchanged at `ink.secondary` -- both are supporting captions beside a self-explanatory icon with its
+    // own tooltip and accessibility label, not sole-carrier content, so this is not the sole-carrier
+    // promotion WS-8's `ink.secondary` audit covers.
     //
     // This vertical icon-above-caption composition itself stays a local helper rather than a shared
     // component: it has exactly one file's worth of call sites (the three below), already built from
     // shared leaf pieces (`IconButton` + `Text`), and a shared type with one consumer is the thing design
     // SS0 warns against adding (shared-layer gap #3 -- see this workstream's final report).
     private func actionItem(icon: String, label: String, tint: Color = HubColor.inkSecondary,
-                             action: @escaping () -> Void) -> some View {
+                             captionTint: Color? = nil, action: @escaping () -> Void) -> some View {
         VStack(spacing: HubSpace.xs) {
             IconButton(systemImage: icon, label: label, tint: tint, action: action)
-            Text(label).font(HubType.caption).foregroundStyle(tint).lineLimit(1)
+            Text(label).font(HubType.caption).foregroundStyle(captionTint ?? HubColor.inkSecondary).lineLimit(1)
                 .minimumScaleFactor(0.7)
                 .accessibilityHidden(true)
         }
@@ -343,7 +369,7 @@ private struct ActionBar: View {
 }
 
 #if DEBUG
-#Preview {
+#Preview("Light") {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.link = .connected("Beacon-8428")
     m.lastSync = Date(timeIntervalSince1970: 1_733_800_000)
@@ -360,6 +386,7 @@ private struct ActionBar: View {
         ProviderToggle(id: "codex", label: "Codex", supportsUsage: true, supportsBuddy: false, usageOn: true, buddyOn: true),
     ]
     return HubPanel(model: m, closeAndRun: { $0() })
+        .preferredColorScheme(.light)
 }
 
 #Preview("Dark") {

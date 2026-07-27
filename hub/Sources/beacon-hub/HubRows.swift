@@ -205,7 +205,13 @@ struct StatusLine: View {
         case .compact:
             HStack(spacing: HubSpace.xs) {
                 Image(systemName: state.glyph).foregroundStyle(state.tint)
-                Text(title).foregroundStyle(HubColor.inkSecondary)
+                // ink.primary (WS-8): `.compact` has no separate title/subtitle split like `.detail`
+                // above -- this word IS the whole line's content ("Not synced" / "Syncing…" / "Synced N" /
+                // "Error: …" at `TickerEditorView`'s sync badge, its only call site today), so it was the
+                // sole-carrier case the WS-8 ruling promotes. It also brings `.compact` in line with
+                // `.detail`, whose title is `ink.primary` already -- the two styles disagreeing on this
+                // was itself an inconsistency, not a considered difference.
+                Text(title).foregroundStyle(HubColor.inkPrimary)
             }
             .font(HubType.secondary)
         }
