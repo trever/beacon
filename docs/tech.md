@@ -36,7 +36,7 @@ Target: **Waveshare ESP32-S3-Touch-AMOLED-2.16**. Full detail in `docs/research/
 | Audio | ES8311 out + ES7210 mic (separate chips) — unused (out of scope) |
 | PMU | **AXP2101**, I2C — init rails before display |
 | Pins | QSPI CS12 SCLK38 SDIO 4/5/6/7 RST2 · I2C SDA15 SCL14 · Touch INT11 |
-| Buttons | PWR (~1s on / ~5-6s off, via AXP), BOOT, user-IO18. **No RST.** |
+| Buttons | Left = **BOOT**/GPIO0 (`evt=0x01`), centre = **PWR** (~1s on / ~5-6s off, via AXP — not a GPIO, logs nothing), right = **user**/GPIO18 (`evt=0x02`). Active LOW: released reads 1, held reads 0 (measured 2026-07-27). **No RST.** |
 | Radio | WiFi 2.4GHz b/g/n only; BLE 5 (LE) only |
 
 **Measured (spike):** display+power idle ≈ **338KB** free internal heap. WiFi + BLE(Bluedroid, **advertising only**) + **insecure** TLS + display ≈ **160KB** min free internal heap, **8.38MB** PSRAM free, 0 crashes, TLS fetch ~1.5s.

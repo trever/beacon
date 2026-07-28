@@ -464,6 +464,41 @@ USB CDC has enumerated and neither probe's output is being eaten.
 
 **Then discard the instrumented build and reflash `env:beacon`.**
 
+### Measured results (2026-07-27, unit `Beacon-8428`)
+
+**HC-1 — PASSED, outcome row "released `1`, held `0`": active LOW as assumed. The hatch proceeds as
+designed.** Raw serial, both from `env:beacon` at `07eb7d3`:
+
+```
+buttons: prev(gpio0)=1 next(gpio18)=1 (expect 1 = released)      <- nothing held
+buttons: prev(gpio0)=1 next(gpio18)=0 (expect 1 = released)      <- user button held through power-on
+```
+
+`buttons_begin()` logs at **~1.14 s** after reset, while the panel init (`CO5300 up`) lands at ~1.05 s
+and visible UI (`setup done`) not until ~2.0 s. **Hold the button well past the screen lighting up** —
+an instruction to hold "until the display comes up" reads the pin after release and produces a false
+`1`, which is indistinguishable from the escalate-and-stop outcome. That happened on the first attempt
+here.
+
+**Physical button positions on this unit, measured by pressing each and reading `buttons_poll`:
+left = BOOT (GPIO0, `evt=0x01`), centre = PWR (AXP-owned, logs nothing), right = user (GPIO18,
+`evt=0x02`).** Recorded because no repo doc stated which physical button is which, and the first HC-1
+attempt was very likely spent holding the wrong one.
+
+**HC-2 — PARTIAL. Released case only; the held case is still outstanding.** Instrumented image built in
+a scratch worktree, flashed, then discarded and `env:beacon` reflashed:
+
+```
+hc2: pre-power gpio18=1
+hc2: post-power gpio18=1
+```
+
+`pre == post` with the button **released**. That is one of the four boots this section asks for, and it
+is the less informative pair: a pad that floated high before `power_begin()` regardless of the switch
+would produce exactly this. **The discriminating measurement is a held boot showing `pre-power
+gpio18=0`** — without it, "GPIO18 is readable before the rails come up" is not established, only
+"GPIO18 is not stuck low". Do the two held boots before WS-1 writes hatch code.
+
 ### Acceptance gate
 
 ```bash
