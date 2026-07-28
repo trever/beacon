@@ -422,11 +422,23 @@ tile this refers to). Mirror of `hub_proto.cpp` (`hub_build_sart_stat`) and `Bea
 hub has never learned the device's IP before this frame existed. It needs to: both to pick which of
 *its own* network interfaces to advertise a LAN asset URL on (a Mac may have Wi-Fi + Ethernet + a VPN
 `utun` + a Thunderbolt bridge, and only one of them is routable to the device), and, later, to enforce
-OTA's "accept only the connection whose remote endpoint matches this IP" restriction. Emitted **once per
-BLE connection**, alongside the existing ticker report, latching together under the same
-latch-only-on-full-success discipline as §B3 (`hub_task.cpp`'s `!s_reported` site). Mirror of
+OTA's "accept only the connection whose remote endpoint matches this IP" restriction. Mirror of
 `hub_proto.cpp` (`hub_build_device_report`) / `hub_report.cpp` (`hub_emit_device_report`) and
 `BeaconHubKit/Protocol.swift` (`DeviceCommand.deviceReport`).
+
+**Emitted MORE THAN ONCE per BLE connection. Treat it as a repeatable, last-writer-wins address
+update, never a one-shot event.** It first fires alongside the ticker report at `hub_task.cpp`'s
+`!s_reported` site, under §B3's latch-only-on-full-success discipline — but on a cold boot that moment
+is **about nine seconds before WiFi joins**, so the first report of a connection routinely carries no
+`ip` at all. Measured on hardware 2026-07-27: `device report sent (ip=(none))` at ~3.3 s,
+`wifi up ... ip=192.168.1.19` at ~12.2 s. The device therefore re-emits whenever its live address stops
+matching what the current connection was told, checked at a ~1 s cadence, which also covers a DHCP
+renewal onto a different address.
+
+A hub that arms its asset server on the *first* report of a connection will arm against no address at
+all. WS-4's `SonosArtPublisher` holds a pending republish until an `ip` actually arrives rather than
+consuming it on the first empty report — the bug that guard prevents is a republish lost for the
+lifetime of the connection.
 
 ```json
 {"v":1,"cmd":"report","what":"device","ip":"192.168.1.42"}
