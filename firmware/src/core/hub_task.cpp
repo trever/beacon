@@ -31,6 +31,13 @@ static HubLinkBle s_link;
 static HubLink*   g_link = nullptr;   // null until the task starts (BEACON_DEV leaves it null)
 static bool       s_was_connected = false;
 static bool       s_reported = false;   // emitted the once-per-connection ticker report? (issue #105)
+// The IPv4 address the CURRENT connection has been told about, as a raw v4 word (0 = "told: no IP").
+// BLE connects and the reports fire ~9 s before WiFi joins on a cold boot -- measured 2026-07-27:
+// "device report sent (ip=(none))" at ~3.3 s, "wifi up ... ip=192.168.1.19" at ~12.2 s. The send
+// succeeds, so s_reported latches and the hub would never learn the address for the whole connection.
+// D-1 exists precisely so the hub can pick which of its own interfaces to advertise, so a permanently
+// absent IP is not a cosmetic gap -- it disables the LAN plane. The loop re-reports on any change.
+static uint32_t   s_reported_ip_v4 = 0;
 static uint32_t   s_min_int_free  = UINT32_MAX;
 
 // Reassembled-across-parts config snapshot (design §2). Single-threaded: on_frame runs only on Core-0.
@@ -164,7 +171,12 @@ static bool send_device_report(void) {
   const char* ip = nullptr;
   if (net_is_up()) { ip_str = WiFi.localIP().toString(); ip = ip_str.c_str(); }
   bool ok = hub_emit_device_report(g_link, ip);
-  if (ok) LOGI("hub: device report sent (ip=%s)", ip ? ip : "(none)");
+  if (ok) {
+    // Remember WHICH address this connection has been told about, so the loop below can notice when it
+    // stops being true. 0 = "the hub has been told we have no IP" -- a real state, not "unreported".
+    s_reported_ip_v4 = net_is_up() ? (uint32_t)WiFi.localIP() : 0;
+    LOGI("hub: device report sent (ip=%s)", ip ? ip : "(none)");
+  }
   return ok;
 }
 
@@ -308,8 +320,19 @@ static void hub_task(void*) {
     ds_tick_open(mono);           // open-feedback hold/timeout (issue #110 Phase 2)
 
     bool c = s_link.isConnected();
-    if (s_was_connected && !c) { ds_set_hub_offline(); s_reported = false; }   // re-report next connection
+    if (s_was_connected && !c) {                       // re-report next connection
+      ds_set_hub_offline(); s_reported = false; s_reported_ip_v4 = 0;
+    }
     s_was_connected = c;
+
+    // Re-report the device IP whenever it stops matching what this connection was told (~1 s cadence).
+    // Covers the cold-boot race above and a DHCP renewal onto a different address. Compared as a raw v4
+    // word rather than via toString() so the common no-change case allocates nothing. Only runs once
+    // the initial pair has latched, so it can never race the first report.
+    if (c && s_reported && k % 50 == 0) {
+      uint32_t now_ip = net_is_up() ? (uint32_t)WiFi.localIP() : 0;
+      if (now_ip != s_reported_ip_v4) send_device_report();
+    }
 
     uint32_t f = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (f < s_min_int_free) s_min_int_free = f;        // running min for the P2 heap re-measure
