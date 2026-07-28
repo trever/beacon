@@ -70,7 +70,7 @@ touch the same declaration.
 |---|---|
 | `hub/Info.plist` | Album art (Phase B) creates the `NSLocalNetworkUsageDescription` key; Phase 0 only verifies it landed — see P-1 below |
 | `.github/workflows/release-firmware.yml` | Phase 0 (one line: `FIRMWARE_VERSION`), then WS-5 (`SHA256SUMS`) |
-| `hub/CONTRACT.md` | Phase 0 (new block is **§A4**, not §A3 — §A3 was claimed by the complications track; see Phase 0's wire-layer section) |
+| `hub/CONTRACT.md` | Phase 0 (new block is **§A5**, not §A3 — §A3 was claimed by the complications track and §A4 by Sonos album art, which shipped first; see Phase 0's wire-layer section) |
 | `firmware/src/core/records.h`, `datastore.{h,cpp}`, `hub_proto.{h,cpp}` | Phase 0 |
 | `firmware/src/core/hub_task.cpp` | Phase 0 (D1 emit), WS-1 (`hatch` flip), WS-2 (`ota` dispatch) — all serialized |
 | `firmware/test/test_ota_proto/` | Phase 0 |
@@ -185,8 +185,10 @@ Hub:
 - `hub/Sources/beacon-hub/AppDelegate.swift` — route the new `DeviceCommand` cases into
   `model.firmware`. Nothing else.
 - `hub/Tests/BeaconHubKitTests/ProtocolTests.swift`, `hub/Tests/BeaconHubKitTests/FirmwareUpdateStateTests.swift` (**new**).
-- `hub/CONTRACT.md` — new **§A4** (`ota` frame — **not §A3**; §A3 is now "Hub -> device complication
-  config", claimed by the complications track since this plan was written) and additions to **§B**
+- `hub/CONTRACT.md` — new **§A5** (`ota` frame — **not §A3 or §A4**; §A3 is "Hub -> device complication
+  config", claimed by the complications track since this plan was written, and §A4 is "Hub -> device
+  Sonos album art frame", claimed by album art, which shipped first — D-8 of that project's plan) and
+  additions to **§B**
   (`ota_ack`, `ota_go`, `ota_stat`) and **§B3** (`report` `what:"device"`, including the `hatch`
   interlock).
 
@@ -519,8 +521,8 @@ Plus, non-automatable and required:
   `firmwareSection` stub in `DeviceTab.swift`, populated), and the Local Network row renders in both the
   granted and revoked states — the latter should already pass if album art's Phase B landed cleanly;
   treat a failure here as a real regression to fix, not an OTA-side bug to route around.
-- `hub/CONTRACT.md` §A4/§B/§B3 written (not §A3 — see Files to touch), and every field cap in it matches
-  `records.h` byte for byte.
+- `hub/CONTRACT.md` §A5/§B/§B3 written (not §A3 or §A4 — see Files to touch), and every field cap in it
+  matches `records.h` byte for byte.
 
 ### Traps
 
@@ -1058,10 +1060,14 @@ Concretely, and this is an acceptance item, not a style note:
 - **Confirm no OTA vocabulary crept into the type while nobody was looking**, and that album art's own
   file-header comment names OTA as a second caller (it should, since the design was written with this
   plan in view). Flag it rather than silently "fixing" it if it does not — that is album art's file.
-- The API is payload-agnostic and should already look like this (verify, do not assume):
+- The API is payload-agnostic and should already look like this (verify, do not assume). **Note it is
+  completion-based, not a synchronous `-> URL` return** (D-4 of the album-art plan): `NWListener`
+  assigns its ephemeral port asynchronously, so `arm()` cannot hand back a `URL` before the listener
+  reaches `.ready`.
   ```swift
   func arm(_ data: Data, contentType: String, peer: IPv4Address,
-           ttl: TimeInterval, maxServes: Int) -> URL     // http://<hubIP>:<port>/a/<32 hex>
+           ttl: TimeInterval, maxServes: Int,
+           completion: @escaping (Result<URL, LanAssetServer.ArmError>) -> Void)   // http://<hubIP>:<port>/a/<32 hex>
   func disarm()
   ```
 - **The generality proof — "arm it with a small non-firmware payload and fetch it successfully" — is

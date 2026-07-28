@@ -107,6 +107,17 @@ The mockup device frames render the true rounded shape; [`docs/design/mockups/sa
 - **Stat block** — name + big figure + detail line + gauge. Used by AI Usage.
 - **Prompt** — alert label + tool + mono command hint + Deny/Approve split actions. Used by Coding Buddy.
 - **Eyebrow** — mono `BEACON / <SCREEN>` + right-side status (used sparingly, one per screen — not on every section).
+- **Sonos art tile** (`sonos` screen) — a single 200x200 `lv_img`, raw big-endian RGB565 rendered
+  hub-side (no on-device image decoder), aspect-fit letterboxed on black, hard-cut on track change (no
+  crossfade in this phase). **Two forms of the screen, not one view with the tile hidden:** the **art
+  form** shows room + right-aligned play state + hairline + tile + track + artist, with **no album
+  line** — that text is the price paid for a fixed 200x200 tile, and it is paid deliberately, not an
+  oversight. The **no-art form** is the original text-only layout (room, track, artist, **album**),
+  unchanged, used whenever there is no art: never fetched yet, the fetch failed with nothing cached,
+  or the Settings album-art toggle is off. The top 104 px (room + play state + hairline) is
+  byte-identical between the two forms, so the switch reads as quiet rather than as a layout jump.
+  Hub-offline dims the tile to `LV_OPA_40` (opacity, not a blank) rather than asserting "nothing
+  playing", which would be false while the last-known art is still valid.
 
 ## Home complications grid
 

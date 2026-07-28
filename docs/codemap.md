@@ -1,6 +1,6 @@
 # Beacon — code map
 
-> **What this is:** a concern => file index, plus end-to-end traces of the five data paths. Read this
+> **What this is:** a concern => file index, plus end-to-end traces of the seven data paths. Read this
 > before touching code so you edit the right file the first time. Verified against the tree at
 > `6aa21d0` (2026-07-27, WS-9 convergence pass of the hub-visual-system build,
 > `docs/plans/2026-07-27-hub-visual-system-plan.md`) for the hub section; the firmware section was last
@@ -21,8 +21,8 @@
 | Home complications | 7 renderers compiled (`clock`, `fin`, `ice`, `agents`, `usage`, `weather`, `sonos`); `chart` is in the catalog with no renderer yet (Phase 2) | `firmware/src/ui/comps/comp_registry.cpp` `COMP_REGISTRY[]` |
 | Firmware host tests | 38 suites / 295 cases | `firmware/test/test_*/` |
 | Hub tests | 489 cases | `hub/Tests/` |
-| Device->hub commands | 6 (`permission`, `open`, `config_ack`, `report`, `pages_ack`, `comps_ack`) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` |
-| Hub->device blocks | 7 (`usage`, `buddy`, `loc` share the status frame; `sessions`, `config`, `pages` and `comps` are standalone frames) | `hub/CONTRACT.md` §A/§B2/§A3 |
+| Device->hub commands | 8 (`permission`, `open`, `config_ack`, `report` [`what:"tickers"`], `pages_ack`, `comps_ack`, `sart_stat`, `report` [`what:"device"`]) | `hub/Sources/BeaconHubKit/Protocol.swift` `DeviceCommand` (8 cases: `permission`, `configAck`, `report`, `open`, `pagesAck`, `compsAck`, `sartStat`, `deviceReport`) |
+| Hub->device blocks | 8 (`usage`, `buddy`, `loc` share the status frame; `sessions`, `config`, `pages`, `comps` and `sart` are standalone frames) | `hub/CONTRACT.md` §A/§A3/§A4/§B2 |
 | Hub providers | 3 (claude, codex, omp) | `hub/Sources/beacon-hub/AppDelegate.swift` `startProviders()` |
 
 Hard caps worth knowing before you design: **8 screens** (`s_pages[8]`/`s_dots[8]` in `carousel.cpp`),
@@ -164,7 +164,7 @@ component layer above.
 
 ---
 
-## 4. The four data paths, end to end
+## 4. The seven data paths, end to end
 
 ### A. Device-plane data (weather, finance) — no hub involved
 ```
@@ -273,6 +273,55 @@ pages**, so a page push's restart (if any) lands after the complication blob is 
 `comp_list_resolve` or any renderer — a complication survives its owning page being hidden by design
 (`docs/specs/2026-07-27-hub-app-and-home-complications-design.md` §4.4).
 
+### G. Sonos album art (hub -> device, LAN) — three processes, one tile
+
+```
+hub:    SonosProvider.combineNowPlaying -> onArtURL(url)   [D-7: own last-URL gate, independent of the
+                                            text tuple's `guard np != lastSent`]
+        -> SonosArtPublisher.handleArtURL -> processURL
+        -> SonosArtDecision.urlStep(newImageUrl:state:artEnabled:now:debounce:) [pure: doNothing/clear/publish]
+        -> publish: SonosArtRenderer.fetchAndRender(url:) [ephemeral URLSession, no Authorization header,
+           http(s)-only, 4 MB wire cap, 5 s timeout] -> Tile{pixels, sha256Hex}
+        -> SonosArtDecision.digestStep(newDigest:state:) [equal digest to last published -> doNothing,
+           no `gen` bump -- the expiring-signature-URL case]
+        -> changed digest: SonosArtDecision.nextGen -> LanAssetServer.arm(tile.pixels, "application/octet-stream",
+           peer: deviceIP, ttl: 30, maxServes: 1) { .success(url) }
+        -> AppDelegate emits SonosArtFrame(gen, url).encoded()  [S1; S2 = gen only, `url` omitted, on
+           clear/toggle-off/fetch-failure]
+        -> BeaconCentral.send()  [.withResponse]
+--- BLE ---
+        -> hublink_ble RX -> hub_task.on_frame() dispatches `"sart"` BEFORE the loc/status fall-through
+        -> hub_parse_sart -> on_sart(): S1 -> sonos_art_post_job(gen, url); S2 -> ds_clear_sonos_art()
+--- LAN (separate task, separate process boundary) ---
+fetch_task (Core 0, 1 Hz): sonos_art_service() -> net_lan_get(url, buf, 80000, ...) [plain WiFiClient,
+        no TLS -- net_lan_get() has its own file, deliberately not net.cpp's TLS path]
+        -> sonos_art_length_ok(status, content_length, received) [200 AND ==80000 AND ==80000, else reject]
+        -> writes ONLY the back buffer (sonos_art_back_idx(front_idx)) -> ds_publish_sonos_art(gen, idx)
+        -> hub_send_sart_stat(gen, ok, err)  [one-way; a superseded gen emits NONE -- silent-withdraw,
+           CONTRACT.md §D precedent]
+carousel tick_cb (Core 1, 500 ms): sonos_editorial update() -> ds_get_sonos_art()
+        -> sonos_art_should_repoint(gen, seen_gen) [D-2: `!=`, never `>` -- gen is an identity, not an
+           ordering] -> lv_img_set_src(tile, sonos_art_buf(idx)) -> ds_sonos_art_seen(gen)  [the ack Core 0
+           waits on before it may write the OTHER buffer -- plan §4 WS-2 rule 5, load-bearing]
+--- back over BLE ---
+        -> DeviceCommand.sartStat(gen, ok, err) -> AppDelegate -> SonosArtPublisher.handleSartStat
+        -> LocalNetworkCheck.derive(outcome) -> DeviceTab's "Local Network" StatusRow
+```
+
+Three independent "do nothing" outcomes exist on this path (URL unchanged, digest unchanged, art
+disabled or page absent) and none of them is distinguishable from a broken pipeline without the log
+lines each decision point now emits (`79d6a1b`) — see `docs/perf.md` §5's instrumentation-lesson note.
+`gen` is minted only on a tile-digest change, never on a URL change alone, and the device never orders
+by it, only compares `!=` (D-2) — the two facts that make a hub relaunch (in-memory `gen` resets to 0)
+and a rapid track skip (superseded `gen`s mid-download) both converge without special-casing either.
+
+**Confirmed on real hardware 2026-07-28**, not only by the parser/encoder tests: matched hub/device log
+pairs for `gen` 5 and 6 show the same generation minted by the hub, consumed by the device, and
+acknowledged back (`hub: art armed gen=5 ...` / `dev: sonos_art: gen=5 published idx=1` / `dev: hub:
+sart_stat gen=5 ok=1`), with `idx` alternating 1 then 0 across the two publishes — the two-buffer swap
+running for real, not only under `test_sonos_art`'s host race simulation. See `docs/perf.md` §3.1 for
+the full capture and `docs/plans/2026-07-27-sonos-album-art-rehearsal.md` for what remains unrun.
+
 ---
 
 ## 5. Test topology
@@ -314,5 +363,6 @@ Cross-check these before trusting a doc statement:
 | Buddy hook timeout "~30s" (`DESIGN.md` §Coding Buddy) | ~590 s hold for Claude/Codex, 26 s for omp | `hub/CONTRACT.md` §D |
 | Theme id is `dotmatrix`; view files are named `*_calm.cpp` | both are correct and both are load-bearing — see `docs/recipes.md` §3 | `theme_catalog.h:36` vs `views/` |
 | hub-visual-system plan §11 "definition of done" says hub tests **>= 453** (416 baseline + 12 WS-0 + 8 WS-0b + 8 WS-1 + 6 WS-2 + 3 WS-7) | actual count after every wave landed is **489** — the arithmetic undercounts later waves' own additions (WS-3/4/5/6/8 all added tests too, not just the five waves the formula names) | `hub/Tests/` (`swift test`), `docs/plans/2026-07-27-hub-visual-system-plan.md` §11 |
+| Minimum free internal heap already disagrees across two docs before this entry existed: `tech.md` §2's prose gives **~53 KB** (P2 hardware, active bonded BLE + cert TLS + full LVGL UI, LVGL buffers in PSRAM) while `perf.md`'s own header callout gives **49,832 B** for a specific 2026-07-26 `env:beacon` build — a ~3 KB gap between the two docs that predates the Sonos art work. `tech.md` §8's **60 KB** is a separate thing again: the NFR *target*, not a measurement. | A 2026-07-28 hardware run with the Sonos album-art feature resident (tile buffers allocated, art live on glass) logged `int_min` = **43,816 B** — below all three figures above, and ~16 KB under the 60 KB guideline floor. Not yet determined whether this is an art-specific cost or a tighter capture of a margin that was already this thin; **flagged for the owner, not corrected in-place** — `docs/perf.md` §3 records the number without picking a replacement figure for `tech.md` or resolving the pre-existing 53 KB/49,832 B gap. | `docs/tech.md` §2, §8; `docs/perf.md` header + §3; today's serial capture (`fetch_task`/`hub_task` `int_min` log, Sonos album-art rehearsal) |
 | Plan §7.2's mechanical duplicate-row/tile/card/badge gate is `grep -cE "^(private )?struct .*(Row\|Card\|Tile\|Header\|Chip\|Badge): View"` | that pattern requires the conformance to read `StructName: View` with nothing between — it silently **misses every generic shared component** (`SettingsRow<Trailing: View>: View`, `StatusRow<Trailing: View>: View`, `Card<Content: View>: View`, `FooterBar<Trailing: View>: View`), i.e. most of the actual component layer. Grep for `struct \w+(Row\|Card\|Tile\|Header\|Chip\|Badge)` without anchoring to `: View` instead | `hub/Sources/beacon-hub/HubRows.swift`, `HubSurfaces.swift` |
 | Plan §2.2 says the raw-font-size exemption `> 0` applies per-file to both `DevicePreview.swift` and `DeviceGlass.swift` | `DevicePreview.swift` now has **zero** `.system(size:` sites — WS-7 centralised all font resolution (`DeviceGlassFont.resolve`) into `DeviceGlass.swift`, so `DevicePreview.swift` delegates rather than constructing fonts itself. The `> 0` guarantee holds for the pair, not for `DevicePreview.swift` alone; a future grep of that one file finding 0 is not a regression | `hub/Sources/beacon-hub/DevicePreview.swift`, `DeviceGlass.swift:201-203` |

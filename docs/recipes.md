@@ -144,6 +144,32 @@ Version discipline: additive optional fields ride `"v":1`. A breaking change (li
 `usage.providers`) means old firmware shows unavailable until reflashed — call that out in
 `CONTRACT.md` under Migration.
 
+### Worked example: a frame that needs no shrink loop (`sart`, and `comps` before it)
+
+Every frame above this point (`sonos`, `sdetail`, `sessions`) budgets its worst case with an
+encode-measure-shrink loop, because its string fields can contain characters JSON escapes (`"`, `\`,
+control characters) and there is no cheap way to bound the escaped length except by actually encoding
+it. `hub/Sources/beacon-hub/SonosArtPublisher.swift` + `hub/Sources/BeaconHubKit/Protocol.swift
+SonosArtFrame` (CONTRACT.md §A4) is the second frame to duck that loop entirely (`comps`, §A3, was the
+first): its only string, `url`, is built exclusively from `[0-9a-f.:/htp]` — an IPv4 dotted quad, a
+port, `/a/`, and 32 lowercase hex — **none of which JSON escapes**, so a character cap bounds the byte
+count exactly. `SonosArtFrame.encoded()` therefore just asserts `count <= 1024` in a test rather than
+computing the worst case at runtime.
+
+**The trap the next frame author will hit: `Foundation.JSONEncoder` escapes `/` as `\/` by default.**
+That is legal JSON (RFC 8259 makes the escape optional, not required) but it silently breaks the
+"character caps bound bytes exactly" property this frame exists to demonstrate, because `url` always
+contains at least the two slashes in `http://`. This bit `sart` for real during WS-0: the design
+predicted a 139 B worst case for the 96-char-cap URL; the actual encoded frame measured **141 B** —
+exactly 2 bytes over, one extra byte for each of the two `/` in the URL's `http://` prefix getting
+escaped to `\/`. Fixed with
+`JSONEncoder.outputFormatting.insert(.withoutEscapingSlashes)`, set **only** on `SonosArtFrame`'s own
+encoder — every other frame in `Protocol.swift` already measures its real wire bytes via its own
+shrink loop, so escaping is already priced into their budgets and adding the flag there would change
+bytes on a frozen wire for no benefit. **If your new no-shrink-loop frame's charset includes `/`
+(paths, URLs, mime types), assume the same escape and either avoid the character or opt out of
+escaping explicitly — do not assume "printable ASCII" means "JSON does not touch it."**
+
 ---
 
 ## 5. Add a device -> hub command (the "better controls" path)
