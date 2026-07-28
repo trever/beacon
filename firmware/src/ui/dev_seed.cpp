@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 #include "core/datastore.h"
+#include "core/sonos_art.h"
 #include "core/location.h"
 #include "core/stale.h"
 #include "config/tickers.h"
@@ -18,11 +19,8 @@
 #define BEACON_CAP_BUDDY 0
 #endif
 
-// sonos_editorial.cpp's package-private tile-buffer accessor (see that file's WS-2 integration-seam
-// comment: core/sonos_art.{h,cpp} is WS-2's, developed concurrently, not present in this tree). Not a
-// core/ symbol; deliberately not named sonos_art_buf() so it cannot collide with WS-2's real accessor
-// once core/sonos_art.h lands here.
-uint8_t* sonos_editorial_tile_buf(uint8_t idx);
+// The tile buffers belong to core/sonos_art.cpp; sonos_art_buf() returns NULL until the sonos screen's
+// build() has called sonos_art_alloc(), which is exactly the D-9 condition this seeding must respect.
 
 static void put_tile_px(uint8_t* buf, int x, int y, uint16_t rgb565) {
   size_t off = ((size_t)y * SONOS_TILE_W + x) * 2;
@@ -35,7 +33,7 @@ static void put_tile_px(uint8_t* buf, int x, int y, uint16_t rgb565) {
 // (device-side consumption of the hub's big-endian bytes, closing the loop with Phase A's hub-side
 // four-pixel test) and a geometry oracle (tile bounds, centring) at once.
 static void seed_sonos_art_tile(void) {
-  uint8_t* buf = sonos_editorial_tile_buf(0);
+  uint8_t* buf = sonos_art_buf(0);
   if (!buf) return;   // "sonos" not in the active page list -> build() never ran -> nothing to seed (D-9)
   for (int y = 0; y < SONOS_TILE_H; y++) {
     for (int x = 0; x < SONOS_TILE_W; x++) {

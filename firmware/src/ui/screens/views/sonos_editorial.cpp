@@ -12,31 +12,21 @@
 #include "ui/theme.h"
 #include "config/layout.h"
 #include "core/datastore.h"
+#include "core/sonos_art.h"   // tile buffers live in core (WS-2); this view only reads them
 #include "util/log.h"
 #include <esp_heap_caps.h>
 #include <ctype.h>
 
 // ---------------------------------------------------------------------------------------------------
-// WS-2 integration seam (plan §1 file ownership: firmware/src/core/sonos_art.{h,cpp} is WS-2's, wave B,
-// developed concurrently in a sibling worktree that is not present in this tree). D-9 requires the tile
-// buffers to be allocated in THIS screen's build(); the plan's call graph is build() -> WS-2's
-// sonos_art_alloc()/sonos_art_buf(uint8_t). Neither exists yet here (confirmed: zero references to
-// sonos_art_buf/sonos_art_alloc anywhere under firmware/src as of this writing), so this file owns a
-// small, clearly-scoped, temporary stand-in instead of leaving the tile unimplemented:
-//   - two PSRAM buffers, allocated once in build(), idempotent, never freed (design §4.2) -- same shape
-//     WS-2's sonos_art_alloc() is specified to have, just not exported under that name.
-//   - a package-private accessor exposed ONLY to dev_seed.cpp (BEACON_DEV capture seeding), named
-//     sonos_editorial_tile_buf() -- deliberately NOT named sonos_art_buf() so it cannot collide with
-//     WS-2's symbol when core/sonos_art.cpp lands in the same tree.
-// This lets the two-form layout, the capture pipeline, and the cross-core-ack half of the swap protocol
-// (ds_sonos_art_seen(), read from WS-0's frozen datastore.h) all be real and buildable today. What it
-// deliberately does NOT do: fetch anything over the network, or wire fetch_task/hub_task -- that traffic
-// is WS-2's alone. INTEGRATION TODO for whoever merges wave B: delete this seam and switch build()/
-// dev_seed's accessor to WS-2's real sonos_art_alloc()/sonos_art_buf(); do not ship both allocations.
-static uint8_t* s_tile_buf[2] = { nullptr, nullptr };
-static bool     s_tile_ready  = false;   // both buffers allocated
-
-uint8_t* sonos_editorial_tile_buf(uint8_t idx) { return (idx < 2) ? s_tile_buf[idx] : nullptr; }
+// D-9: the tile buffers are allocated in THIS screen's build(), and nowhere else. If "sonos" is not in
+// the active page list, build() never runs, not one byte is allocated, and a stray `sart` frame is
+// dropped silently rather than fetched. The buffers themselves belong to core/sonos_art.cpp, reached
+// through sonos_art_alloc()/sonos_art_buf() -- so the fetch task writes the very buffer this view
+// reads, and there is exactly one 160 KB PSRAM allocation in the tree. WS-3 built against a local
+// stand-in because WS-2's file was not visible in its worktree; that stand-in was removed when wave B
+// merged. Do not reintroduce a view-local allocation: two allocations would double the PSRAM cost and
+// the tile would render whichever one the fetch task did not fill.
+static bool s_tile_ready = false;   // sonos_art_alloc() succeeded
 
 static lv_obj_t *s_slot, *s_room, *s_rule, *s_state;
 static lv_obj_t *s_form_noart, *s_track, *s_artist, *s_album;
@@ -116,9 +106,7 @@ static void build(lv_obj_t* page) {
   // Never freed (design §4.2 -- there is no steady-state allocation, so nothing to leak/fragment). If
   // "sonos" is not in the active page list this build() never runs and not one byte is allocated.
   if (!s_tile_ready) {
-    s_tile_buf[0] = (uint8_t*)heap_caps_malloc(SONOS_TILE_BYTES, MALLOC_CAP_SPIRAM);
-    s_tile_buf[1] = (uint8_t*)heap_caps_malloc(SONOS_TILE_BYTES, MALLOC_CAP_SPIRAM);
-    s_tile_ready = s_tile_buf[0] && s_tile_buf[1];
+    s_tile_ready = sonos_art_alloc();
     if (!s_tile_ready) LOGE("sonos: tile buffer alloc failed (2x %u B)", (unsigned)SONOS_TILE_BYTES);
   }
 
@@ -130,7 +118,7 @@ static void build(lv_obj_t* page) {
   s_tile_dsc.header.w = SONOS_TILE_W;
   s_tile_dsc.header.h = SONOS_TILE_H;
   s_tile_dsc.data_size = SONOS_TILE_BYTES;
-  s_tile_dsc.data = s_tile_buf[0];   // placeholder until the first real repoint in update()
+  s_tile_dsc.data = sonos_art_buf(0);   // placeholder until the first real repoint in update()
   lv_obj_set_size(s_tile, SONOS_TILE_W, SONOS_TILE_H);
   lv_obj_align(s_tile, LV_ALIGN_TOP_LEFT, 133, SAFE_INSET + 84);   // x 133..333 centred, y 124..324
 
@@ -189,7 +177,7 @@ static void update(void) {
   // -- Core 0 will not start writing the back buffer again until this lands or 3s elapse, so dropping
   // this call freezes art after the first tile. LOAD-BEARING; do not remove in a refactor.
   if (art.have && s_tile_ready && art.gen != art.seen_gen) {
-    s_tile_dsc.data = s_tile_buf[art.idx];
+    s_tile_dsc.data = sonos_art_buf(art.idx);
     lv_img_set_src(s_tile, &s_tile_dsc);
     lv_obj_invalidate(s_tile);
     ds_sonos_art_seen(art.gen);
