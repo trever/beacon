@@ -127,4 +127,41 @@ final class SonosArtDecisionTests: XCTestCase {
     func testNextGenWrapsRatherThanTraps() {
         XCTAssertEqual(SonosArtDecision.nextGen(UInt32.max), 0, "gen is an opaque identity (D-2); overflow must not trap")
     }
+
+    // MARK: - httpsUpgraded (the ATS failure found on real hardware 2026-07-28)
+
+    // The exact shape Sonos returned for a SiriusXM track. Plain http, which macOS ATS refuses.
+    func testHTTPArtURLIsUpgradedToHTTPS() {
+        XCTAssertEqual(
+            SonosArtDecision.httpsUpgraded("http://albumart.siriusxm.com/albumart/1300/WBVARI_x_m.jpg"),
+            "https://albumart.siriusxm.com/albumart/1300/WBVARI_x_m.jpg")
+    }
+
+    func testHTTPSArtURLIsLeftAlone() {
+        let u = "https://albumart.siriusxm.com/albumart/1300/WBVARI_x_m.jpg"
+        XCTAssertEqual(SonosArtDecision.httpsUpgraded(u), u)
+    }
+
+    // Only the scheme changes: path, query and port must survive untouched, because art URLs can carry
+    // an expiring signature in the query and dropping it would turn a working fetch into a 403.
+    func testUpgradePreservesPortQueryAndPath() {
+        XCTAssertEqual(
+            SonosArtDecision.httpsUpgraded("http://h.example.com:8080/a/b.jpg?sig=abc&t=1"),
+            "https://h.example.com:8080/a/b.jpg?sig=abc&t=1")
+    }
+
+    // A scheme we do not recognise is returned verbatim rather than rewritten into something that would
+    // fail differently -- the caller's URL(string:) is the one that decides it is unusable.
+    func testUnknownSchemeIsUntouched() {
+        XCTAssertEqual(SonosArtDecision.httpsUpgraded("data:image/png;base64,AAAA"),
+                       "data:image/png;base64,AAAA")
+        XCTAssertEqual(SonosArtDecision.httpsUpgraded("not a url"), "not a url")
+    }
+
+    // Case-insensitive per RFC 3986: schemes are not case sensitive and Sonos is not contractually
+    // bound to lowercase them.
+    func testUppercaseHTTPSchemeIsUpgraded() {
+        XCTAssertEqual(SonosArtDecision.httpsUpgraded("HTTP://h.example.com/a.jpg"),
+                       "https://h.example.com/a.jpg")
+    }
 }

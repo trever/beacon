@@ -196,11 +196,14 @@ final class SonosArtPublisher {
             // entirely rather than do the work and throw it away. The cache is left untouched, so the
             // next tick (or the gate re-opening) sees the same "changed" URL and retries -- nothing is
             // lost, just deferred.
-            guard linkUp, sonosPageEnabled, let url, let target = URL(string: url) else {
+            // Fetch over TLS even though Sonos advertises http -- see SonosArtDecision.httpsUpgraded.
+            // The RAW url stays the cache identity below, because that is what Sonos will send again.
+            guard linkUp, sonosPageEnabled, let url,
+                  let target = URL(string: SonosArtDecision.httpsUpgraded(url)) else {
                 log("step=publish BLOCKED linkUp=\(linkUp) sonosPage=\(sonosPageEnabled) url=\(Self.redact(url))")
                 return
             }
-            log("step=publish fetching \(Self.redact(url))")
+            log("step=publish fetching \(target.scheme ?? "?")://\(Self.redact(url))")
             let token = inFlightFetchToken &+ 1
             inFlightFetchToken = token
             fetchAndRender(target) { [weak self] result in

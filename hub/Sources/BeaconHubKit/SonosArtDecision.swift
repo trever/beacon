@@ -72,6 +72,25 @@ public enum SonosArtDecision {
         current &+ 1
     }
 
+    // Sonos hands back album art over PLAIN HTTP -- measured 2026-07-28 against a live account, e.g.
+    // `http://albumart.siriusxm.com/albumart/...jpg`. macOS App Transport Security refuses those loads
+    // outright ("the App Transport Security policy requires the use of a secure connection"), so every
+    // fetch failed and the device correctly showed its no-art form. Upgrading the scheme is the fix that
+    // does NOT weaken the app: `albumart.siriusxm.com` serves the identical image over TLS (verified
+    // 200 image/jpeg). An ATS exception was rejected as the alternative -- it would have to name an
+    // open-ended set of third-party hosts, and at least one of them
+    // (`pri.art.prod.streaming.siriusxm.com`, the channel-logo fallback) presents a certificate that
+    // does not match its own hostname, so no exception could make it safe to load anyway. That host
+    // simply fails the fetch, and design 6.3's "on any art failure, publish S2, not silence" already
+    // covers it: the tile clears rather than going stale.
+    //
+    // Anything that is not http (https, or a scheme we do not recognise) is returned untouched.
+    public static func httpsUpgraded(_ raw: String) -> String {
+        guard var c = URLComponents(string: raw), c.scheme?.lowercased() == "http" else { return raw }
+        c.scheme = "https"
+        return c.string ?? raw
+    }
+
     private static func nonEmpty(_ s: String?) -> String? {
         guard let s, !s.isEmpty else { return nil }
         return s
