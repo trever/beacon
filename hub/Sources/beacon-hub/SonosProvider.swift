@@ -80,6 +80,7 @@ final class SonosProvider {
     // no-art track does not get silently skipped as "no change from the unset default."
     private enum ArtURLState: Equatable { case unknown, value(String?) }
     private var lastArtURLState: ArtURLState = .unknown
+    private var lastLoggedOutcome: String?
 
     // Poll gate (lock-protected, not queue-confined: mirrors ClaudeCodeProvider's gateLock so a future
     // caller could read/note outcomes off-queue too, and so SonosGateTests can drive it directly).
@@ -129,6 +130,17 @@ final class SonosProvider {
     // Internal (not private) so SonosGateTests exercises the gating contract directly, the same way
     // ClaudeUsageGateTests exercises ClaudeCodeProvider.noteUsageOutcome/shouldPollUsage.
     func noteOutcome(_ outcome: ProviderOutcome) {
+        // Classified poll results, logged on CHANGE only -- polling every 5 s, an unconditional line
+        // would be a heartbeat nobody reads. Without this a gated provider is indistinguishable from a
+        // healthy idle one from outside the process: a missing client secret gates the provider before
+        // it ever calls Sonos, so every stage downstream goes quiet and an album-art investigation
+        // spends its time downstream of a credential problem. Settings shows the same classification;
+        // this is for when nobody is looking at Settings.
+        let shape = "\(outcome)"
+        if shape != lastLoggedOutcome {
+            lastLoggedOutcome = shape
+            FileHandle.standardError.write(Data("[beacon-hub] sonos poll \(shape)\n".utf8))
+        }
         onOutcome?(outcome)
         gateLock.lock(); defer { gateLock.unlock() }
         switch outcome {
@@ -385,6 +397,11 @@ final class SonosProvider {
     private func fireArtURLIfChanged(_ url: String?) {
         guard lastArtURLState != .value(url) else { return }
         lastArtURLState = .value(url)
+        // Whether Sonos hands us an imageUrl at all is the first question any art investigation asks,
+        // and it is invisible from the device end. Host+path only -- these URLs carry an expiring
+        // signature in the query.
+        let shape = url.flatMap { URLComponents(string: $0) }.map { "\($0.host ?? "?")\($0.path)" } ?? "(none)"
+        FileHandle.standardError.write(Data("[beacon-hub] art imageUrl=\(shape)\n".utf8))
         let cb = onArtURL
         DispatchQueue.main.async { cb?(url) }
     }

@@ -168,12 +168,27 @@ final class SonosArtPublisher {
 
     // --- pipeline, all on `queue` ---
 
+    // Diagnostics. This pipeline crosses three processes (Sonos cloud, this hub, the device) and every
+    // stage has a legitimate "do nothing" outcome, so a silent path is indistinguishable from a broken
+    // one -- which is exactly what happened the first time it was run against real hardware. Same
+    // stderr idiom as ClaudeCodeProvider/BeaconCentral. Never log the URL's query: Sonos art URLs carry
+    // an expiring signature.
+    private func log(_ message: String) {
+        FileHandle.standardError.write(Data("[beacon-hub] art \(message)\n".utf8))
+    }
+
+    private static func redact(_ url: String?) -> String {
+        guard let url, let c = URLComponents(string: url) else { return "(none)" }
+        return "\(c.host ?? "?")\(c.path)"
+    }
+
     private func processURL(_ url: String?) {
         switch SonosArtDecision.urlStep(newImageUrl: url, state: cache, artEnabled: artEnabled,
                                         now: now(), debounce: Self.debounce) {
         case .doNothing:
             return
         case .clear:
+            log("step=clear url=\(Self.redact(url))")
             commitClear()
         case .publish:
             // Gate BEFORE fetching, not just before arming: with no sonos page or no BLE link there is
@@ -181,7 +196,11 @@ final class SonosArtPublisher {
             // entirely rather than do the work and throw it away. The cache is left untouched, so the
             // next tick (or the gate re-opening) sees the same "changed" URL and retries -- nothing is
             // lost, just deferred.
-            guard linkUp, sonosPageEnabled, let url, let target = URL(string: url) else { return }
+            guard linkUp, sonosPageEnabled, let url, let target = URL(string: url) else {
+                log("step=publish BLOCKED linkUp=\(linkUp) sonosPage=\(sonosPageEnabled) url=\(Self.redact(url))")
+                return
+            }
+            log("step=publish fetching \(Self.redact(url))")
             let token = inFlightFetchToken &+ 1
             inFlightFetchToken = token
             fetchAndRender(target) { [weak self] result in
@@ -196,7 +215,8 @@ final class SonosArtPublisher {
         // silently -- latest wins, mirroring the device-side rule for the same reason (design §4.4).
         guard token == inFlightFetchToken else { return }
         switch result {
-        case .failure:
+        case .failure(let err):
+            log("fetch FAILED \(err) url=\(Self.redact(urlString))")
             // Design §6.3/§8: on any art failure, publish S2, not silence.
             commitClear()
         case .success(let tile):
@@ -209,6 +229,7 @@ final class SonosArtPublisher {
             case .clear:
                 commitClear()
             case .publish:
+                log("fetch ok digest=\(tile.sha256Hex.prefix(8)) bytes=\(tile.pixels.count)")
                 commitPublish(urlString: urlString, tile: tile)
             }
         }
@@ -234,7 +255,10 @@ final class SonosArtPublisher {
     }
 
     private func armAndEmit(urlString: String?, tile: SonosArtRenderer.Tile, gen: UInt32) {
-        guard let peer = deviceIP else { return }   // no address to advertise yet; the caller retries later
+        guard let peer = deviceIP else {
+            log("arm DEFERRED: no device IP yet")
+            return   // the caller retries later
+        }
         server.arm(tile.pixels, contentType: Self.contentType, peer: peer,
                   ttl: Self.armTTL, maxServes: Self.armMaxServes) { [weak self] result in
             self?.queue.async { self?.applyArmResult(result, urlString: urlString, tile: tile, gen: gen) }
@@ -245,6 +269,7 @@ final class SonosArtPublisher {
                                 tile: SonosArtRenderer.Tile, gen: UInt32) {
         switch result {
         case .success(let url):
+            log("armed gen=\(gen) serving on port \(url.port.map(String.init) ?? "?")")
             cache.gen = gen
             cache.lastImageUrl = urlString
             cache.lastTileDigest = tile.sha256Hex
@@ -253,7 +278,8 @@ final class SonosArtPublisher {
             if let data = try? SonosArtFrame(gen: gen, url: url.absoluteString).encoded() {
                 onFrame?(data)
             }
-        case .failure:
+        case .failure(let err):
+            log("arm FAILED \(err)")
             // Could not arm (no routable interface, listener failed, already armed) -- tell the device
             // plainly rather than leave it showing stale art (design §8: "on any art failure, publish
             // S2, not silence").
