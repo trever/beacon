@@ -1,7 +1,9 @@
-// Sonos now-playing -- phase 1, text only (design doc §3; album art is a phase-2 hub-served-URL job,
-// deliberately not attempted here). Editorial lane: masthead (room) over a hairline, then track/artist/
-// album as a small type hierarchy (display/body/mono, biggest to smallest), play state pinned to the
-// bottom-left corner the way buddy's action row sits.
+// Sonos now-playing -- two-form screen (album art design doc §3.2/§3.3; plan §4 WS-3). The masthead
+// (eyebrow + status slot, room, play state, hairline) is byte-identical between forms so the switch
+// reads as quiet rather than a jump; below the hairline the screen is either the ART form (a 200x200
+// tile + track/artist) or the NO-ART form (phase 1's shipped track/artist/album, verbatim). Both are
+// built in build() as two containers; update() only toggles LV_OBJ_FLAG_HIDDEN and text/values --
+// CONVENTIONS.md's "build() creates, update() is read-only w.r.t. layout" applies to the whole file.
 #include "ui/screen.h"
 #include "ui/screens/screen_common.h"
 #include "ui/screens/views/view_common.h"
@@ -10,16 +12,47 @@
 #include "ui/theme.h"
 #include "config/layout.h"
 #include "core/datastore.h"
+#include "util/log.h"
+#include <esp_heap_caps.h>
 #include <ctype.h>
 
-static lv_obj_t *s_slot, *s_room, *s_rule, *s_track, *s_artist, *s_album, *s_state;
+// ---------------------------------------------------------------------------------------------------
+// WS-2 integration seam (plan §1 file ownership: firmware/src/core/sonos_art.{h,cpp} is WS-2's, wave B,
+// developed concurrently in a sibling worktree that is not present in this tree). D-9 requires the tile
+// buffers to be allocated in THIS screen's build(); the plan's call graph is build() -> WS-2's
+// sonos_art_alloc()/sonos_art_buf(uint8_t). Neither exists yet here (confirmed: zero references to
+// sonos_art_buf/sonos_art_alloc anywhere under firmware/src as of this writing), so this file owns a
+// small, clearly-scoped, temporary stand-in instead of leaving the tile unimplemented:
+//   - two PSRAM buffers, allocated once in build(), idempotent, never freed (design §4.2) -- same shape
+//     WS-2's sonos_art_alloc() is specified to have, just not exported under that name.
+//   - a package-private accessor exposed ONLY to dev_seed.cpp (BEACON_DEV capture seeding), named
+//     sonos_editorial_tile_buf() -- deliberately NOT named sonos_art_buf() so it cannot collide with
+//     WS-2's symbol when core/sonos_art.cpp lands in the same tree.
+// This lets the two-form layout, the capture pipeline, and the cross-core-ack half of the swap protocol
+// (ds_sonos_art_seen(), read from WS-0's frozen datastore.h) all be real and buildable today. What it
+// deliberately does NOT do: fetch anything over the network, or wire fetch_task/hub_task -- that traffic
+// is WS-2's alone. INTEGRATION TODO for whoever merges wave B: delete this seam and switch build()/
+// dev_seed's accessor to WS-2's real sonos_art_alloc()/sonos_art_buf(); do not ship both allocations.
+static uint8_t* s_tile_buf[2] = { nullptr, nullptr };
+static bool     s_tile_ready  = false;   // both buffers allocated
+
+uint8_t* sonos_editorial_tile_buf(uint8_t idx) { return (idx < 2) ? s_tile_buf[idx] : nullptr; }
+
+static lv_obj_t *s_slot, *s_room, *s_rule, *s_state;
+static lv_obj_t *s_form_noart, *s_track, *s_artist, *s_album;
+static lv_obj_t *s_form_art, *s_tile, *s_track_art, *s_artist_art;
+static lv_img_dsc_t s_tile_dsc;   // file-static: LVGL stores this pointer, never copies it (CONVENTIONS trap)
+
+// Diff-aware image-opacity setter, same idiom as screen_common.h's bg_opa_if/txt_color.
+static void img_opa_if(lv_obj_t* o, lv_opa_t a) {
+  if (lv_obj_get_style_img_opa(o, LV_PART_MAIN) != a) lv_obj_set_style_img_opa(o, a, 0);
+}
 
 static void build(lv_obj_t* page) {
   const beacon_theme_t* t = theme_active();
   s_slot = build_header(page, "SONOS");
 
-  // Room tag: mono + accent, editorial's masthead treatment (matches the eyebrow's own look) so the
-  // selected room reads as a subheading rather than content.
+  // --- Masthead: shared byte-for-byte by both forms (design §3.2's stated goal) ---
   s_room = lv_label_create(page);
   lv_obj_set_style_text_font(s_room, t->f_mono, 0);
   lv_obj_set_style_text_color(s_room, t->accent, 0);
@@ -27,43 +60,93 @@ static void build(lv_obj_t* page) {
   lv_label_set_text(s_room, "--");
   lv_obj_align(s_room, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 34);
 
+  // Play state moves here from the old bottom-left corner (design §3.2 change 1): right-aligned
+  // opposite the room, ending at x=426=466-40 (DESIGN.md's edge-row inset rule).
+  s_state = lv_label_create(page);
+  lv_obj_set_style_text_font(s_state, t->f_mono, 0);
+  lv_obj_set_style_text_letter_space(s_state, 2, 0);
+  lv_label_set_text(s_state, "");
+  lv_obj_align(s_state, LV_ALIGN_TOP_RIGHT, -SAFE_INSET, SAFE_INSET + 34);
+
   s_rule = lv_obj_create(page);
   lv_obj_remove_style_all(s_rule);
   lv_obj_add_style(s_rule, &S.hairline, 0);
   lv_obj_set_size(s_rule, SCREEN_W - 2 * SAFE_INSET, 1);
   lv_obj_align(s_rule, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 64);
 
-  // Track: the biggest full-ASCII face available (f_display -- the hero subset has no letters,
-  // fonts/MANIFEST.md). Single line with a dot ellipsis: the 40-char wire cap can still overrun 466px
-  // at this size, and the codebase's convention is truncate-not-wrap for fixed-position labels.
-  s_track = lv_label_create(page);
+  // --- No-art form: phase 1's shipped layout, verbatim (design §3.3) ---
+  s_form_noart = lv_obj_create(page);
+  lv_obj_remove_style_all(s_form_noart);
+  lv_obj_set_size(s_form_noart, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(s_form_noart, 0, 0);
+  lv_obj_clear_flag(s_form_noart, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(s_form_noart, LV_OBJ_FLAG_CLICKABLE);
+
+  s_track = lv_label_create(s_form_noart);
   lv_obj_add_style(s_track, &S.display, 0);
   lv_label_set_long_mode(s_track, LV_LABEL_LONG_DOT);
   lv_obj_set_width(s_track, SCREEN_W - 2 * SAFE_INSET);
   lv_label_set_text(s_track, "--");
   lv_obj_align(s_track, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 82);
 
-  s_artist = lv_label_create(page);
+  s_artist = lv_label_create(s_form_noart);
   lv_obj_add_style(s_artist, &S.body, 0);
   lv_label_set_long_mode(s_artist, LV_LABEL_LONG_DOT);
   lv_obj_set_width(s_artist, SCREEN_W - 2 * SAFE_INSET);
   lv_label_set_text(s_artist, "");
   lv_obj_align(s_artist, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 140);
 
-  s_album = lv_label_create(page);
+  s_album = lv_label_create(s_form_noart);
   lv_obj_add_style(s_album, &S.slot, 0);
   lv_label_set_long_mode(s_album, LV_LABEL_LONG_DOT);
   lv_obj_set_width(s_album, SCREEN_W - 2 * SAFE_INSET);
   lv_label_set_text(s_album, "");
   lv_obj_align(s_album, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 176);
 
-  // Play state, bottom-left -- mirrors buddy's approve/deny corner anchor (mk_btn) so every screen's
-  // "the one thing that changes fastest" idiom lands in the same place.
-  s_state = lv_label_create(page);
-  lv_obj_set_style_text_font(s_state, t->f_mono, 0);
-  lv_obj_set_style_text_letter_space(s_state, 2, 0);
-  lv_label_set_text(s_state, "");
-  lv_obj_align(s_state, LV_ALIGN_BOTTOM_LEFT, SAFE_INSET, -SAFE_INSET);
+  // --- Art form: 200x200 tile + track/artist, no album line (design §3.2) ---
+  s_form_art = lv_obj_create(page);
+  lv_obj_remove_style_all(s_form_art);
+  lv_obj_set_size(s_form_art, SCREEN_W, SCREEN_H);
+  lv_obj_set_pos(s_form_art, 0, 0);
+  lv_obj_clear_flag(s_form_art, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(s_form_art, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(s_form_art, LV_OBJ_FLAG_HIDDEN);   // safe default; first update() sets the real state
+
+  // D-9: buffers allocated here, on this screen's first build(), idempotent (on_theme() can rebuild).
+  // Never freed (design §4.2 -- there is no steady-state allocation, so nothing to leak/fragment). If
+  // "sonos" is not in the active page list this build() never runs and not one byte is allocated.
+  if (!s_tile_ready) {
+    s_tile_buf[0] = (uint8_t*)heap_caps_malloc(SONOS_TILE_BYTES, MALLOC_CAP_SPIRAM);
+    s_tile_buf[1] = (uint8_t*)heap_caps_malloc(SONOS_TILE_BYTES, MALLOC_CAP_SPIRAM);
+    s_tile_ready = s_tile_buf[0] && s_tile_buf[1];
+    if (!s_tile_ready) LOGE("sonos: tile buffer alloc failed (2x %u B)", (unsigned)SONOS_TILE_BYTES);
+  }
+
+  s_tile = lv_img_create(s_form_art);
+  s_tile_dsc.header.always_zero = 0;
+  s_tile_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;   // LV_COLOR_16_SWAP=1 -> big-endian RGB565 (docs/perf.md
+                                                  // §2.1); the hub already emits big-endian (Phase A).
+                                                  // Do not byte-swap here.
+  s_tile_dsc.header.w = SONOS_TILE_W;
+  s_tile_dsc.header.h = SONOS_TILE_H;
+  s_tile_dsc.data_size = SONOS_TILE_BYTES;
+  s_tile_dsc.data = s_tile_buf[0];   // placeholder until the first real repoint in update()
+  lv_obj_set_size(s_tile, SONOS_TILE_W, SONOS_TILE_H);
+  lv_obj_align(s_tile, LV_ALIGN_TOP_LEFT, 133, SAFE_INSET + 84);   // x 133..333 centred, y 124..324
+
+  s_track_art = lv_label_create(s_form_art);
+  lv_obj_add_style(s_track_art, &S.display, 0);
+  lv_label_set_long_mode(s_track_art, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(s_track_art, SCREEN_W - 2 * SAFE_INSET);
+  lv_label_set_text(s_track_art, "--");
+  lv_obj_align(s_track_art, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 304);
+
+  s_artist_art = lv_label_create(s_form_art);
+  lv_obj_add_style(s_artist_art, &S.body, 0);
+  lv_label_set_long_mode(s_artist_art, LV_LABEL_LONG_DOT);
+  lv_obj_set_width(s_artist_art, SCREEN_W - 2 * SAFE_INSET);
+  lv_label_set_text(s_artist_art, "");
+  lv_obj_align(s_artist_art, LV_ALIGN_TOP_LEFT, SAFE_INSET, SAFE_INSET + 350);
 }
 
 // Uppercase into a caller buffer (editorial casing convention, view_common.h's render_clock_ex does the
@@ -77,29 +160,61 @@ static void upper_copy(char* out, size_t n, const char* src) {
 static void update(void) {
   const beacon_theme_t* t = theme_active();
   sonos_rec_t r = ds_get_sonos();
+  sonos_art_rec_t art = ds_get_sonos_art();
   uint32_t now = now_s();
   slot_set(s_slot, "", &r.hdr, now);
 
-  // No track yet (still loading, or the hub sent an empty "sonos" block -- nothing playing in the
-  // selected room) => placeholders, and no play-state claim to make.
+  // No track yet (still loading, or the hub sent an empty "sonos" block) => placeholders, no play-state
+  // claim, and ALWAYS the no-art form (design §3.3's no_track rule, unchanged from phase 1).
   bool no_track = sv_placeholder(r.hdr.state) || !r.track[0];
+  bool dim = sv_dim(r.hdr.state);   // sonos only ever reaches LOADING/LIVE/HUB_OFFLINE; dim == hub-offline
+                                     // in practice (design §8), but reuse the shared predicate like every
+                                     // other view rather than special-case the state enum here.
 
   char room_up[SONOS_ROOM_LEN];
   upper_copy(room_up, sizeof(room_up), r.room[0] ? r.room : "--");
   txt_set(s_room, room_up);
-  txt_color(s_room, sv_dim(r.hdr.state) ? t->ink_dim : t->accent);
-
-  txt_set(s_track,  no_track ? "--" : r.track);
-  txt_set(s_artist, no_track ? "" : r.artist);
-  txt_set(s_album,  no_track ? "" : r.album);
-  value_state(s_track, r.hdr.state);
-  value_state(s_artist, r.hdr.state);
+  txt_color(s_room, dim ? t->ink_dim : t->accent);
 
   if (no_track) {
     txt_set(s_state, "");
   } else {
     txt_set(s_state, r.playing ? "PLAYING" : "PAUSED");
-    txt_color(s_state, sv_dim(r.hdr.state) ? t->ink_dim : (r.playing ? t->accent : t->ink_dim));
+    txt_color(s_state, dim ? t->ink_dim : (r.playing ? t->accent : t->ink_dim));
+  }
+
+  // The tile repoint, per plan §4 WS-3's update() contract: `art.gen != art.seen_gen` is
+  // sonos_art_should_repoint(gen, seen_gen) inlined (D-2: gen is an opaque identity, compared with !=,
+  // never >). ds_sonos_art_seen() is the ack half of the cross-core swap protocol (plan §4 WS-2 rule 5)
+  // -- Core 0 will not start writing the back buffer again until this lands or 3s elapse, so dropping
+  // this call freezes art after the first tile. LOAD-BEARING; do not remove in a refactor.
+  if (art.have && s_tile_ready && art.gen != art.seen_gen) {
+    s_tile_dsc.data = s_tile_buf[art.idx];
+    lv_img_set_src(s_tile, &s_tile_dsc);
+    lv_obj_invalidate(s_tile);
+    ds_sonos_art_seen(art.gen);
+  }
+
+  bool show_art = !no_track && art.have;
+  hidden_set(s_form_art,    !show_art);
+  hidden_set(s_form_noart,   show_art);
+
+  if (show_art) {
+    txt_set(s_track_art,  r.track);
+    txt_set(s_artist_art, r.artist);
+    value_state(s_track_art, r.hdr.state);
+    value_state(s_artist_art, r.hdr.state);
+    // Hub-offline: keep showing the last tile, dimmed via opacity (design §8) -- not blanked, which
+    // would falsely assert "nothing playing", and not recoloured, which costs an extra draw pass.
+    img_opa_if(s_tile, dim ? LV_OPA_40 : LV_OPA_COVER);
+  } else {
+    txt_set(s_track,  no_track ? "--" : r.track);
+    txt_set(s_artist, no_track ? "" : r.artist);
+    txt_set(s_album,  no_track ? "" : r.album);
+    value_state(s_track, r.hdr.state);
+    value_state(s_artist, r.hdr.state);
+    // s_album keeps its S.slot ink_dim baseline unconditionally, same as phase 1 shipped -- it was
+    // never run through value_state() and this form doesn't start now.
   }
 }
 

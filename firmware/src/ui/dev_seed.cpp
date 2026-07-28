@@ -18,6 +18,39 @@
 #define BEACON_CAP_BUDDY 0
 #endif
 
+// sonos_editorial.cpp's package-private tile-buffer accessor (see that file's WS-2 integration-seam
+// comment: core/sonos_art.{h,cpp} is WS-2's, developed concurrently, not present in this tree). Not a
+// core/ symbol; deliberately not named sonos_art_buf() so it cannot collide with WS-2's real accessor
+// once core/sonos_art.h lands here.
+uint8_t* sonos_editorial_tile_buf(uint8_t idx);
+
+static void put_tile_px(uint8_t* buf, int x, int y, uint16_t rgb565) {
+  size_t off = ((size_t)y * SONOS_TILE_W + x) * 2;
+  buf[off]     = (uint8_t)(rgb565 >> 8);   // big-endian RGB565, high byte first (LV_COLOR_16_SWAP=1)
+  buf[off + 1] = (uint8_t)(rgb565 & 0xFF);
+}
+
+// Deterministic 4-quadrant red/green/blue/black field + a 1px white diagonal (plan §4 WS-3's capture
+// section): known exact colours in known exact places make the capture PNG both a byte-order oracle
+// (device-side consumption of the hub's big-endian bytes, closing the loop with Phase A's hub-side
+// four-pixel test) and a geometry oracle (tile bounds, centring) at once.
+static void seed_sonos_art_tile(void) {
+  uint8_t* buf = sonos_editorial_tile_buf(0);
+  if (!buf) return;   // "sonos" not in the active page list -> build() never ran -> nothing to seed (D-9)
+  for (int y = 0; y < SONOS_TILE_H; y++) {
+    for (int x = 0; x < SONOS_TILE_W; x++) {
+      uint16_t c;
+      if (x == y)                                             c = 0xFFFF;   // white diagonal
+      else if (x < SONOS_TILE_W / 2 && y < SONOS_TILE_H / 2)   c = 0xF800;   // top-left: red
+      else if (x >= SONOS_TILE_W / 2 && y < SONOS_TILE_H / 2)  c = 0x07E0;   // top-right: green
+      else if (x < SONOS_TILE_W / 2 && y >= SONOS_TILE_H / 2)  c = 0x001F;   // bottom-left: blue
+      else                                                     c = 0x0000;   // bottom-right: black
+      put_tile_px(buf, x, y, c);
+    }
+  }
+  ds_publish_sonos_art(1, 0);   // S1-equivalent: gen=1, buffer 0
+}
+
 static void seed(void) {
   uint32_t now = now_s();
 #if BEACON_CAPTURE
@@ -65,6 +98,18 @@ static void seed(void) {
   strncpy(sess[2].id, "s7", BUDDY_SID_LEN-1); strncpy(sess[2].label, "dotfiles \xc2\xb7 sync", BUDDY_LABEL_LEN-1); sess[2].state = BST_WAITING_QUEUED;  sess[2].ts = now - 300;
   strncpy(sess[3].id, "s2", BUDDY_SID_LEN-1); strncpy(sess[3].label, "notes \xc2\xb7 main",    BUDDY_LABEL_LEN-1); sess[3].state = BST_IDLE;            sess[3].ts = now - 900;
   ds_apply_sessions(sess, 4, now);
+
+  // Sonos now-playing (album art plan §4 WS-3 capture section) -- dev_seed carried zero Sonos
+  // references before this; the sonos_editorial screen rendered its no_track placeholder forever.
+  sonos_rec_t so; memset(&so, 0, sizeof(so));
+  strncpy(so.room, "KITCHEN", SONOS_ROOM_LEN-1);
+  strncpy(so.track, "Black Hole Sun", SONOS_TRACK_LEN-1);
+  strncpy(so.artist, "Soundgarden", SONOS_ARTIST_LEN-1);
+  strncpy(so.album, "Superunknown", SONOS_ALBUM_LEN-1);
+  so.playing = true;
+  so.hdr.last_updated = now;
+  ds_set_sonos(&so);
+  seed_sonos_art_tile();
 }
 
 // Core-0 staleness ticker (DataStore sweeps are Core-0; P1's fetch task replaces this) + heap gate log.
@@ -88,6 +133,18 @@ static int s_phase = 0;
 static void longpress_cb(lv_event_t*) {
   int scr = carousel_current(); s_phase = (s_phase + 1) % 4;
   screen_state_t dev[] = {ST_LIVE, ST_STALE, ST_OFFLINE, ST_ERROR};
+#if BEACON_CAPTURE
+  // Sonos (album art plan §4 WS-3): hub-plane, only ever reaches LOADING/LIVE/HUB_OFFLINE (design §8),
+  // so it gets the same LIVE<->HUB_OFFLINE toggle as case 2/3 below -- exercising the dimmed-tile path
+  // without a hub. Matched by screen id, not a numeric case: "sonos" is NOT in carousel.cpp's
+  // DEFAULT_PAGES, so its index depends entirely on whatever "pages" NVS config is active during a
+  // given capture run and a hardcoded case number would silently target the wrong screen.
+  if (strcmp(carousel_screen_id(scr), "SONOS") == 0) {
+    if (s_phase % 2) ds_set_hub_offline(); else seed();
+    LOGI("dev: screen=%d(sonos) phase=%d", scr, s_phase);
+    return;
+  }
+#endif
   switch (scr) {
     case 0: if (s_phase == 0) seed(); else ds_set_state_weather(dev[s_phase], ERR_RATE_LIMITED); break;
     case 1: if (s_phase == 0) seed(); else ds_set_state_finance(0, dev[s_phase], ERR_TIMEOUT); break;
