@@ -36,6 +36,16 @@ struct DeviceTab: View {
                     RowSeparator(hasLeadingIcon: true)
                     StatusRow(state: model.setupPaired, title: "Device connected",
                               hint: "Power on the device; macOS will prompt to pair.") { EmptyView() }
+                    RowSeparator(hasLeadingIcon: true)
+                    // Album art plan §4 WS-4 (design §7.1's prerequisite P-1): outcome-derived from the
+                    // device's own `sart_stat` (LocalNetworkCheck.derive) -- there is no macOS API to ask
+                    // "do I have Local Network permission" directly, so this row only has evidence once
+                    // album art has actually tried to reach the device at least once.
+                    StatusRow(state: model.setupLocalNetwork, title: "Local Network", hint: model.localNetworkMessage) {
+                        if model.setupLocalNetwork == .bad {
+                            HubButton(title: "Open Settings") { model.onOpenLocalNetworkSettings() }
+                        }
+                    }
                 }
             }
         }
@@ -105,6 +115,7 @@ struct DeviceTab: View {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.setupBluetooth = .ok
     m.setupPaired = .ok
+    m.setupLocalNetwork = .ok
     return DeviceTab(model: m).frame(width: 720, height: 560)
         .preferredColorScheme(.light)
 }
@@ -113,6 +124,7 @@ struct DeviceTab: View {
     let m = HubViewModel(now: Date(timeIntervalSince1970: 1_733_800_000))
     m.setupBluetooth = .ok
     m.setupPaired = .ok
+    m.setupLocalNetwork = .ok
     return DeviceTab(model: m).frame(width: 720, height: 560)
         .preferredColorScheme(.dark)
 }

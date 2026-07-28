@@ -14,6 +14,21 @@ enum TickerSyncStatus: Equatable { case idle, pending, synced(Int), error(String
 // flash a failed state before it's known. Shared by the global connection checks and per-provider hooks.
 enum CheckState: Equatable { case checking, ok, bad }
 
+extension CheckState {
+    // Bridges BeaconHubKit's `LocalNetworkCheck.State` (checking/ok/bad) into this file's own three-state
+    // vocabulary. BeaconHubKit is the lower-level target `beacon-hub` depends on, never the reverse, so
+    // `LocalNetworkCheck.derive` cannot return `CheckState` directly -- this is the one place that maps
+    // its shape onto ours, the mirror image of `HubState.init(_ checkState:)` (HubRows.swift), which
+    // bridges the same three states the other way for the row layer.
+    init(_ s: LocalNetworkCheck.State) {
+        switch s {
+        case .checking: self = .checking
+        case .ok:       self = .ok
+        case .bad:      self = .bad
+        }
+    }
+}
+
 // One provider's settings-row state (design 2026-07-19, extended 2026-07-20). Capabilities gate which
 // toggles render; `hooks`/`installing`/`note` drive the per-provider setup line blended into the row.
 // One row in the device-pages editor. Order in the array IS the device order; `enabled` decides whether
@@ -55,6 +70,12 @@ final class HubViewModel: ObservableObject {
     // Global (non-provider) setup checks surfaced in the Settings window.
     @Published var setupBluetooth: CheckState = .checking
     @Published var setupPaired: CheckState = .checking
+    // Album art Local Network diagnostics (album art plan §4 WS-4, design §7.1/§7.3): outcome-derived
+    // from the device's own `sart_stat`, via LocalNetworkCheck.derive -- there is no macOS API to query
+    // Local Network permission directly. `.checking` until the first `sart_stat` (or a WiFi-down report)
+    // arrives; `localNetworkMessage` names the specific cause (permission vs. firewall) when `.bad`.
+    @Published var setupLocalNetwork: CheckState = .checking
+    @Published var localNetworkMessage: String?
     @Published var dontShowOnStartup: Bool = false   // first-run auto-open suppression (BeaconFirstRunComplete)
     @Published var tickerRows: [TickerRow] = []   // issue #92: current desired list, seeds the B4 editor
     // One dynamic card per registered provider (design 2026-07-19): the Usage / Coding Buddy toggles the
@@ -107,6 +128,13 @@ final class HubViewModel: ObservableObject {
     // independent of Save & push and of whether the Sonos page is currently enabled.
     var onLoadSonosRoom: () -> String? = { nil }
     var onSetSonosRoom: (String?) -> Void = { _ in }
+    // Album art toggle (album art plan §4 WS-4, §9 item 2 SETTLED: ships default ON). Persisted by
+    // AppDelegate (UserDefaults, not Keychain -- this is a preference, not a credential); flipping it
+    // drives SonosArtPublisher.setArtEnabled, which publishes S2 with a fresh gen on the OFF transition
+    // (D-6) rather than merely going quiet.
+    @Published var sonosArtEnabled: Bool = true
+    var onSetSonosArtEnabled: (Bool) -> Void = { _ in }
+    var onOpenLocalNetworkSettings: () -> Void = {}
     // Home's six-slot complication assignment (design §4). Face id -> wire strings ("clock",
     // "fin.sp500", ...) -- the same raw shape ComplicationStore persists, so WS-3's editor and
     // AppDelegate never have to translate between two representations.

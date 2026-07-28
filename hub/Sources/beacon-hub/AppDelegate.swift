@@ -24,6 +24,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Distinct from SettingsWindowController.completeKey ("BeaconFirstRunComplete"): that key still
     /// exists and is still written by maybeMarkComplete(), but only the menubar hint reads it now.
     static let didAutoOpenSettingsKey = "BeaconDidAutoOpenSettings"
+    // Album art plan §9 item 2 (SETTLED by the owner): ships default ON. `.object(forKey:)` (not
+    // `.bool(forKey:)`) so an absent key reads as "never set" rather than false's own default, which
+    // would silently ship the toggle OFF for every user who has never touched it.
+    static let sonosArtEnabledKey = "BeaconSonosArtEnabled"
+    private static func loadSonosArtEnabled() -> Bool {
+        UserDefaults.standard.object(forKey: sonosArtEnabledKey) as? Bool ?? true
+    }
     private let menubar = MenubarController()
     private let central = BeaconCentral()
     private let mux = ProviderMux()
@@ -57,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // character count echoed back) -- holding plaintext here purely to compare it would be out of step.
     private var sonosLastObservedSecretDigest: String?
     private var sonosLastObservedOAuthDigest: String?
+    // Album art pipeline (WS-4): change detection + LanAssetServer.arm + `sart` publish. Constructed once
+    // (unlike `sonos`, which rebuilds on credential changes) -- art cares only about the imageUrl values
+    // whichever SonosProvider is currently live reports, not about which OAuth credential produced them.
+    private let sonosArtPublisher = SonosArtPublisher(artEnabled: AppDelegate.loadSonosArtEnabled())
 
     private static func sonosCredDigest(_ data: Data?) -> String? {
         guard let data else { return nil }
@@ -140,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // just rely on ordering).
         startSonos()
         startSonosSettings()
+        startSonosArt()
         startSettings()
         startLoginItem()
         startLocation()
@@ -463,6 +475,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.pushSonosFrame()
             }
         }
+        // D-7: fired independently of onUpdate above, on its own last-URL comparison -- see
+        // SonosProvider.onArtURL's doc comment. Rewired on every rebuild (credential change/Disconnect)
+        // exactly like onUpdate above, so a fresh provider instance never silently drops art.
+        provider.onArtURL = { [weak self] url in self?.sonosArtPublisher.handleArtURL(url) }
         provider.onOutcome = { [weak self] outcome in
             Task { @MainActor in self?.sonosLastOutcome = outcome }
         }
@@ -538,6 +554,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menubar.viewModel.onSetSonosRoom = { [weak self] room in self?.sonos?.setSelectedRoom(room) }
     }
 
+    // --- sonos album art (album art plan §4 WS-4) ---
+
+    private func startSonosArt() {
+        sonosArtPublisher.onFrame = { [weak self] data in self?.central.send(data) }
+        sonosArtPublisher.onLocalNetworkOutcome = { [weak self] outcome in
+            guard let self else { return }
+            let (state, message) = LocalNetworkCheck.derive(outcome)
+            self.menubar.viewModel.setupLocalNetwork = CheckState(state)
+            self.menubar.viewModel.localNetworkMessage = message
+        }
+        sonosArtPublisher.setSonosPageEnabled(pageStore.current.ids.contains("sonos"))
+
+        menubar.viewModel.sonosArtEnabled = Self.loadSonosArtEnabled()
+        menubar.viewModel.onSetSonosArtEnabled = { [weak self] enabled in
+            guard let self else { return }
+            UserDefaults.standard.set(enabled, forKey: Self.sonosArtEnabledKey)
+            self.menubar.viewModel.sonosArtEnabled = enabled
+            self.sonosArtPublisher.setArtEnabled(enabled)
+        }
+        menubar.viewModel.onOpenLocalNetworkSettings = { SettingsLinks.open(SettingsLinks.privacyLocalNetwork) }
+    }
+
     // Everything the Settings UI needs to render the Sonos section, assembled fresh on every call
     // (Keychain + UserDefaults reads are cheap and local -- see HubViewModel.onLoadSonosSetup).
     private func sonosSnapshot() -> SonosSetupSnapshot {
@@ -583,6 +621,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.pushCompConfig()
                 self?.pushPageConfig()
                 self?.pushSonosFrame()   // resend the latest Sonos now-playing on (re)connect, same as sessions/sdetail above
+                // Design §5's reconnect rule (not optional): the device's tile lives in RAM, so a reboot
+                // leaves it with none, and the hub cannot tell a reconnect from a reboot. Re-arms with a
+                // fresh token and re-publishes S1 with a fresh gen if there is a current tile to resend.
+                self?.sonosArtPublisher.noteReconnected()
             }
         }
         central.onCommand = { [weak self] cmd in
@@ -631,6 +673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         codex?.setDeviceConnected(connected)
         omp?.setDeviceConnected(connected)
         poller.setDeviceConnected(connected)   // #64: back off the usage poll cadence while disconnected.
+        sonosArtPublisher.setLinkUp(connected)   // "armed only while ... the BLE link is up" (design §7.1)
 
         // Drive the Settings connection checks from the SAME phase stream (no second CBCentralManager):
         // Bluetooth is bad only when powered-off/unauthorized/unavailable; paired tracks live .connected.
@@ -693,13 +736,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case .assembled(let rows): adoptDeviceReport(rows)
             case .pending, .dropped:   break
             }
-        // Album art plan WS-0 (docs/plans/2026-07-27-sonos-album-art-plan.md §4): these two cases exist
-        // only to freeze the wire and keep this exhaustive switch compiling for wave-B/C. No handling
-        // yet -- WS-4 (`SonosArtPublisher`) wires the real behavior (device-report-driven interface
-        // selection, sart_stat-driven Local Network diagnostics). Intentionally inert: WS-0 ships no UI,
-        // no HTTP client, no image decoding.
-        case .sartStat, .deviceReport:
-            break
+        // Album art plan WS-4 (docs/plans/2026-07-27-sonos-album-art-plan.md §4): one-way telemetry, no
+        // ack of any kind sent back for either -- `sart_stat`'s `gen` already told the hub which tile this
+        // refers to (§B4), and it needs no reconciliation against a store the way pagesAck/configAck/
+        // compsAck do above.
+        case .sartStat(_, let ok, let err):
+            sonosArtPublisher.handleSartStat(ok: ok, err: err)
+        case .deviceReport(let ip):
+            // Repeatable, last-writer-wins (see SonosArtPublisher.setDeviceIP's doc comment): BLE connects
+            // before WiFi joins on a cold boot, so the first report or two of a connection can carry no IP
+            // at all, and the device re-reports whenever its live address changes.
+            sonosArtPublisher.setDeviceIP(ip)
         }
     }
 
@@ -901,6 +948,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applyPageEdit(ids: [String], opts: [String: [String: String]] = [:]) {
         let before = pageStore.current
         let after = pageStore.set(ids: ids, opts: opts)
+        // Kept in sync with the store regardless of whether this edit is a no-op below -- "armed only
+        // while the sonos page is in the device's page list" (design §7.1) must never lag the truth.
+        sonosArtPublisher.setSonosPageEnabled(after.ids.contains("sonos"))
         guard after.rev != before.rev else { return }   // no-op edit: do not reboot the device for nothing
         menubar.setPages(ids: after.ids, opts: after.opts)   // the edit is now the applied baseline
         // Deliberately NOT reading a room out of `after.opts["sonos"]` here (that was the bug): the room is

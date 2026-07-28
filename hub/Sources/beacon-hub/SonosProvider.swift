@@ -47,6 +47,14 @@ enum SonosRoomListResult: Equatable {
 // integration point where the two meet.
 final class SonosProvider {
     var onUpdate: ((_ room: String, _ track: String?, _ artist: String?, _ album: String?, _ playing: Bool) -> Void)?
+    // Additive observation hook (album art plan 2026-07-27-sonos-album-art-plan.md §3 D-7). Fires with
+    // the Sonos-reported `imageUrl` (nil = no art for this track) on its OWN last-URL comparison, BEFORE
+    // and INDEPENDENT of `onUpdate`'s `guard np != lastSent` text gate in emitNowPlaying below -- a
+    // station that rotates cover art under one unchanging title/artist/album would otherwise never fire
+    // onUpdate again after the first tick, and widening onUpdate's five-tuple to carry a sixth field would
+    // inherit that same gate and swallow exactly this case. SonosArtPublisher (a separate agent's file)
+    // is the only intended subscriber; this file must not know anything about `sart`, gen, or tiles.
+    var onArtURL: ((String?) -> Void)?
     // Additive observation hook (design 2026-07-26-sonos-setup-ui): fires with every classified outcome
     // alongside noteOutcome's own gate bookkeeping below, unchanged. Lets the Settings UI surface the SAME
     // live failure reason (401/403/network/etc., already classified by SonosOutcomeClassifier) the poll
@@ -67,6 +75,11 @@ final class SonosProvider {
     private var groupCache: (room: String, group: SonosAPI.Group)?
     private var lastSent: SonosNowPlaying?
     private var refreshing = false
+    // D-7's own last-URL comparison for `onArtURL`, kept independent of `lastSent`. `.unknown` (never
+    // fired) is distinct from `.value(nil)` (fired once already reporting "no art") so the very first
+    // no-art track does not get silently skipped as "no change from the unset default."
+    private enum ArtURLState: Equatable { case unknown, value(String?) }
+    private var lastArtURLState: ArtURLState = .unknown
 
     // Poll gate (lock-protected, not queue-confined: mirrors ClaudeCodeProvider's gateLock so a future
     // caller could read/note outcomes off-queue too, and so SonosGateTests can drive it directly).
@@ -349,11 +362,31 @@ final class SonosProvider {
             return
         }
         noteOutcome(.live)
+        emitNowPlaying(room: room, track: track, playing: playing)
+    }
+
+    // Internal (not private) so SonosProviderArtTests can drive the onArtURL/onUpdate emission logic
+    // directly with a synthetic SonosAPI.TrackMetadata, without mocking the two HTTP legs
+    // fetchNowPlaying fans out to -- the same "test the pure decision, not the network plumbing"
+    // convention SonosGateTests already established for noteOutcome/shouldPoll.
+    //
+    // D-7: onArtURL fires on ITS OWN last-URL comparison, before and independent of the `np != lastSent`
+    // text gate below -- see onArtURL's doc comment above for why widening onUpdate's tuple instead would
+    // have been wrong.
+    func emitNowPlaying(room: String, track: SonosAPI.TrackMetadata, playing: Bool) {
+        fireArtURLIfChanged(track.imageUrl)
         let np = SonosNowPlaying(room: room, track: track.track, artist: track.artist, album: track.album, playing: playing)
         guard np != lastSent else { return }
         lastSent = np
         let cb = onUpdate
         DispatchQueue.main.async { cb?(np.room, np.track, np.artist, np.album, np.playing) }
+    }
+
+    private func fireArtURLIfChanged(_ url: String?) {
+        guard lastArtURLState != .value(url) else { return }
+        lastArtURLState = .value(url)
+        let cb = onArtURL
+        DispatchQueue.main.async { cb?(url) }
     }
 
     // --- room listing (Defect 2: read-only, UI-only; never calls noteOutcome or touches the poll gate) ---

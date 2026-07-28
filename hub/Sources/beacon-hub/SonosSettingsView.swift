@@ -42,6 +42,7 @@ struct SonosSettingsSection: View {
                     }
                 }
             }
+            albumArtSection
         }
         .onAppear { refresh() }
         // SettingsWindowController builds this window ONCE and reuses it for the app's lifetime
@@ -293,6 +294,33 @@ struct SonosSettingsSection: View {
         case .exchangeFailed(let m): return "Could not complete the connection: \(m)"
         case .keychainWriteFailed:  return "Connected, but could not save to the Keychain."
         }
+    }
+
+    // --- album art (album art plan §4 WS-4, design §7.3's residual-risk bullet: "the LAN listener should
+    // be described in the Settings copy the user can actually read, not only in [the design doc]") ---
+
+    // A separate Card from the connect/authorize one above, not folded in: album art works independently
+    // of whether this session is currently authorized (the toggle only gates SonosArtPublisher once a
+    // track resolves), and SettingsRow's own zero-padding-parent assumption (design §3.2) does not hold
+    // inside the mixed-content Card above (the same reason statusRow uses StatusLine, not StatusRow).
+    private var albumArtSection: some View {
+        Card(padding: .rows) {
+            SettingsRow(title: "Album art", subtitle: albumArtSubtitle) {
+                Toggle("", isOn: albumArtBinding).labelsHidden().toggleStyle(.switch)
+            }
+        }
+    }
+
+    // Plain English, no protocol vocabulary ("TCP listener") -- design §7.1's whole point is that this
+    // opens far more often than OTA ever will (roughly once per track vs. once a month), so the person
+    // deciding whether to leave it on deserves to know what "on" actually does, not a euphemism for it.
+    private var albumArtSubtitle: String {
+        "Shows cover art on the Beacon. Briefly opens a local-network connection so the device can fetch "
+            + "each image. Off shows the track, artist and album as text only."
+    }
+
+    private var albumArtBinding: Binding<Bool> {
+        Binding(get: { model.sonosArtEnabled }, set: { model.onSetSonosArtEnabled($0) })
     }
 
     // --- disconnect ---
