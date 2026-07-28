@@ -1,6 +1,7 @@
 #include "core/fetch_task.h"
 #include "core/datastore.h"
 #include "core/net.h"
+#include "core/sonos_art.h"   // sonos_art_service() -- WS-2's Sonos album-art fetch job
 #include "core/timekeep.h"
 #include "fetch/weather.h"
 #include "fetch/finance.h"
@@ -92,6 +93,14 @@ static void fetch_task(void*) {
       for (int i = TICKER_BASE; i < slots; i++) s_next_due[i] = now;
       last_gen = gen;
     }
+
+    // Sonos album art (WS-2): serviced every tick, unconditionally -- NOT nested inside `if (up)` below,
+    // and not gated on timekeep_has_time() (art needs no clock). It must run even while WiFi is down so
+    // a job posted over BLE while the device-direct plane is offline (the two planes are independent,
+    // design §8) answers err:"no_wifi" on the very next tick instead of sitting queued until WiFi
+    // happens to reconnect; sonos_art_service() itself checks net_is_up() before ever attempting a
+    // connect (design §4.5/§8).
+    sonos_art_service();
 
     bool up = net_is_up();
     if (!up) {

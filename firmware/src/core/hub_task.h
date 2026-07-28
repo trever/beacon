@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 
 // Hub-plane wiring (P2, Core-0). Owns the Bluedroid HubLink: pumps loop(), routes inbound status
 // frames into ds_set_usage/ds_set_buddy, flips to ST_HUB_OFFLINE on disconnect, and tracks the
@@ -16,6 +17,12 @@ void hub_task_start(void);
 // accepted for transport. With no hub link initialized (BEACON_DEV), returns true so the on-device UI
 // still clears locally for testing.
 bool hub_send_permission(const char* id, bool approve);
+
+// Device -> hub Sonos art outcome (S3, WS-2, CONTRACT.md §B4). Safe to call from any Core-0 task --
+// core/sonos_art.cpp calls this from the fetch task, a DIFFERENT task than the one that owns g_link,
+// same cross-task guarantee hub_send_permission already relies on from Core-1 (HubLink::send copies +
+// is thread-safe). With no hub link initialized (BEACON_DEV), returns true (no-op success).
+bool hub_send_sart_stat(uint32_t gen, bool ok, const char* err);
 
 // Centralized buddy decide path (issue #8): the single place a view calls to approve/deny the active
 // prompt. Applies the canonical guard (present && not hub-offline/reconnecting && not already decided),

@@ -6,6 +6,7 @@
 #include "core/location.h"
 #include "core/timekeep.h"
 #include "core/complications.h"
+#include "core/sonos_art.h"   // sonos_art_post_job / sonos_art_clear (WS-2 dispatch for "sart")
 #include "core/net.h"       // net_is_up() -- gates the device report's "ip" key (D-1)
 #include "config/ticker_table.h"
 #include "ui/carousel.h"   // carousel_apply_pages, carousel_apply_comps
@@ -119,6 +120,20 @@ static void on_comps(const char* json, size_t len) {
   LOGI("hub: comps rev=%u applied (%u placements)", (unsigned)rev, (unsigned)n);
 }
 
+// A "sart" frame (S1/S2, WS-2, CONTRACT.md §A4): S1 (has_url) queues a LAN fetch job; S2 (no url,
+// including the Settings toggle turning art off) clears immediately via sonos_art_clear(), which also
+// aborts/drops any pending or in-flight job so a stale download cannot publish AFTER this clear.
+// hub_parse_sart's header comment (hub_proto.h) names THIS workstream as the one that must dispatch
+// "sart" before the loc/status fall-through, alongside "config"/"pages"/"comps" -- without that dispatch
+// on_frame's fall-through would silently swallow every "sart" frame into hub_parse_status, and the
+// parser WS-0 wrote would be dead code on a real device.
+static void on_sart(const char* json, size_t len) {
+  hub_sart_t s; bool had = false;
+  if (!hub_parse_sart(json, len, &s, &had) || !had) return;   // malformed/absent -- nothing to do, no stat
+  if (s.has_url) sonos_art_post_job(s.gen, s.url);
+  else           sonos_art_clear();
+}
+
 // Snapshot the device's current ticker table and emit it to the hub as chunked cmd:"report" frames so a
 // fresh hub can adopt the list it already holds (issue #105). The chunk serialize/flush/send loop lives in
 // hub_emit_report (host-tested, issue #106). Returns true only if EVERY chunk was accepted: a mid-stream
@@ -226,6 +241,8 @@ static void on_frame(const char* json, size_t len) {
   if (frame_has(json, len, "\"pages\"")) { on_pages(json, len); return; }
   // Complication config, likewise dispatched before the fall-through (hub_parse_comps's header comment).
   if (frame_has(json, len, "\"comps\"")) { on_comps(json, len); return; }
+  // Sonos album art (WS-2, plan §4 trap 1): dispatched before the fall-through for the same reason.
+  if (frame_has(json, len, "\"sart\"")) { on_sart(json, len); return; }
 
   // A "loc" block (issue #54) may ride the (re)connect full frame or arrive alone. Parsed independently
   // of usage/buddy; persist via core/location (hub source wins) + apply tz OUTSIDE any location lock.
@@ -315,6 +332,19 @@ bool hub_send_permission(const char* id, bool approve) {
   bool ok = g_link->send(buf, n);
   LOGI("buddy decide -> hub id=%s approve=%d sent=%d", id, approve, ok);
   return ok;
+}
+
+// Device -> hub Sonos art outcome (S3, WS-2). Called from fetch_task's Core-0 task (core/sonos_art.cpp),
+// NOT the hub task that owns g_link -- safe per the same cross-task guarantee hub_send_permission
+// already relies on from Core-1 (HubLink::send copies the frame + is internally thread-safe).
+bool hub_send_sart_stat(uint32_t gen, bool ok, const char* err) {
+  if (!g_link) return true;   // no hub link (native/BEACON_DEV) -- no-op success, mirrors send_device_report
+  char buf[96];
+  size_t n = hub_build_sart_stat(buf, sizeof(buf), gen, ok, err);
+  if (!n) return false;
+  bool sent = g_link->send(buf, n);
+  LOGI("hub: sart_stat gen=%u ok=%d err=%s sent=%d", (unsigned)gen, ok, err ? err : "", sent);
+  return sent;
 }
 
 bool buddy_decide(bool approve) {
