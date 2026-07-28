@@ -52,6 +52,11 @@ final class SonosArtPublisher {
     private var linkUp = false
     private var sonosPageEnabled = false
     private var currentTile: SonosArtRenderer.Tile?
+    // A url that arrived while a gate was shut. SonosProvider fires onArtURL only when the url CHANGES,
+    // so a blocked url is never re-delivered on its own -- without this it is lost until the track
+    // changes, which on a long track means the art simply never appears. Retried the moment a gate
+    // reopens.
+    private var deferredURL: String?
     private var pendingReconnectRepublish = false
     private var inFlightFetchToken: UInt64 = 0
 
@@ -97,6 +102,7 @@ final class SonosArtPublisher {
         queue.async { [weak self] in
             guard let self else { return }
             self.sonosPageEnabled = enabled
+            self.retryDeferredURL()
             self.tryFlushPendingReconnect()
         }
     }
@@ -106,8 +112,19 @@ final class SonosArtPublisher {
         queue.async { [weak self] in
             guard let self else { return }
             self.linkUp = up
+            self.retryDeferredURL()
             self.tryFlushPendingReconnect()
         }
+    }
+
+    // Re-enter the pipeline with a url that a shut gate turned away. Safe to call whenever a gate
+    // changes: urlStep still sees it as changed (the block left the cache untouched), and processURL
+    // re-checks every gate itself, so a call made while another gate is still shut simply defers again.
+    private func retryDeferredURL() {
+        guard let url = deferredURL, linkUp, sonosPageEnabled else { return }
+        deferredURL = nil
+        log("retrying deferred url after gate reopened")
+        processURL(url)
     }
 
     // D-1/D-2's integration point: the device's own reported IP (`cmd:"report","what":"device"`,
@@ -193,17 +210,20 @@ final class SonosArtPublisher {
         case .publish:
             // Gate BEFORE fetching, not just before arming: with no sonos page or no BLE link there is
             // nobody who could ever receive the frame this fetch would produce, so skip the HTTPS GET
-            // entirely rather than do the work and throw it away. The cache is left untouched, so the
-            // next tick (or the gate re-opening) sees the same "changed" URL and retries -- nothing is
-            // lost, just deferred.
+            // entirely rather than do the work and throw it away. The cache is left untouched AND the
+            // url is parked in `deferredURL`, because the provider will not re-deliver an unchanged url
+            // on its own -- retryDeferredURL() is what actually makes "nothing is lost, just deferred"
+            // true when a gate reopens.
             // Fetch over TLS even though Sonos advertises http -- see SonosArtDecision.httpsUpgraded.
             // The RAW url stays the cache identity below, because that is what Sonos will send again.
             guard linkUp, sonosPageEnabled, let url,
                   let target = URL(string: SonosArtDecision.httpsUpgraded(url)) else {
-                log("step=publish BLOCKED linkUp=\(linkUp) sonosPage=\(sonosPageEnabled) url=\(Self.redact(url))")
+                log("step=publish DEFERRED linkUp=\(linkUp) sonosPage=\(sonosPageEnabled) url=\(Self.redact(url))")
+                deferredURL = url
                 return
             }
             log("step=publish fetching \(target.scheme ?? "?")://\(Self.redact(url))")
+            deferredURL = nil
             let token = inFlightFetchToken &+ 1
             inFlightFetchToken = token
             fetchAndRender(target) { [weak self] result in

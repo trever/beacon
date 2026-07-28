@@ -38,7 +38,13 @@ final class SonosArtPublisherTests: XCTestCase {
     private final class FetchSpy {
         var handler: (URL, @escaping (Result<SonosArtRenderer.Tile, SonosArtRenderer.FetchError>) -> Void) -> Void
             = { _, completion in completion(.failure(.decodeFailed)) }
+        // Counts attempts, so a test can assert a fetch did NOT happen -- the deferred-url tests need
+        // "nothing was spent" as a positive assertion, not an absence of some other signal.
+        private(set) var callCount = 0
+        private(set) var urls: [URL] = []
         func call(_ url: URL, _ completion: @escaping (Result<SonosArtRenderer.Tile, SonosArtRenderer.FetchError>) -> Void) {
+            callCount += 1
+            urls.append(url)
             handler(url, completion)
         }
     }
@@ -414,5 +420,77 @@ final class SonosArtPublisherTests: XCTestCase {
         wait(for: [exp], timeout: 5)
 
         XCTAssertEqual(outcome, .served)
+    }
+
+    // MARK: - a url that arrives while a gate is shut (found on hardware 2026-07-28)
+
+    // SonosProvider fires onArtURL only when the url CHANGES, so a url turned away by a shut gate is
+    // never re-delivered. Before deferredURL existed it was dropped outright, and the art simply never
+    // appeared until the track changed -- on a long track, never. Reopening the gate must publish it.
+    func testURLBlockedByAClosedLinkPublishesWhenTheLinkComesUp() {
+        let arm = ArmSpy()
+        let fetch = FetchSpy()
+        fetch.handler = { _, completion in completion(.success(self.tile())) }
+        let pub = makePublisher(server: arm, clock: Clock(), fetch: fetch.call)
+        pub.setSonosPageEnabled(true)
+        pub.setDeviceIP("192.168.1.55")
+        pub.setLinkUp(false)
+
+        pub.handleArtURL("http://albumart.example.com/a.jpg")
+        drain(pub)
+        XCTAssertEqual(fetch.callCount, 0, "a shut link must not spend an HTTPS GET")
+        XCTAssertEqual(arm.calls.count, 0)
+
+        let frame = expectation(description: "S1 after the link comes up")
+        pub.onFrame = { _ in frame.fulfill() }
+        pub.setLinkUp(true)
+        wait(for: [frame], timeout: 5)
+        XCTAssertEqual(fetch.callCount, 1, "the deferred url must be retried exactly once")
+        XCTAssertEqual(arm.calls.count, 1)
+    }
+
+    // Same rule for the other gate, so neither one can strand a url on its own.
+    func testURLBlockedByAMissingSonosPagePublishesWhenThePageIsAdded() {
+        let arm = ArmSpy()
+        let fetch = FetchSpy()
+        fetch.handler = { _, completion in completion(.success(self.tile())) }
+        let pub = makePublisher(server: arm, clock: Clock(), fetch: fetch.call)
+        pub.setLinkUp(true)
+        pub.setDeviceIP("192.168.1.55")
+        pub.setSonosPageEnabled(false)
+
+        pub.handleArtURL("http://albumart.example.com/b.jpg")
+        drain(pub)
+        XCTAssertEqual(fetch.callCount, 0)
+
+        let frame = expectation(description: "S1 after the page is added")
+        pub.onFrame = { _ in frame.fulfill() }
+        pub.setSonosPageEnabled(true)
+        wait(for: [frame], timeout: 5)
+        XCTAssertEqual(fetch.callCount, 1)
+    }
+
+    // Reopening ONE gate while the other is still shut must not fetch -- it re-defers instead, so the
+    // retry cannot burn a request that still has nowhere to go.
+    func testReopeningOneGateWhileTheOtherIsShutStillDefers() {
+        let arm = ArmSpy()
+        let fetch = FetchSpy()
+        fetch.handler = { _, completion in completion(.success(self.tile())) }
+        let pub = makePublisher(server: arm, clock: Clock(), fetch: fetch.call)
+        pub.setDeviceIP("192.168.1.55")
+        pub.setLinkUp(false)
+        pub.setSonosPageEnabled(false)
+
+        pub.handleArtURL("http://albumart.example.com/c.jpg")
+        drain(pub)
+        pub.setLinkUp(true)          // page still disabled
+        drain(pub)
+        XCTAssertEqual(fetch.callCount, 0, "one open gate is not enough")
+
+        let frame = expectation(description: "S1 once both gates are open")
+        pub.onFrame = { _ in frame.fulfill() }
+        pub.setSonosPageEnabled(true)
+        wait(for: [frame], timeout: 5)
+        XCTAssertEqual(fetch.callCount, 1)
     }
 }
